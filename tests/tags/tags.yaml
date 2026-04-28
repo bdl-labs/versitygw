@@ -2,6 +2,14 @@ version: 1
 
 tags:
   feature:
+    cors:
+      desc: "Bucket CORS configuration and CORS response behavior"
+    location-constraint:
+      desc: "CreateBucket LocationConstraint XML field"
+    checksum:
+      desc: "Checksum behavior and validation"
+    chunked:
+      desc: "Chunked/streaming upload tests"
     invalid-method:
       desc: "Tests for invalid methods"
     invalid-header:
@@ -12,38 +20,148 @@ tags:
       desc: "Tests that do not use any optional query or header values"
     multipart:
       desc: "Multipart upload"
+    presigned-url:
+      desc: "Presigned URL"
     required-headers:
       desc: "Required headers such as 'Authorization' and 'x-amz-date'"
+    unit:
+      desc: "versitygw unit tests"
     user:
       desc: "versitygw user tests"
+    versioning:
+      desc: "Versioning semantics"
   client:
     curl:
       desc: "REST curl commands"
+    mc:
+      desc: "Minio MC commands"
     openssl:
       desc: "REST OpenSSL commands"
   command:
+    CopyObject:
+      desc: "CopyObject command"
+    CreateBucket:
+      desc: "CreateBucket command"
+    DeleteBucket:
+      desc: "DeleteBucket command"
+    DeleteObject:
+      desc: "DeleteObject command"
+    DeleteBucketTagging:
+      desc: "DeleteBucketTagging command"
+    DeleteBucketCors:
+      desc: "DeleteBucketCors command"
+    DeleteBucketOwnershipControls:
+      desc: "DeleteBucketOwnershipControls command"
+    GetBucketAcl:
+      desc: "GetBucketAcl command"
+    GetBucketCors:
+      desc: "GetBucketCors command"
+    GetBucketOwnershipControls:
+      desc: "GetBucketOwnershipControls command"
+    GetBucketLocation:
+      desc: "GetBucketLocation command"
+    GetBucketPolicy:
+      desc: "GetBucketPolicy command"
+    GetBucketTagging:
+      desc: "GetBucketTagging command"
     GetObject:
       desc: "GetObject command"
+    GetObjectAttributes:
+      desc: "GetObjectAttributes command"
+    GetObjectLockConfiguration:
+      desc: "GetObjectLockConfiguration command"
+    HeadBucket:
+      desc: "HeadBucket command"
     ListBuckets:
       desc: "ListBuckets command"
+    ListObjects:
+      desc: "ListObjects (v1) command"
+    PutBucketTagging:
+      desc: "PutBucketTagging command"
+    PutBucketCors:
+      desc: "PutBucketCors command"
+    PutBucketOwnershipControls:
+      desc: "PutBucketOwnershipControls command"
+    PutBucketPolicy:
+      desc: "PutBucketPolicy command"
+    PutBucketVersioning:
+      desc: "PutBucketVersioning command"
+    PutObject:
+      desc: "PutObject command"
+    PutObjectLockConfiguration:
+      desc: "PutObjectLockConfiguration command"
   header:
     Authorization:
       desc: "Authorization header"
     host:
       desc: "host header"
+    origin:
+      desc: "Origin header"
+    access-control-request-method:
+      desc: "Access-Control-Request-Method header (preflight)"
+    access-control-request-headers:
+      desc: "Access-Control-Request-Headers header (preflight)"
+    access-control-allow-origin:
+      desc: "Access-Control-Allow-Origin response header"
+    access-control-allow-methods:
+      desc: "Access-Control-Allow-Methods response header"
+    access-control-allow-headers:
+      desc: "Access-Control-Allow-Headers response header"
+    access-control-expose-headers:
+      desc: "Access-Control-Expose-Headers response header"
+    access-control-max-age:
+      desc: "Access-Control-Max-Age response header"
+    content-md5:
+      desc: "Content-MD5 header"
+    content-length:
+      desc: "Content-Length header"
     range:
       desc: "ranged download tests"
+    x-amz-acl:
+      desc: "x-amz-acl (canned ACL) header"
     x-amz-content-sha256:
       desc: "x-amz-content-sha256 header (payload hash and/or type)"
+    x-amz-copy-source:
+      desc: "x-amz-copy-source header"
     x-amz-date:
       desc: "x-amz-date header"
+    x-amz-trailer:
+      desc: "x-amz-trailer header (checksum trailer declaration)"
+    x-amz-object-attributes:
+      desc: "x-amz-object-attributes header (requested attribute set)"
+    x-amz-checksum-sha256:
+      desc: "x-amz-checksum-sha256 header (checksum request/validation)"
+    x-amz-checksum-crc32:
+      desc: "x-amz-checksum-crc32 header (checksum request/validation)"
+    x-amz-checksum-crc32c:
+      desc: "x-amz-checksum-crc32c header (checksum request/validation)"
+    x-amz-checksum-crc64nvme:
+      desc: "x-amz-checksum-crc64nvme header (checksum request/validation)"
+    x-amz-checksum-sha1:
+      desc: "x-amz-checksum-sha1 header (checksum request/validation)"
+    x-amz-grant-read-acp:
+      desc: "ACL permission to read object ACL"
+    x-amz-grant-full-control:
+      desc: "x-amz-grant-full-control header"
+    x-amz-grant-read:
+      desc: "x-amz-grant-read header"
+    x-amz-grant-write:
+      desc: "x-amz-grant-write header"
+    x-amz-grant-write-acp:
+      desc: "x-amz-grant-write-acp header"
+    x-amz-expected-bucket-owner:
+      desc: "x-amz-expected-bucket-owner header"
   query:
     bucket-region:
       desc: "ListBuckets bucket-region query"
+    cors:
+      desc: "Bucket CORS subresource (?cors)"
     continuation-token:
       desc: "ListBuckets/ListObjects continuation token query"
     max-buckets:
       desc: "Maximum amount of buckets returned by ListBuckets command"
+    ownershipControls:
+      desc: "Bucket ownershipControls subresource (?ownershipControls=)"
     partNumber:
       desc: "partNumber query for multiparts and gets"
     prefix:
@@ -60,3 +178,5 @@ tags:
       desc: "override content-type header response"
     response-expires:
       desc: "override expires header response"
+    attributes:
+      desc: "GetObjectAttributes attributes query/subresource"
