@@ -45,7 +45,7 @@ export RUN_USERS=true
   assert_success
 }
 
-# tags: curl,DeleteBucketOwnershipControls,ownershipControls,user,invalid-header
+# tags: curl,DeleteBucketOwnershipControls,ownershipControls,invalid-header
 @test "REST - DeleteBucketOwnershipControls - invalid username" {
   if [ "$SKIP_USERS_TESTS" == "true" ]; then
     skip "skip versitygw-specific users tests"
