@@ -62,7 +62,12 @@ func initPosix(ctx context.Context) {
 		log.Fatalf("make temp directory: %v", err)
 	}
 
-	be, err := posix.New(tempdir, meta.XattrMeta{}, posix.PosixOpts{
+	sqlm, err := meta.NewSqlMeta(filepath.Join(tempdir, ".versitygw-test-meta.db"))
+	if err != nil {
+		log.Fatalf("init sql metadata: %v", err)
+	}
+
+	be, err := posix.New(tempdir, sqlm, posix.PosixOpts{
 		NewDirPerm:  0755,
 		Concurrency: 5000,
 	})

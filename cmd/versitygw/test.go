@@ -145,11 +145,6 @@ func initTestCommands() []*cli.Command {
 			},
 		},
 		{
-			Name:   "scoutfs",
-			Usage:  "Tests scoutfs full flow",
-			Action: getAction(integration.TestScoutfs),
-		},
-		{
 			Name:   "iam",
 			Usage:  "Tests iam service",
 			Action: getAction(integration.TestIAM),

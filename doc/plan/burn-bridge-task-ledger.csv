@@ -3,19 +3,19 @@ T-001,项目管理,需求澄清与验收标准定义,PM,P0,未开始,0,2026-05-1
 T-002,架构,E2E架构设计评审,架构,P0,未开始,0,2026-05-12,2026-05-14,,中,T-001,依赖未完成,输出E2E架构图,
 T-003,协议,定义gRPC proto v1,Go+.NET,P0,已完成,100,2026-05-13,2026-05-16,2026-05-06,高,T-002,,进入v2协议迭代,已交付proto初版
 T-004,工程化,构建脚本与CI初版,DevOps,P0,未开始,0,2026-05-13,2026-05-14,,低,T-002,,创建流水线,
-T-005,插件框架,实现BackendPlugin.New与配置解析,Go,P0,已完成,100,2026-05-15,2026-05-16,2026-05-06,低,T-004,,继续补齐更多S3接口,插件入口与配置已可用
-T-006,插件框架,Backend基类嵌入BackendUnsupported,Go,P0,已完成,100,2026-05-16,2026-05-16,2026-05-06,低,T-005,,扩展读写路径,Backend骨架已完成
-T-007,gRPC Client,连接池/TLS/鉴权/重连策略,Go,P0,未开始,0,2026-05-16,2026-05-18,,中,T-003|T-005,,打通health检查,
-T-008,PutObject,流式chunk上传实现,Go,P0,进行中,40,2026-05-17,2026-05-22,,高,T-006|T-007,待对接gRPC流式写入,实现UploadObject gRPC客户端流,当前仅完成请求体消费与metadata入库
-T-009,PutObject,Commit与状态回写,Go,P0,未开始,0,2026-05-22,2026-05-24,,中,T-008,,返回ETag并记录状态,
+T-005,后端框架,实现burnbridge命令参数与后端初始化,Go,P0,已完成,100,2026-05-15,2026-05-16,2026-05-06,低,T-004,,继续补齐更多S3接口,内置后端入口与配置已可用
+T-006,后端框架,Backend基类嵌入BackendUnsupported,Go,P0,已完成,100,2026-05-16,2026-05-16,2026-05-06,低,T-005,,扩展读写路径,Backend骨架已完成
+T-007,gRPC Client,连接池/TLS/鉴权/重连策略,Go,P0,进行中,65,2026-05-16,2026-05-18,,中,T-003|T-005,,打通health检查,已支持plaintext/TLS(CA或系统根)/SNI/跳过校验；启动GetJobStatus探活(可--grpc-skip-ping)；连接就绪等待
+T-008,PutObject,流式chunk上传实现,Go,P0,进行中,85,2026-05-17,2026-05-22,,高,T-006|T-007,待对接gRPC流式写入,CreateJob+UploadObject分块流+CloseAndRecv已实现；元数据与ETag落库
+T-009,PutObject,Commit与状态回写,Go,P0,进行中,80,2026-05-22,2026-05-24,,中,T-008,,返回ETag并记录状态,CommitJob已调用；burnbridge-status/job-id/etag写入SQL meta；失败路径CancelJob
 T-010,Multipart,CreateMultipartUpload会话管理,Go,P0,未开始,0,2026-05-23,2026-05-24,,中,T-006|T-007,,生成upload session,
 T-011,Multipart,UploadPart流式分片传输,Go,P0,未开始,0,2026-05-24,2026-05-27,,中,T-010,,完成part粒度重试,
 T-012,Multipart,CompleteMultipartUpload提交刻录,Go,P0,未开始,0,2026-05-27,2026-05-29,,中,T-011,,实现合并与commit,
-T-013,状态查询,HeadObject/GetObjectAttributes状态映射,Go,P1,进行中,35,2026-05-29,2026-05-31,,中,T-009|T-012,等待状态查询RPC落地,补充Head/Get状态字段映射,已支持基础metadata回读
+T-013,状态查询,HeadObject/GetObjectAttributes状态映射,Go,P1,进行中,45,2026-05-29,2026-05-31,,中,T-009|T-012,等待状态查询RPC落地,补充Head/Get状态字段映射,Head/Get ETag来自burnbridge-etag；user metadata过滤burnbridge-*前缀
 T-014,列举能力,ListObjectsV2最小可用,Go,P2,未开始,0,2026-06-01,2026-06-02,,低,T-013,,输出任务目录视图,
 T-015,错误处理,gRPC/PrimoBurner异常映射,Go+.NET,P0,未开始,0,2026-05-25,2026-05-27,,中,T-008,,输出错误码映射表,
 T-016,幂等,幂等键与重复请求处理,Go,P0,未开始,0,2026-05-27,2026-05-29,,中,T-008|T-011,,实现幂等存储,
-T-017,恢复能力,插件重启任务恢复,Go,P1,未开始,0,2026-05-30,2026-06-02,,高,T-016,,实现恢复扫描,
+T-017,恢复能力,服务重启任务恢复,Go,P1,未开始,0,2026-05-30,2026-06-02,,高,T-016,,实现恢复扫描,
 T-018,.NET服务,Burn Engine封装(PrimoBurner),.NET,P0,未开始,0,2026-05-15,2026-05-23,,高,T-003,,先实现mock BlockDevice,
 T-019,.NET服务,任务状态机与调度,.NET,P0,未开始,0,2026-05-24,2026-05-29,,中,T-018,,完成状态迁移图,
 T-020,.NET服务,流控与backpressure实现,.NET,P0,未开始,0,2026-05-29,2026-06-01,,中,T-018,,实现窗口确认机制,

@@ -123,7 +123,7 @@ auth:
 gateway:
   # -- Backend configuration --
   backend:
-    # The storage backend to use. Supported values: posix, scoutfs, s3, azure, plugin
+    # The storage backend to use. Supported values: posix, s3, azure, plugin
     # This maps to the VGW_BACKEND environment variable used by the container entrypoint.
     type: posix
     # Additional arguments passed to the backend
@@ -276,7 +276,7 @@ certificate:
   #   name: "letsencrypt-production"
 
 # --- Persistence ---
-# Storage for the S3 gateway backend data (required for posix/scoutfs backends).
+# Storage for the S3 gateway backend data (required for posix backend).
 # By default, an emptyDir (ephemeral) volume is used.
 persistence:
   # If disabled, an emptyDir (ephemeral!) will be used instead of a PVC.

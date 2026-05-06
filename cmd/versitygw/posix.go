@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io/fs"
 	"math"
+	"path/filepath"
 
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/backend/meta"
@@ -30,6 +31,7 @@ var (
 	versioningDir        string
 	dirPerms             uint
 	sidecar              string
+	sqlmetaPath          string
 	nometa               bool
 	forceNoTmpFile       bool
 	forceNoCopyFileRange bool
@@ -40,7 +42,7 @@ func posixCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "posix",
 		Usage: "posix filesystem storage backend",
-		Description: `Any posix filesystem that supports extended attributes. The top level
+		Description: `Any POSIX filesystem. The top level
 directory for the gateway must be provided. All sub directories of the
 top level directory are treated as buckets, and all files/directories
 below the "bucket directory" are treated as the objects. The object
@@ -89,6 +91,12 @@ will be translated into the file /mnt/fs/gwroot/mybucket/a/b/c/myobject`,
 				Usage:       "use provided sidecar directory to store metadata",
 				EnvVars:     []string{"VGW_META_SIDECAR"},
 				Destination: &sidecar,
+			},
+			&cli.StringFlag{
+				Name:        "sqlmeta-path",
+				Usage:       "sqlite database file path for SQL metadata backend",
+				EnvVars:     []string{"VGW_META_SQLITE_PATH"},
+				Destination: &sqlmetaPath,
 			},
 			&cli.IntFlag{
 				Name:        "concurrency",
@@ -163,11 +171,15 @@ func runPosix(ctx *cli.Context) error {
 	case nometa:
 		ms = meta.NoMeta{}
 	default:
-		ms = meta.XattrMeta{}
-		err := meta.XattrMeta{}.Test(gwroot)
-		if err != nil {
-			return fmt.Errorf("xattr check failed: %w", err)
+		dbPath := sqlmetaPath
+		if dbPath == "" {
+			dbPath = filepath.Join(gwroot, ".versitygw-meta.db")
 		}
+		sqlm, err := meta.NewSqlMeta(dbPath)
+		if err != nil {
+			return fmt.Errorf("failed to init sql metadata: %w", err)
+		}
+		ms = sqlm
 	}
 
 	be, err := posix.New(gwroot, ms, opts)

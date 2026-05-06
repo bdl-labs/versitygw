@@ -90,24 +90,6 @@ run_versity_app_posix() {
   return 0
 }
 
-run_versity_app_scoutfs() {
-  if ! check_param_count "run_versity_app_scoutfs" "access ID, secret key, versityid app index" 3 $#; then
-    return 1
-  fi
-  base_command=("$VERSITY_EXE" --access="$1" --secret="$2" --region="$AWS_REGION"  --iam-dir="$USERS_FOLDER")
-  if [ -n "$CERT" ] && [ -n "$KEY" ]; then
-    base_command+=(--cert "$CERT" --key "$KEY")
-  fi
-  if [ -n "$PORT" ]; then
-    base_command+=(--port ":$PORT")
-  fi
-  base_command+=(scoutfs "$LOCAL_FOLDER")
-  export base_command
-
-  start_versity_process "$3"
-  return 0
-}
-
 run_versity_app_s3() {
   if ! check_param_count "run_versity_app_s3" "versityid app index" 1 $#; then
     return 1
@@ -131,8 +113,6 @@ run_versity_app_s3() {
 run_versity_app() {
   if [[ $BACKEND == 'posix' ]]; then
     run_versity_app_posix "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "1"
-  elif [[ $BACKEND == 'scoutfs' ]]; then
-    run_versity_app_scoutfs "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "1"
   elif [[ $BACKEND == 's3' ]]; then
     run_versity_app_posix "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "1"
     run_versity_app_s3 "2"

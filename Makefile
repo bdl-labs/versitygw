@@ -54,6 +54,14 @@ check:
 	golint ./...
 	gofmt -s -l .
 
+# Regenerate BurnBridge gRPC stubs (requires protoc, protoc-gen-go, protoc-gen-go-grpc in PATH).
+.PHONY: proto-burnbridge
+proto-burnbridge:
+	protoc -I=backend/burnbridge/proto \
+		--go_out=backend/burnbridge/proto --go_opt=paths=source_relative \
+		--go-grpc_out=backend/burnbridge/proto --go-grpc_opt=paths=source_relative \
+		backend/burnbridge/proto/burnbridge.proto
+
 .PHONY: clean
 clean: 
 	$(GOCLEAN)

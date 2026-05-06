@@ -14,7 +14,13 @@
 
 package meta
 
-import "os"
+import (
+	"errors"
+	"os"
+)
+
+// ErrNoSuchKey is returned when the key does not exist.
+var ErrNoSuchKey = errors.New("no such key")
 
 // MetadataStorer defines the interface for managing metadata.
 // When object == "", the operation is on the bucket.
