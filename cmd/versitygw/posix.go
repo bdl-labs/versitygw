@@ -32,7 +32,6 @@ var (
 	dirPerms             uint
 	sidecar              string
 	sqlmetaPath          string
-	nometa               bool
 	forceNoTmpFile       bool
 	forceNoCopyFileRange bool
 	actionsConcurrency   int
@@ -106,12 +105,6 @@ will be translated into the file /mnt/fs/gwroot/mybucket/a/b/c/myobject`,
 				Destination: &actionsConcurrency,
 			},
 			&cli.BoolFlag{
-				Name:        "nometa",
-				Usage:       "disable metadata storage",
-				EnvVars:     []string{"VGW_META_NONE"},
-				Destination: &nometa,
-			},
-			&cli.BoolFlag{
 				Name:        "disableotmp",
 				Usage:       "disable O_TMPFILE support for new objects",
 				EnvVars:     []string{"VGW_DISABLE_OTMP"},
@@ -168,8 +161,6 @@ func runPosix(ctx *cli.Context) error {
 		}
 		ms = sc
 		opts.SideCarDir = sidecar
-	case nometa:
-		ms = meta.NoMeta{}
 	default:
 		dbPath := sqlmetaPath
 		if dbPath == "" {
