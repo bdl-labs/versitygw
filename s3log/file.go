@@ -17,6 +17,7 @@ package s3log
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -36,9 +37,12 @@ const (
 // FileLogger is a local file audit log
 type FileLogger struct {
 	logfile string
-	f       *os.File
-	gotErr  bool
-	mu      sync.Mutex
+	w       io.Writer
+	closeFn func() error
+	// rotateFn is used on SIGHUP (e.g. lumberjack rotation); nil means reopen logfile.
+	rotateFn func() error
+	gotErr   bool
+	mu       sync.Mutex
 }
 
 var _ AuditLogger = &FileLogger{}
@@ -52,7 +56,9 @@ func InitFileLogger(logname string) (AuditLogger, error) {
 
 	fmt.Fprintf(f, "log starts %v\n", time.Now())
 
-	return &FileLogger{logfile: logname, f: f}, nil
+	fl := &FileLogger{logfile: logname, w: f}
+	fl.closeFn = func() error { return f.Close() }
+	return fl, nil
 }
 
 // Log sends log message to file logger
@@ -209,7 +215,7 @@ func (f *FileLogger) writeLog(lf LogFields) {
 		lf.AclRequired,
 	)
 
-	_, err := f.f.WriteString(log)
+	_, err := io.WriteString(f.w, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error writing to log file: %v\n", err)
 		// TODO: do we need to terminate on log error?
@@ -221,22 +227,39 @@ func (f *FileLogger) writeLog(lf LogFields) {
 // HangUp closes current logfile handle and opens a new one
 // typically needed for log rotations
 func (f *FileLogger) HangUp() error {
-	err := f.f.Close()
-	if err != nil {
-		return fmt.Errorf("close log: %w", err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.rotateFn != nil {
+		return f.rotateFn()
 	}
 
-	f.f, err = os.OpenFile(f.logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if f.closeFn != nil {
+		if err := f.closeFn(); err != nil {
+			return fmt.Errorf("close log: %w", err)
+		}
+	}
+
+	nf, err := os.OpenFile(f.logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}
+	f.w = nf
+	f.closeFn = func() error { return nf.Close() }
 
-	f.f.WriteString(fmt.Sprintf("log starts %v\n", time.Now()))
-
+	_, _ = io.WriteString(f.w, fmt.Sprintf("log starts %v\n", time.Now()))
 	return nil
 }
 
 // Shutdown closes logfile handle
 func (f *FileLogger) Shutdown() error {
-	return f.f.Close()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closeFn != nil {
+		err := f.closeFn()
+		f.closeFn = nil
+		f.w = nil
+		return err
+	}
+	return nil
 }

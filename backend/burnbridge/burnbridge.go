@@ -73,6 +73,9 @@ type Options struct {
 	// If zero, only the gateway/request context limits the call.
 	PutObjectTimeout time.Duration
 
+	// SQLiteMaintCtx enables periodic WAL checkpoint for flash deployments; cancelled when context ends.
+	SQLiteMaintCtx context.Context
+
 	// RecorderS3Pull: when EndpointURL is non-empty, after each CreateJob the gateway calls
 	// RegisterS3ObjectPullSource so the recorder can GetObject from that S3-compatible endpoint.
 	RecorderS3Endpoint        string
@@ -260,7 +263,11 @@ func New(opts Options) (*BurnBridge, error) {
 	}
 	normalizeOpts(&opts)
 
-	metaStore, err := meta.NewSqlMeta(opts.DBPath)
+	var metaOpts []meta.SqlMetaOption
+	if opts.SQLiteMaintCtx != nil {
+		metaOpts = append(metaOpts, meta.WithFlashMaintenance(opts.SQLiteMaintCtx, slog.Default()))
+	}
+	metaStore, err := meta.NewSqlMeta(opts.DBPath, metaOpts...)
 	if err != nil {
 		return nil, err
 	}

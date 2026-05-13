@@ -230,6 +230,10 @@ func runBurnbridge(ctx *cli.Context) error {
 		RecorderS3PresignedGetURL: burnbridgeRecorderS3PresignedGetURL,
 	}
 
+	if flashEmmcOptimized {
+		opts.SQLiteMaintCtx = ctx.Context
+	}
+
 	be, err := burnbridge.New(opts)
 	if err != nil {
 		return fmt.Errorf("init burnbridge backend: %w", err)

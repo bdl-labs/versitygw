@@ -15,11 +15,16 @@
 package s3log
 
 import (
+	"context"
 	"crypto/tls"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -42,6 +47,14 @@ type LogConfig struct {
 	LogFile      string
 	WebhookURL   string
 	AdminLogFile string
+
+	// FlashEmmcOptimized stores access/admin logs under FlashLogDir (default /dev/shm/app-log)
+	// with lumberjack rotation and optional background mirror to FlashMirrorDir.
+	FlashEmmcOptimized bool
+	FlashLogDir        string
+	FlashMirrorDir     string
+	MirrorCtx          context.Context
+	MirrorLog          *slog.Logger
 }
 
 type LogFields struct {
@@ -96,13 +109,32 @@ type AdminLogFields struct {
 type Loggers struct {
 	S3Logger    AuditLogger
 	AdminLogger AuditLogger
+
+	flashMirrorCancel context.CancelFunc
+	flashMirrorWG     sync.WaitGroup
+}
+
+// StopFlashLogMirror ends the background RAM to disk log mirror and waits for exit.
+func (l *Loggers) StopFlashLogMirror() {
+	if l == nil || l.flashMirrorCancel == nil {
+		return
+	}
+	l.flashMirrorCancel()
+	l.flashMirrorWG.Wait()
+	l.flashMirrorCancel = nil
 }
 
 func InitLogger(cfg *LogConfig) (*Loggers, error) {
 	if cfg.WebhookURL != "" && cfg.LogFile != "" {
 		return nil, fmt.Errorf("there should be specified one of the following: file, webhook")
 	}
-	loggers := new(Loggers)
+	loggers := &Loggers{}
+
+	shmDir := cfg.FlashLogDir
+	if shmDir == "" {
+		shmDir = "/dev/shm/app-log"
+	}
+	startMirror := cfg.FlashEmmcOptimized && cfg.MirrorCtx != nil && (cfg.LogFile != "" || cfg.AdminLogFile != "")
 
 	switch {
 	case cfg.WebhookURL != "":
@@ -113,23 +145,68 @@ func InitLogger(cfg *LogConfig) (*Loggers, error) {
 		}
 		loggers.S3Logger = l
 	case cfg.LogFile != "":
-		fmt.Printf("initializing S3 access logs with '%v' file\n", cfg.LogFile)
-		l, err := InitFileLogger(cfg.LogFile)
-		if err != nil {
-			return nil, err
+		if cfg.FlashEmmcOptimized {
+			if err := os.MkdirAll(shmDir, 0o755); err != nil {
+				return nil, fmt.Errorf("flash log shm dir: %w", err)
+			}
+			ramPath := filepath.Join(shmDir, filepath.Base(cfg.LogFile))
+			fmt.Printf("initializing S3 access logs (flash/RAM) '%v'\n", ramPath)
+			l, err := InitFlashFileLogger(ramPath)
+			if err != nil {
+				return nil, err
+			}
+			loggers.S3Logger = l
+		} else {
+			fmt.Printf("initializing S3 access logs with '%v' file\n", cfg.LogFile)
+			l, err := InitFileLogger(cfg.LogFile)
+			if err != nil {
+				return nil, err
+			}
+			loggers.S3Logger = l
 		}
-
-		loggers.S3Logger = l
 	}
 
 	if cfg.AdminLogFile != "" {
-		fmt.Printf("initializing admin access logs with '%v' file\n", cfg.AdminLogFile)
-		l, err := InitAdminFileLogger(cfg.AdminLogFile)
-		if err != nil {
-			return nil, err
+		if cfg.FlashEmmcOptimized {
+			if err := os.MkdirAll(shmDir, 0o755); err != nil {
+				return nil, fmt.Errorf("flash log shm dir: %w", err)
+			}
+			ramPath := filepath.Join(shmDir, filepath.Base(cfg.AdminLogFile))
+			fmt.Printf("initializing admin access logs (flash/RAM) '%v'\n", ramPath)
+			l, err := InitFlashAdminFileLogger(ramPath)
+			if err != nil {
+				return nil, err
+			}
+			loggers.AdminLogger = l
+		} else {
+			fmt.Printf("initializing admin access logs with '%v' file\n", cfg.AdminLogFile)
+			l, err := InitAdminFileLogger(cfg.AdminLogFile)
+			if err != nil {
+				return nil, err
+			}
+			loggers.AdminLogger = l
 		}
+	}
 
-		loggers.AdminLogger = l
+	if startMirror {
+		dstDir := cfg.FlashMirrorDir
+		if dstDir == "" {
+			dstDir = "/data/logs"
+		}
+		if err := os.MkdirAll(dstDir, 0o755); err != nil {
+			return nil, fmt.Errorf("flash log mirror dir: %w", err)
+		}
+		mctx, cancel := context.WithCancel(cfg.MirrorCtx)
+		loggers.flashMirrorCancel = cancel
+		loggers.flashMirrorWG.Add(1)
+		log := cfg.MirrorLog
+		if log == nil {
+			log = slog.Default()
+		}
+		go func() {
+			defer loggers.flashMirrorWG.Done()
+			runFlashLogMirror(mctx, shmDir, dstDir, log)
+		}()
 	}
 
 	return loggers, nil

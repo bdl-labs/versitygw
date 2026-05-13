@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -98,8 +99,24 @@ type BurnObjectSegment struct {
 // Burned reports whether this segment is known to have been placed successfully on media.
 func (s BurnObjectSegment) Burned() bool { return s.State == BurnSegmentSucceeded }
 
-func NewSqlMeta(dbPath string) (SqlMeta, error) {
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{})
+func (s SqlMeta) withDB(op string, fn func(*gorm.DB) error) error {
+	return sqliteWithRetry(op, func() error { return fn(s.db) })
+}
+
+func NewSqlMeta(dbPath string, opts ...SqlMetaOption) (SqlMeta, error) {
+	var init sqlMetaInit
+	for _, o := range opts {
+		o(&init)
+	}
+
+	dsn, err := buildSQLiteDSN(dbPath)
+	if err != nil {
+		return SqlMeta{}, err
+	}
+
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
+		SkipDefaultTransaction: true,
+	})
 	if err != nil {
 		return SqlMeta{}, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -109,21 +126,29 @@ func NewSqlMeta(dbPath string) (SqlMeta, error) {
 		return SqlMeta{}, fmt.Errorf("get sql db: %w", err)
 	}
 
-	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
-		return SqlMeta{}, fmt.Errorf("set WAL mode: %w", err)
+	log := init.maintLog
+	if log == nil {
+		log = slog.Default()
 	}
-	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000;"); err != nil {
-		return SqlMeta{}, fmt.Errorf("set busy_timeout: %w", err)
-	}
+	applySQLiteFlashPragmas(sqlDB, log)
+
 	sqlDB.SetMaxOpenConns(4)
 	sqlDB.SetMaxIdleConns(4)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
-	if err := db.AutoMigrate(&metadataEntry{}, &burnbridgeObjectSegment{}); err != nil {
+	if err := sqliteWithRetry("auto migrate", func() error {
+		return db.AutoMigrate(&metadataEntry{}, &burnbridgeObjectSegment{})
+	}); err != nil {
 		return SqlMeta{}, fmt.Errorf("migrate sqlite schema: %w", err)
 	}
 	if db.Migrator().HasColumn(&burnbridgeObjectSegment{}, "burned") {
-		_ = db.Exec("UPDATE burnbridge_object_segments SET burn_state = ? WHERE burned = ?", BurnSegmentSucceeded, true).Error
+		_ = sqliteWithRetry("migrate burned column", func() error {
+			return db.Exec("UPDATE burnbridge_object_segments SET burn_state = ? WHERE burned = ?", BurnSegmentSucceeded, true).Error
+		})
+	}
+
+	if init.maintCtx != nil {
+		go startFlashMaintenance(init.maintCtx, sqlDB, log)
 	}
 
 	return SqlMeta{db: db}, nil
@@ -154,25 +179,36 @@ func marshalDiscExtentsJSON(extents []BurnDiscExtent) (string, error) {
 
 // GetBurnObjectSegment returns one segment row or ErrNoSuchKey.
 func (s SqlMeta) GetBurnObjectSegment(bucket, object string, segmentIndex int) (BurnObjectSegment, error) {
-	var row burnbridgeObjectSegment
-	err := s.db.Where("bucket = ? AND object_name = ? AND segment_index = ?", bucket, object, segmentIndex).First(&row).Error
+	var out BurnObjectSegment
+	err := s.withDB("get burn object segment", func(db *gorm.DB) error {
+		var row burnbridgeObjectSegment
+		err := db.Where("bucket = ? AND object_name = ? AND segment_index = ?", bucket, object, segmentIndex).First(&row).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNoSuchKey
+			}
+			return mapSQLError("get burn object segment", err)
+		}
+		extents, perr := parseDiscExtentsJSON(row.DiscExtents)
+		if perr != nil {
+			return perr
+		}
+		out = BurnObjectSegment{
+			ByteOffset:  row.ByteOffset,
+			ByteSize:    row.ByteSize,
+			ChecksumMD5: row.ChecksumMD5,
+			State:       BurnSegmentState(row.BurnState),
+			DiscExtents: extents,
+		}
+		return nil
+	})
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, ErrNoSuchKey) {
 			return BurnObjectSegment{}, ErrNoSuchKey
 		}
-		return BurnObjectSegment{}, mapSQLError("get burn object segment", err)
+		return BurnObjectSegment{}, err
 	}
-	extents, perr := parseDiscExtentsJSON(row.DiscExtents)
-	if perr != nil {
-		return BurnObjectSegment{}, perr
-	}
-	return BurnObjectSegment{
-		ByteOffset:  row.ByteOffset,
-		ByteSize:    row.ByteSize,
-		ChecksumMD5: row.ChecksumMD5,
-		State:       BurnSegmentState(row.BurnState),
-		DiscExtents: extents,
-	}, nil
+	return out, nil
 }
 
 // UpsertBurnObjectSegment inserts or replaces per-segment metadata (pending, succeeded, or failed).
@@ -192,23 +228,27 @@ func (s SqlMeta) UpsertBurnObjectSegment(bucket, object string, segmentIndex int
 		BurnState:    int(state),
 		DiscExtents:  discJSON,
 	}
-	if err := s.db.Clauses(clause.OnConflict{
-		Columns: []clause.Column{{Name: "bucket"}, {Name: "object_name"}, {Name: "segment_index"}},
-		DoUpdates: clause.AssignmentColumns([]string{
-			"byte_offset", "byte_size", "checksum_md5", "burn_state", "disc_extents", "updated_at",
-		}),
-	}).Create(&row).Error; err != nil {
-		return mapSQLError("upsert burn object segment", err)
-	}
-	return nil
+	return s.withDB("upsert burn object segment", func(db *gorm.DB) error {
+		if err := db.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "bucket"}, {Name: "object_name"}, {Name: "segment_index"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"byte_offset", "byte_size", "checksum_md5", "burn_state", "disc_extents", "updated_at",
+			}),
+		}).Create(&row).Error; err != nil {
+			return mapSQLError("upsert burn object segment", err)
+		}
+		return nil
+	})
 }
 
 // DeleteBurnObjectSegments removes all chunk rows for an object (e.g. content changed at segment 0).
 func (s SqlMeta) DeleteBurnObjectSegments(bucket, object string) error {
-	if err := s.db.Where("bucket = ? AND object_name = ?", bucket, object).Delete(&burnbridgeObjectSegment{}).Error; err != nil {
-		return mapSQLError("delete burn object segments", err)
-	}
-	return nil
+	return s.withDB("delete burn object segments", func(db *gorm.DB) error {
+		if err := db.Where("bucket = ? AND object_name = ?", bucket, object).Delete(&burnbridgeObjectSegment{}).Error; err != nil {
+			return mapSQLError("delete burn object segments", err)
+		}
+		return nil
+	})
 }
 
 // CommittedObjectSummary is one object row derived from SQLite metadata (burnbridge PutObject completion).
@@ -359,35 +399,40 @@ func (s SqlMeta) StoreBurnbridgeCommitted(_ *os.File, bucket, object string, rec
 
 // ListCommittedObjects returns summaries for objects that have burnbridge committed JSON, ordered by object_name.
 func (s SqlMeta) ListCommittedObjects(bucket string) ([]CommittedObjectSummary, error) {
-	rows, err := s.db.Raw(
-		`SELECT object_name, value FROM metadata_entries WHERE bucket = ? AND attribute = ? ORDER BY object_name`,
-		bucket,
-		BurnbridgeCommittedAttribute,
-	).Rows()
-	if err != nil {
-		return nil, mapSQLError("list committed objects", err)
-	}
-	defer rows.Close()
 	var out []CommittedObjectSummary
-	for rows.Next() {
-		var name sql.NullString
-		var raw []byte
-		if err := rows.Scan(&name, &raw); err != nil {
-			return nil, mapSQLError("scan committed object", err)
-		}
-		if !name.Valid {
-			continue
-		}
-		sum, err := committedSummaryFromJSON(name.String, raw)
+	err := s.withDB("list committed objects", func(db *gorm.DB) error {
+		var rowsOut []CommittedObjectSummary
+		rows, err := db.Raw(
+			`SELECT object_name, value FROM metadata_entries WHERE bucket = ? AND attribute = ? ORDER BY object_name`,
+			bucket,
+			BurnbridgeCommittedAttribute,
+		).Rows()
 		if err != nil {
-			return nil, err
+			return mapSQLError("list committed objects", err)
 		}
-		out = append(out, sum)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, mapSQLError("list committed objects", err)
-	}
-	return out, nil
+		defer rows.Close()
+		for rows.Next() {
+			var name sql.NullString
+			var raw []byte
+			if err := rows.Scan(&name, &raw); err != nil {
+				return mapSQLError("scan committed object", err)
+			}
+			if !name.Valid {
+				continue
+			}
+			sum, err := committedSummaryFromJSON(name.String, raw)
+			if err != nil {
+				return err
+			}
+			rowsOut = append(rowsOut, sum)
+		}
+		if err := rows.Err(); err != nil {
+			return mapSQLError("list committed objects", err)
+		}
+		out = rowsOut
+		return nil
+	})
+	return out, err
 }
 
 // GetCommittedObjectSummary loads summary for one object. ErrNoSuchKey if no committed JSON row.
@@ -401,14 +446,23 @@ func (s SqlMeta) GetCommittedObjectSummary(bucket, objectKey string) (CommittedO
 
 func (s SqlMeta) RetrieveAttribute(_ *os.File, bucket, object, attribute string) ([]byte, error) {
 	var entry metadataEntry
-	err := s.db.
-		Where("bucket = ? AND object_name = ? AND attribute = ?", bucket, object, attribute).
-		First(&entry).Error
+	err := s.withDB("retrieve attribute", func(db *gorm.DB) error {
+		err := db.
+			Where("bucket = ? AND object_name = ? AND attribute = ?", bucket, object, attribute).
+			First(&entry).Error
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrNoSuchKey
+			}
+			return fmt.Errorf("retrieve attribute: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
+		if errors.Is(err, ErrNoSuchKey) {
 			return nil, ErrNoSuchKey
 		}
-		return nil, fmt.Errorf("retrieve attribute: %w", err)
+		return nil, err
 	}
 	return entry.Value, nil
 }
@@ -420,65 +474,76 @@ func (s SqlMeta) StoreAttribute(_ *os.File, bucket, object, attribute string, va
 		Attribute:  attribute,
 		Value:      value,
 	}
-	if err := s.db.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "bucket"}, {Name: "object_name"}, {Name: "attribute"}},
-		DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
-	}).Create(&entry).Error; err != nil {
-		return mapSQLError("store attribute", err)
-	}
-	return nil
+	return s.withDB("store attribute", func(db *gorm.DB) error {
+		if err := db.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "bucket"}, {Name: "object_name"}, {Name: "attribute"}},
+			DoUpdates: clause.AssignmentColumns([]string{"value", "updated_at"}),
+		}).Create(&entry).Error; err != nil {
+			return mapSQLError("store attribute", err)
+		}
+		return nil
+	})
 }
 
 func (s SqlMeta) DeleteAttribute(bucket, object, attribute string) error {
-	res := s.db.Where("bucket = ? AND object_name = ? AND attribute = ?", bucket, object, attribute).Delete(&metadataEntry{})
-	if res.Error != nil {
-		return mapSQLError("delete attribute", res.Error)
-	}
-	if res.RowsAffected == 0 {
-		return ErrNoSuchKey
-	}
-	return nil
+	return s.withDB("delete attribute", func(db *gorm.DB) error {
+		res := db.Where("bucket = ? AND object_name = ? AND attribute = ?", bucket, object, attribute).Delete(&metadataEntry{})
+		if res.Error != nil {
+			return mapSQLError("delete attribute", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return ErrNoSuchKey
+		}
+		return nil
+	})
 }
 
 func (s SqlMeta) ListAttributes(bucket, object string) ([]string, error) {
 	var attrs []string
-	if err := s.db.Model(&metadataEntry{}).
-		Where("bucket = ? AND object_name = ?", bucket, object).
-		Pluck("attribute", &attrs).Error; err != nil {
-		return nil, mapSQLError("list attributes", err)
-	}
-	return attrs, nil
+	err := s.withDB("list attributes", func(db *gorm.DB) error {
+		if err := db.Model(&metadataEntry{}).
+			Where("bucket = ? AND object_name = ?", bucket, object).
+			Pluck("attribute", &attrs).Error; err != nil {
+			return mapSQLError("list attributes", err)
+		}
+		return nil
+	})
+	return attrs, err
 }
 
 func (s SqlMeta) DeleteAttributes(bucket, object string) error {
-	if object == "" {
-		if err := s.db.Where("bucket = ?", bucket).Delete(&metadataEntry{}).Error; err != nil {
-			return mapSQLError("delete bucket attributes", err)
+	return s.withDB("delete attributes", func(db *gorm.DB) error {
+		if object == "" {
+			if err := db.Where("bucket = ?", bucket).Delete(&metadataEntry{}).Error; err != nil {
+				return mapSQLError("delete bucket attributes", err)
+			}
+			return nil
+		}
+
+		if err := db.Where("bucket = ? AND object_name = ?", bucket, object).Delete(&metadataEntry{}).Error; err != nil {
+			return mapSQLError("delete attributes", err)
 		}
 		return nil
-	}
-
-	if err := s.db.Where("bucket = ? AND object_name = ?", bucket, object).Delete(&metadataEntry{}).Error; err != nil {
-		return mapSQLError("delete attributes", err)
-	}
-	return nil
+	})
 }
 
 func (s SqlMeta) RenameObject(bucket, oldObject, newObject string) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Model(&metadataEntry{}).
-			Where("bucket = ? AND object_name = ?", bucket, oldObject).
-			Update("object_name", newObject).Error; err != nil {
-			return mapSQLError("rename object metadata", err)
-		}
+	return s.withDB("rename object", func(db *gorm.DB) error {
+		return db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Model(&metadataEntry{}).
+				Where("bucket = ? AND object_name = ?", bucket, oldObject).
+				Update("object_name", newObject).Error; err != nil {
+				return mapSQLError("rename object metadata", err)
+			}
 
-		if err := tx.Model(&burnbridgeObjectSegment{}).
-			Where("bucket = ? AND object_name = ?", bucket, oldObject).
-			Update("object_name", newObject).Error; err != nil {
-			return mapSQLError("rename burn segments", err)
-		}
+			if err := tx.Model(&burnbridgeObjectSegment{}).
+				Where("bucket = ? AND object_name = ?", bucket, oldObject).
+				Update("object_name", newObject).Error; err != nil {
+				return mapSQLError("rename burn segments", err)
+			}
 
-		return nil
+			return nil
+		})
 	})
 }
 

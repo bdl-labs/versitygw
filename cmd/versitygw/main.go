@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -29,6 +30,7 @@ import (
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
+	"github.com/versity/versitygw/backend/sysflash"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/metrics"
 	"github.com/versity/versitygw/s3api"
@@ -106,6 +108,7 @@ var (
 	mpMaxParts                             int
 	copyObjectThreshold                    int64
 	socketPerm                             string
+	flashEmmcOptimized                     bool
 )
 
 var (
@@ -771,11 +774,11 @@ func initFlags() []cli.Flag {
 			Value:       5 * 1024 * 1024 * 1024,
 			Destination: &copyObjectThreshold,
 		},
-		&cli.StringFlag{
-			Name:        "socket-perm",
-			Usage:       "file permissions for file-backed UNIX domain sockets (octal, e.g. '0660'); ignored for TCP/IP and abstract namespace sockets",
-			EnvVars:     []string{"VGW_SOCKET_PERM"},
-			Destination: &socketPerm,
+		&cli.BoolFlag{
+			Name:        "flash-emmc-optimize",
+			Usage:       "enable eMMC/flash-oriented defaults (SQLite WAL tuning, optional RAM audit logs + periodic mirror, startup mount/journald hints)",
+			EnvVars:     []string{"VGW_FLASH_EMMC_OPTIMIZE"},
+			Destination: &flashEmmcOptimized,
 		},
 	}
 }
@@ -875,6 +878,11 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		go func() {
 			log.Fatal(http.ListenAndServe(pprof, nil))
 		}()
+	}
+
+	if flashEmmcOptimized {
+		h := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+		sysflash.PrintStartupHints(h)
 	}
 
 	opts := []s3api.Option{
@@ -982,10 +990,14 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		return fmt.Errorf("setup iam: %w", err)
 	}
 
+	mlog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	loggers, err := s3log.InitLogger(&s3log.LogConfig{
-		LogFile:      accessLog,
-		WebhookURL:   logWebhookURL,
-		AdminLogFile: adminLogFile,
+		LogFile:            accessLog,
+		WebhookURL:         logWebhookURL,
+		AdminLogFile:       adminLogFile,
+		FlashEmmcOptimized: flashEmmcOptimized,
+		MirrorCtx:          ctx,
+		MirrorLog:          mlog,
 	})
 	if err != nil {
 		return fmt.Errorf("setup logger: %w", err)
@@ -1346,6 +1358,9 @@ Loop:
 		fmt.Fprintf(os.Stderr, "shutdown iam: %v\n", err)
 	}
 
+	if loggers != nil {
+		loggers.StopFlashLogMirror()
+	}
 	if loggers.S3Logger != nil {
 		err := loggers.S3Logger.Shutdown()
 		if err != nil {

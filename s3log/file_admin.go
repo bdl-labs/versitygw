@@ -17,6 +17,7 @@ package s3log
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -32,16 +33,18 @@ type AdminFileLogger struct {
 
 var _ AuditLogger = &AdminFileLogger{}
 
-// InitFileLogger initializes audit logs to local file
+// InitAdminFileLogger initializes audit logs to local file
 func InitAdminFileLogger(logname string) (AuditLogger, error) {
 	f, err := os.OpenFile(logname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open log: %w", err)
 	}
 
-	f.WriteString(fmt.Sprintf("log starts %v\n", time.Now()))
+	_, _ = io.WriteString(f, fmt.Sprintf("log starts %v\n", time.Now()))
 
-	return &AdminFileLogger{FileLogger: FileLogger{logfile: logname, f: f}}, nil
+	fl := &FileLogger{logfile: logname, w: f}
+	fl.closeFn = func() error { return f.Close() }
+	return &AdminFileLogger{FileLogger: *fl}, nil
 }
 
 // Log sends log message to file logger
@@ -145,7 +148,7 @@ func (f *AdminFileLogger) writeLog(lf AdminLogFields) {
 		lf.TLSVersion,
 	)
 
-	_, err := f.f.WriteString(log)
+	_, err := io.WriteString(f.w, log)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error writing to log file: %v\n", err)
 		// TODO: do we need to terminate on log error?

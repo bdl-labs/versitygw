@@ -17,6 +17,7 @@ package main
 import (
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"math"
 	"path/filepath"
 
@@ -162,7 +163,13 @@ func runPosix(ctx *cli.Context) error {
 		if dbPath == "" {
 			dbPath = filepath.Join(gwroot, ".versitygw-meta.db")
 		}
-		sqlm, err := meta.NewSqlMeta(dbPath)
+		var sqlm meta.SqlMeta
+		var err error
+		if flashEmmcOptimized {
+			sqlm, err = meta.NewSqlMeta(dbPath, meta.WithFlashMaintenance(ctx.Context, slog.Default()))
+		} else {
+			sqlm, err = meta.NewSqlMeta(dbPath)
+		}
 		if err != nil {
 			return fmt.Errorf("failed to init sql metadata: %w", err)
 		}
