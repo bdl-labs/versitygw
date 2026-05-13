@@ -32,7 +32,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func dialBurnBridgeGRPC(ctx context.Context, addr string, useTLS bool, caFile, serverName string, insecureSkipVerify bool) (*grpc.ClientConn, error) {
+func dialBurnBridgeGRPC(ctx context.Context, grpcReadyTimeout time.Duration, addr string, useTLS bool, caFile, serverName string, insecureSkipVerify bool) (*grpc.ClientConn, error) {
 	var opts []grpc.DialOption
 	if useTLS {
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
@@ -77,7 +77,7 @@ func dialBurnBridgeGRPC(ctx context.Context, addr string, useTLS bool, caFile, s
 		return nil, fmt.Errorf("grpc new client: %w", err)
 	}
 
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, grpcReadyTimeout)
 	defer cancel()
 	for {
 		state := conn.GetState()

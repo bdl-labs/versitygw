@@ -125,8 +125,6 @@ func main() {
 	app.Commands = []*cli.Command{
 		posixCommand(),
 		burnbridgeCommand(),
-		s3Command(),
-		azureCommand(),
 		pluginCommand(),
 		adminCommand(),
 		testCommand(),

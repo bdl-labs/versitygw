@@ -131,10 +131,6 @@ func runPosix(ctx *cli.Context) error {
 		return fmt.Errorf("invalid directory permissions: %d", dirPerms)
 	}
 
-	if nometa && sidecar != "" {
-		return fmt.Errorf("cannot use both nometa and sidecar metadata")
-	}
-
 	if actionsConcurrency <= 0 {
 		return fmt.Errorf("concurrency must be positive, got %d", actionsConcurrency)
 	}

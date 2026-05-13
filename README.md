@@ -115,6 +115,10 @@ helm install versitygw oci://ghcr.io/versity/versitygw/charts/versitygw
 
 Please refer to the [chart's README](./chart/README.md) for more information and configuration parameters.
 
+### BurnBridge backend (local development)
+
+For building, regenerating `burnbridge` protobuf stubs, CLI flags, and architecture notes when continuing work on another machine, see [doc/BURNBRIDGE_DEVELOPMENT.md](./doc/BURNBRIDGE_DEVELOPMENT.md).
+
 ***
 
 #### Versity gives you clarity and control over your archival storage, so you can allocate more resources to your core mission.

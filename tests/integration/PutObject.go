@@ -50,10 +50,7 @@ func PutObject_special_chars(s *S3Conf) error {
 		"my?key", "my^key", "my{}key", "my%key", "my`key",
 		"my[]key", "my~key", "my<>key", "my|key", "my#key",
 	}
-	if !s.azureTests {
-		// azure currently can't handle backslashes in object names
-		objnames = append(objnames, "my\\key")
-	}
+	objnames = append(objnames, "my\\key")
 
 	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
 		objs, err := putObjects(s3client, objnames, bucket)
@@ -178,12 +175,6 @@ func PutObject_tagging(s *S3Conf) error {
 			{"key%20key=value%20value", map[string]string{"key key": "value value"}, nil},
 			{"key%5Fkey=value%5Fvalue", map[string]string{"key_key": "value_value"}, nil},
 		} {
-			if s.azureTests {
-				// azure doesn't support '@' character
-				if strings.Contains(el.tagging, "@") {
-					continue
-				}
-			}
 			// once test for file object
 			err := testTagging(fileObj, el.tagging, el.result, el.expectedErr)
 			if err != nil {
@@ -974,16 +965,13 @@ func PutObject_success(s *S3Conf) error {
 			return err
 		}
 
-		// skip the ETag check for azure tests
-		if !s.azureTests {
-			etag, err := calculateEtag(res.data)
-			if err != nil {
-				return err
-			}
+		etag, err := calculateEtag(res.data)
+		if err != nil {
+			return err
+		}
 
-			if getString(res.res.ETag) != etag {
-				return fmt.Errorf("expected ETag to be %s, intead got %s", getString(res.res.ETag), etag)
-			}
+		if getString(res.res.ETag) != etag {
+			return fmt.Errorf("expected ETag to be %s, intead got %s", getString(res.res.ETag), etag)
 		}
 		if res.res.Size == nil {
 			return fmt.Errorf("unexpected nil object Size")

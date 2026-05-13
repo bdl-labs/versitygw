@@ -1,5 +1,7 @@
 # VersityGW Burn Bridge 后端集成开发计划（PrimoBurner BlockDevice 流式刻录）
 
+> **换机 / 日常构建与 proto、目录说明**：见同目录旁的 [BURNBRIDGE_DEVELOPMENT.md](../BURNBRIDGE_DEVELOPMENT.md)。
+
 ## 1. 项目背景与目标
 
 ### 1.1 背景

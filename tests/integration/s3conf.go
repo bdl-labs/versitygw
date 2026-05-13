@@ -42,7 +42,6 @@ type S3Conf struct {
 	Concurrency       int
 	debug             bool
 	versioningEnabled bool
-	azureTests        bool
 	sidecarTests      bool
 	tlsStatus         bool
 	httpClient        *http.Client
@@ -102,9 +101,6 @@ func WithDebug() Option {
 }
 func WithVersioningEnabled() Option {
 	return func(s *S3Conf) { s.versioningEnabled = true }
-}
-func WithAzureMode() Option {
-	return func(s *S3Conf) { s.azureTests = true }
 }
 func WithSidecarMode() Option {
 	return func(s *S3Conf) { s.sidecarTests = true }

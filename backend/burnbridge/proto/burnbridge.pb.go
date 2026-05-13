@@ -21,6 +21,553 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// SegmentBurnResult is the recorder-reported outcome for one logical segment (when upload_complete is false).
+type SegmentBurnResult int32
+
+const (
+	SegmentBurnResult_SEGMENT_BURN_RESULT_UNSPECIFIED SegmentBurnResult = 0 // treated as OK for backward compatibility
+	SegmentBurnResult_SEGMENT_BURN_RESULT_OK          SegmentBurnResult = 1
+	SegmentBurnResult_SEGMENT_BURN_RESULT_FAILED      SegmentBurnResult = 2
+)
+
+// Enum value maps for SegmentBurnResult.
+var (
+	SegmentBurnResult_name = map[int32]string{
+		0: "SEGMENT_BURN_RESULT_UNSPECIFIED",
+		1: "SEGMENT_BURN_RESULT_OK",
+		2: "SEGMENT_BURN_RESULT_FAILED",
+	}
+	SegmentBurnResult_value = map[string]int32{
+		"SEGMENT_BURN_RESULT_UNSPECIFIED": 0,
+		"SEGMENT_BURN_RESULT_OK":          1,
+		"SEGMENT_BURN_RESULT_FAILED":      2,
+	}
+)
+
+func (x SegmentBurnResult) Enum() *SegmentBurnResult {
+	p := new(SegmentBurnResult)
+	*p = x
+	return p
+}
+
+func (x SegmentBurnResult) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (SegmentBurnResult) Descriptor() protoreflect.EnumDescriptor {
+	return file_burnbridge_proto_enumTypes[0].Descriptor()
+}
+
+func (SegmentBurnResult) Type() protoreflect.EnumType {
+	return &file_burnbridge_proto_enumTypes[0]
+}
+
+func (x SegmentBurnResult) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use SegmentBurnResult.Descriptor instead.
+func (SegmentBurnResult) EnumDescriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{0}
+}
+
+// TestUnitReadyRequest carries no parameters: the recorder evaluates only the currently loaded media / session.
+type TestUnitReadyRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TestUnitReadyRequest) Reset() {
+	*x = TestUnitReadyRequest{}
+	mi := &file_burnbridge_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TestUnitReadyRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TestUnitReadyRequest) ProtoMessage() {}
+
+func (x *TestUnitReadyRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TestUnitReadyRequest.ProtoReflect.Descriptor instead.
+func (*TestUnitReadyRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{0}
+}
+
+type TestUnitReadyResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Ready bool                   `protobuf:"varint,1,opt,name=ready,proto3" json:"ready,omitempty"`
+	// Human-readable reason when ready is false (empty when ready is true).
+	Message string `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	// Disc volume label (e.g. UDF) when ready; gateway maps it to the S3 bucket name at startup.
+	VolumeLabel string `protobuf:"bytes,3,opt,name=volume_label,json=volumeLabel,proto3" json:"volume_label,omitempty"`
+	// Optional capacity / media hints for the gateway’s DiscInfo JSON (0 / empty means not reported).
+	TotalCapacityBytes int64  `protobuf:"varint,4,opt,name=total_capacity_bytes,json=totalCapacityBytes,proto3" json:"total_capacity_bytes,omitempty"`
+	FreeCapacityBytes  int64  `protobuf:"varint,5,opt,name=free_capacity_bytes,json=freeCapacityBytes,proto3" json:"free_capacity_bytes,omitempty"`
+	MediaType          string `protobuf:"bytes,6,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
+}
+
+func (x *TestUnitReadyResponse) Reset() {
+	*x = TestUnitReadyResponse{}
+	mi := &file_burnbridge_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TestUnitReadyResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TestUnitReadyResponse) ProtoMessage() {}
+
+func (x *TestUnitReadyResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TestUnitReadyResponse.ProtoReflect.Descriptor instead.
+func (*TestUnitReadyResponse) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TestUnitReadyResponse) GetReady() bool {
+	if x != nil {
+		return x.Ready
+	}
+	return false
+}
+
+func (x *TestUnitReadyResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+func (x *TestUnitReadyResponse) GetVolumeLabel() string {
+	if x != nil {
+		return x.VolumeLabel
+	}
+	return ""
+}
+
+func (x *TestUnitReadyResponse) GetTotalCapacityBytes() int64 {
+	if x != nil {
+		return x.TotalCapacityBytes
+	}
+	return 0
+}
+
+func (x *TestUnitReadyResponse) GetFreeCapacityBytes() int64 {
+	if x != nil {
+		return x.FreeCapacityBytes
+	}
+	return 0
+}
+
+func (x *TestUnitReadyResponse) GetMediaType() string {
+	if x != nil {
+		return x.MediaType
+	}
+	return ""
+}
+
+// S3PullCredentials is optional SigV4 access for GetObject against endpoint_url.
+type S3PullCredentials struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	AccessKeyId     string                 `protobuf:"bytes,1,opt,name=access_key_id,json=accessKeyId,proto3" json:"access_key_id,omitempty"`
+	SecretAccessKey string                 `protobuf:"bytes,2,opt,name=secret_access_key,json=secretAccessKey,proto3" json:"secret_access_key,omitempty"`
+	SessionToken    string                 `protobuf:"bytes,3,opt,name=session_token,json=sessionToken,proto3" json:"session_token,omitempty"` // optional (STS)
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *S3PullCredentials) Reset() {
+	*x = S3PullCredentials{}
+	mi := &file_burnbridge_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S3PullCredentials) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S3PullCredentials) ProtoMessage() {}
+
+func (x *S3PullCredentials) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S3PullCredentials.ProtoReflect.Descriptor instead.
+func (*S3PullCredentials) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *S3PullCredentials) GetAccessKeyId() string {
+	if x != nil {
+		return x.AccessKeyId
+	}
+	return ""
+}
+
+func (x *S3PullCredentials) GetSecretAccessKey() string {
+	if x != nil {
+		return x.SecretAccessKey
+	}
+	return ""
+}
+
+func (x *S3PullCredentials) GetSessionToken() string {
+	if x != nil {
+		return x.SessionToken
+	}
+	return ""
+}
+
+// S3ObjectPullSource identifies one object on an S3-compatible API for direct byte fetch by the recorder.
+type S3ObjectPullSource struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Base URL of the S3 API (scheme + host[:port]), e.g. https://s3.amazonaws.com or http://versitygw:9000
+	EndpointUrl    string             `protobuf:"bytes,1,opt,name=endpoint_url,json=endpointUrl,proto3" json:"endpoint_url,omitempty"`
+	Region         string             `protobuf:"bytes,2,opt,name=region,proto3" json:"region,omitempty"` // AWS region; may be empty for some on-prem gateways (recorder chooses signing rules)
+	Bucket         string             `protobuf:"bytes,3,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	ObjectKey      string             `protobuf:"bytes,4,opt,name=object_key,json=objectKey,proto3" json:"object_key,omitempty"`
+	ForcePathStyle bool               `protobuf:"varint,5,opt,name=force_path_style,json=forcePathStyle,proto3" json:"force_path_style,omitempty"`
+	Credentials    *S3PullCredentials `protobuf:"bytes,6,opt,name=credentials,proto3" json:"credentials,omitempty"`
+	// If set, recorder MAY use HTTP GET on this URL to read the object without SigV4 (e.g. pre-signed link).
+	PresignedGetUrl string `protobuf:"bytes,7,opt,name=presigned_get_url,json=presignedGetUrl,proto3" json:"presigned_get_url,omitempty"`
+	// Expected size from CreateJob; 0 if unknown.
+	ContentLengthHint int64 `protobuf:"varint,8,opt,name=content_length_hint,json=contentLengthHint,proto3" json:"content_length_hint,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *S3ObjectPullSource) Reset() {
+	*x = S3ObjectPullSource{}
+	mi := &file_burnbridge_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *S3ObjectPullSource) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*S3ObjectPullSource) ProtoMessage() {}
+
+func (x *S3ObjectPullSource) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use S3ObjectPullSource.ProtoReflect.Descriptor instead.
+func (*S3ObjectPullSource) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *S3ObjectPullSource) GetEndpointUrl() string {
+	if x != nil {
+		return x.EndpointUrl
+	}
+	return ""
+}
+
+func (x *S3ObjectPullSource) GetRegion() string {
+	if x != nil {
+		return x.Region
+	}
+	return ""
+}
+
+func (x *S3ObjectPullSource) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *S3ObjectPullSource) GetObjectKey() string {
+	if x != nil {
+		return x.ObjectKey
+	}
+	return ""
+}
+
+func (x *S3ObjectPullSource) GetForcePathStyle() bool {
+	if x != nil {
+		return x.ForcePathStyle
+	}
+	return false
+}
+
+func (x *S3ObjectPullSource) GetCredentials() *S3PullCredentials {
+	if x != nil {
+		return x.Credentials
+	}
+	return nil
+}
+
+func (x *S3ObjectPullSource) GetPresignedGetUrl() string {
+	if x != nil {
+		return x.PresignedGetUrl
+	}
+	return ""
+}
+
+func (x *S3ObjectPullSource) GetContentLengthHint() int64 {
+	if x != nil {
+		return x.ContentLengthHint
+	}
+	return 0
+}
+
+type RegisterS3ObjectPullSourceRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Source        *S3ObjectPullSource    `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterS3ObjectPullSourceRequest) Reset() {
+	*x = RegisterS3ObjectPullSourceRequest{}
+	mi := &file_burnbridge_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterS3ObjectPullSourceRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterS3ObjectPullSourceRequest) ProtoMessage() {}
+
+func (x *RegisterS3ObjectPullSourceRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterS3ObjectPullSourceRequest.ProtoReflect.Descriptor instead.
+func (*RegisterS3ObjectPullSourceRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *RegisterS3ObjectPullSourceRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *RegisterS3ObjectPullSourceRequest) GetSource() *S3ObjectPullSource {
+	if x != nil {
+		return x.Source
+	}
+	return nil
+}
+
+type RegisterS3ObjectPullSourceResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RegisterS3ObjectPullSourceResponse) Reset() {
+	*x = RegisterS3ObjectPullSourceResponse{}
+	mi := &file_burnbridge_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RegisterS3ObjectPullSourceResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RegisterS3ObjectPullSourceResponse) ProtoMessage() {}
+
+func (x *RegisterS3ObjectPullSourceResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RegisterS3ObjectPullSourceResponse.ProtoReflect.Descriptor instead.
+func (*RegisterS3ObjectPullSourceResponse) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{5}
+}
+
+type ReadObjectRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"` // optional; ignored for reads — object identity is bucket + object_key only
+	Bucket        string                 `protobuf:"bytes,2,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	ObjectKey     string                 `protobuf:"bytes,3,opt,name=object_key,json=objectKey,proto3" json:"object_key,omitempty"`
+	Offset        int64                  `protobuf:"varint,4,opt,name=offset,proto3" json:"offset,omitempty"`
+	Length        int64                  `protobuf:"varint,5,opt,name=length,proto3" json:"length,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadObjectRequest) Reset() {
+	*x = ReadObjectRequest{}
+	mi := &file_burnbridge_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadObjectRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadObjectRequest) ProtoMessage() {}
+
+func (x *ReadObjectRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadObjectRequest.ProtoReflect.Descriptor instead.
+func (*ReadObjectRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ReadObjectRequest) GetJobId() string {
+	if x != nil {
+		return x.JobId
+	}
+	return ""
+}
+
+func (x *ReadObjectRequest) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *ReadObjectRequest) GetObjectKey() string {
+	if x != nil {
+		return x.ObjectKey
+	}
+	return ""
+}
+
+func (x *ReadObjectRequest) GetOffset() int64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *ReadObjectRequest) GetLength() int64 {
+	if x != nil {
+		return x.Length
+	}
+	return 0
+}
+
+type ReadObjectChunk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReadObjectChunk) Reset() {
+	*x = ReadObjectChunk{}
+	mi := &file_burnbridge_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReadObjectChunk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReadObjectChunk) ProtoMessage() {}
+
+func (x *ReadObjectChunk) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReadObjectChunk.ProtoReflect.Descriptor instead.
+func (*ReadObjectChunk) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ReadObjectChunk) GetData() []byte {
+	if x != nil {
+		return x.Data
+	}
+	return nil
+}
+
 type ObjectMetadata struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
@@ -31,7 +578,7 @@ type ObjectMetadata struct {
 
 func (x *ObjectMetadata) Reset() {
 	*x = ObjectMetadata{}
-	mi := &file_burnbridge_proto_msgTypes[0]
+	mi := &file_burnbridge_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -43,7 +590,7 @@ func (x *ObjectMetadata) String() string {
 func (*ObjectMetadata) ProtoMessage() {}
 
 func (x *ObjectMetadata) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[0]
+	mi := &file_burnbridge_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -56,7 +603,7 @@ func (x *ObjectMetadata) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ObjectMetadata.ProtoReflect.Descriptor instead.
 func (*ObjectMetadata) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{0}
+	return file_burnbridge_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ObjectMetadata) GetKey() string {
@@ -85,7 +632,7 @@ type CreateJobRequest struct {
 
 func (x *CreateJobRequest) Reset() {
 	*x = CreateJobRequest{}
-	mi := &file_burnbridge_proto_msgTypes[1]
+	mi := &file_burnbridge_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -97,7 +644,7 @@ func (x *CreateJobRequest) String() string {
 func (*CreateJobRequest) ProtoMessage() {}
 
 func (x *CreateJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[1]
+	mi := &file_burnbridge_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -110,7 +657,7 @@ func (x *CreateJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJobRequest.ProtoReflect.Descriptor instead.
 func (*CreateJobRequest) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{1}
+	return file_burnbridge_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CreateJobRequest) GetBucket() string {
@@ -150,7 +697,7 @@ type CreateJobResponse struct {
 
 func (x *CreateJobResponse) Reset() {
 	*x = CreateJobResponse{}
-	mi := &file_burnbridge_proto_msgTypes[2]
+	mi := &file_burnbridge_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -162,7 +709,7 @@ func (x *CreateJobResponse) String() string {
 func (*CreateJobResponse) ProtoMessage() {}
 
 func (x *CreateJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[2]
+	mi := &file_burnbridge_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -175,7 +722,7 @@ func (x *CreateJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateJobResponse.ProtoReflect.Descriptor instead.
 func (*CreateJobResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{2}
+	return file_burnbridge_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CreateJobResponse) GetJobId() string {
@@ -186,18 +733,21 @@ func (x *CreateJobResponse) GetJobId() string {
 }
 
 type UploadObjectChunk struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	Offset        int64                  `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
-	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
-	Eof           bool                   `protobuf:"varint,4,opt,name=eof,proto3" json:"eof,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	JobId  string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	Offset int64                  `protobuf:"varint,2,opt,name=offset,proto3" json:"offset,omitempty"`
+	Data   []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
+	Eof    bool                   `protobuf:"varint,4,opt,name=eof,proto3" json:"eof,omitempty"`
+	// If > 0, bytes [offset, offset+reused_burned_bytes) are already on media for this object; data must be empty.
+	// The server should advance its write pointer without writing duplicate data (resume / idempotent chunk).
+	ReusedBurnedBytes int64 `protobuf:"varint,5,opt,name=reused_burned_bytes,json=reusedBurnedBytes,proto3" json:"reused_burned_bytes,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *UploadObjectChunk) Reset() {
 	*x = UploadObjectChunk{}
-	mi := &file_burnbridge_proto_msgTypes[3]
+	mi := &file_burnbridge_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -209,7 +759,7 @@ func (x *UploadObjectChunk) String() string {
 func (*UploadObjectChunk) ProtoMessage() {}
 
 func (x *UploadObjectChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[3]
+	mi := &file_burnbridge_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -222,7 +772,7 @@ func (x *UploadObjectChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadObjectChunk.ProtoReflect.Descriptor instead.
 func (*UploadObjectChunk) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{3}
+	return file_burnbridge_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *UploadObjectChunk) GetJobId() string {
@@ -253,30 +803,37 @@ func (x *UploadObjectChunk) GetEof() bool {
 	return false
 }
 
-type UploadObjectResponse struct {
+func (x *UploadObjectChunk) GetReusedBurnedBytes() int64 {
+	if x != nil {
+		return x.ReusedBurnedBytes
+	}
+	return 0
+}
+
+// DiscExtent is one contiguous on-media region for part of an object.
+type DiscExtent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	JobId         string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	BytesReceived int64                  `protobuf:"varint,2,opt,name=bytes_received,json=bytesReceived,proto3" json:"bytes_received,omitempty"`
-	ChecksumMd5   string                 `protobuf:"bytes,3,opt,name=checksum_md5,json=checksumMd5,proto3" json:"checksum_md5,omitempty"`
+	DiscAddress   string                 `protobuf:"bytes,1,opt,name=disc_address,json=discAddress,proto3" json:"disc_address,omitempty"`
+	FileSize      int64                  `protobuf:"varint,2,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *UploadObjectResponse) Reset() {
-	*x = UploadObjectResponse{}
-	mi := &file_burnbridge_proto_msgTypes[4]
+func (x *DiscExtent) Reset() {
+	*x = DiscExtent{}
+	mi := &file_burnbridge_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *UploadObjectResponse) String() string {
+func (x *DiscExtent) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*UploadObjectResponse) ProtoMessage() {}
+func (*DiscExtent) ProtoMessage() {}
 
-func (x *UploadObjectResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[4]
+func (x *DiscExtent) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -287,28 +844,140 @@ func (x *UploadObjectResponse) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use UploadObjectResponse.ProtoReflect.Descriptor instead.
-func (*UploadObjectResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{4}
+// Deprecated: Use DiscExtent.ProtoReflect.Descriptor instead.
+func (*DiscExtent) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *UploadObjectResponse) GetJobId() string {
+func (x *DiscExtent) GetDiscAddress() string {
+	if x != nil {
+		return x.DiscAddress
+	}
+	return ""
+}
+
+func (x *DiscExtent) GetFileSize() int64 {
+	if x != nil {
+		return x.FileSize
+	}
+	return 0
+}
+
+// UploadObjectAck is sent by the recorder after each logical segment (and optionally as a final summary).
+type UploadObjectAck struct {
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	JobId        string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	SegmentIndex int32                  `protobuf:"varint,2,opt,name=segment_index,json=segmentIndex,proto3" json:"segment_index,omitempty"`
+	ByteOffset   int64                  `protobuf:"varint,3,opt,name=byte_offset,json=byteOffset,proto3" json:"byte_offset,omitempty"`
+	ByteSize     int64                  `protobuf:"varint,4,opt,name=byte_size,json=byteSize,proto3" json:"byte_size,omitempty"`
+	DiscExtents  []*DiscExtent          `protobuf:"bytes,5,rep,name=disc_extents,json=discExtents,proto3" json:"disc_extents,omitempty"`
+	// If true, this is the last ack for the stream (upload finished). checksum / bytes apply to the whole object.
+	UploadComplete bool   `protobuf:"varint,6,opt,name=upload_complete,json=uploadComplete,proto3" json:"upload_complete,omitempty"`
+	BytesReceived  int64  `protobuf:"varint,7,opt,name=bytes_received,json=bytesReceived,proto3" json:"bytes_received,omitempty"`
+	ChecksumMd5    string `protobuf:"bytes,8,opt,name=checksum_md5,json=checksumMd5,proto3" json:"checksum_md5,omitempty"`
+	// When upload_complete is false: physical burn outcome for this segment. UNSPECIFIED means success.
+	SegmentBurnResult SegmentBurnResult `protobuf:"varint,9,opt,name=segment_burn_result,json=segmentBurnResult,proto3,enum=burnbridge.v1.SegmentBurnResult" json:"segment_burn_result,omitempty"`
+	SegmentBurnError  string            `protobuf:"bytes,10,opt,name=segment_burn_error,json=segmentBurnError,proto3" json:"segment_burn_error,omitempty"` // optional; set when segment_burn_result is FAILED
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *UploadObjectAck) Reset() {
+	*x = UploadObjectAck{}
+	mi := &file_burnbridge_proto_msgTypes[13]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UploadObjectAck) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UploadObjectAck) ProtoMessage() {}
+
+func (x *UploadObjectAck) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[13]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UploadObjectAck.ProtoReflect.Descriptor instead.
+func (*UploadObjectAck) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{13}
+}
+
+func (x *UploadObjectAck) GetJobId() string {
 	if x != nil {
 		return x.JobId
 	}
 	return ""
 }
 
-func (x *UploadObjectResponse) GetBytesReceived() int64 {
+func (x *UploadObjectAck) GetSegmentIndex() int32 {
+	if x != nil {
+		return x.SegmentIndex
+	}
+	return 0
+}
+
+func (x *UploadObjectAck) GetByteOffset() int64 {
+	if x != nil {
+		return x.ByteOffset
+	}
+	return 0
+}
+
+func (x *UploadObjectAck) GetByteSize() int64 {
+	if x != nil {
+		return x.ByteSize
+	}
+	return 0
+}
+
+func (x *UploadObjectAck) GetDiscExtents() []*DiscExtent {
+	if x != nil {
+		return x.DiscExtents
+	}
+	return nil
+}
+
+func (x *UploadObjectAck) GetUploadComplete() bool {
+	if x != nil {
+		return x.UploadComplete
+	}
+	return false
+}
+
+func (x *UploadObjectAck) GetBytesReceived() int64 {
 	if x != nil {
 		return x.BytesReceived
 	}
 	return 0
 }
 
-func (x *UploadObjectResponse) GetChecksumMd5() string {
+func (x *UploadObjectAck) GetChecksumMd5() string {
 	if x != nil {
 		return x.ChecksumMd5
+	}
+	return ""
+}
+
+func (x *UploadObjectAck) GetSegmentBurnResult() SegmentBurnResult {
+	if x != nil {
+		return x.SegmentBurnResult
+	}
+	return SegmentBurnResult_SEGMENT_BURN_RESULT_UNSPECIFIED
+}
+
+func (x *UploadObjectAck) GetSegmentBurnError() string {
+	if x != nil {
+		return x.SegmentBurnError
 	}
 	return ""
 }
@@ -323,7 +992,7 @@ type CommitJobRequest struct {
 
 func (x *CommitJobRequest) Reset() {
 	*x = CommitJobRequest{}
-	mi := &file_burnbridge_proto_msgTypes[5]
+	mi := &file_burnbridge_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -335,7 +1004,7 @@ func (x *CommitJobRequest) String() string {
 func (*CommitJobRequest) ProtoMessage() {}
 
 func (x *CommitJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[5]
+	mi := &file_burnbridge_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -348,7 +1017,7 @@ func (x *CommitJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitJobRequest.ProtoReflect.Descriptor instead.
 func (*CommitJobRequest) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{5}
+	return file_burnbridge_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CommitJobRequest) GetJobId() string {
@@ -375,7 +1044,7 @@ type CommitJobResponse struct {
 
 func (x *CommitJobResponse) Reset() {
 	*x = CommitJobResponse{}
-	mi := &file_burnbridge_proto_msgTypes[6]
+	mi := &file_burnbridge_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -387,7 +1056,7 @@ func (x *CommitJobResponse) String() string {
 func (*CommitJobResponse) ProtoMessage() {}
 
 func (x *CommitJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[6]
+	mi := &file_burnbridge_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -400,7 +1069,7 @@ func (x *CommitJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommitJobResponse.ProtoReflect.Descriptor instead.
 func (*CommitJobResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{6}
+	return file_burnbridge_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *CommitJobResponse) GetJobId() string {
@@ -426,7 +1095,7 @@ type GetJobStatusRequest struct {
 
 func (x *GetJobStatusRequest) Reset() {
 	*x = GetJobStatusRequest{}
-	mi := &file_burnbridge_proto_msgTypes[7]
+	mi := &file_burnbridge_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -438,7 +1107,7 @@ func (x *GetJobStatusRequest) String() string {
 func (*GetJobStatusRequest) ProtoMessage() {}
 
 func (x *GetJobStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[7]
+	mi := &file_burnbridge_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -451,7 +1120,7 @@ func (x *GetJobStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetJobStatusRequest) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{7}
+	return file_burnbridge_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *GetJobStatusRequest) GetJobId() string {
@@ -472,7 +1141,7 @@ type GetJobStatusResponse struct {
 
 func (x *GetJobStatusResponse) Reset() {
 	*x = GetJobStatusResponse{}
-	mi := &file_burnbridge_proto_msgTypes[8]
+	mi := &file_burnbridge_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -484,7 +1153,7 @@ func (x *GetJobStatusResponse) String() string {
 func (*GetJobStatusResponse) ProtoMessage() {}
 
 func (x *GetJobStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[8]
+	mi := &file_burnbridge_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -497,7 +1166,7 @@ func (x *GetJobStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetJobStatusResponse.ProtoReflect.Descriptor instead.
 func (*GetJobStatusResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{8}
+	return file_burnbridge_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *GetJobStatusResponse) GetJobId() string {
@@ -530,7 +1199,7 @@ type CancelJobRequest struct {
 
 func (x *CancelJobRequest) Reset() {
 	*x = CancelJobRequest{}
-	mi := &file_burnbridge_proto_msgTypes[9]
+	mi := &file_burnbridge_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -542,7 +1211,7 @@ func (x *CancelJobRequest) String() string {
 func (*CancelJobRequest) ProtoMessage() {}
 
 func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[9]
+	mi := &file_burnbridge_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -555,7 +1224,7 @@ func (x *CancelJobRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelJobRequest.ProtoReflect.Descriptor instead.
 func (*CancelJobRequest) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{9}
+	return file_burnbridge_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CancelJobRequest) GetJobId() string {
@@ -575,7 +1244,7 @@ type CancelJobResponse struct {
 
 func (x *CancelJobResponse) Reset() {
 	*x = CancelJobResponse{}
-	mi := &file_burnbridge_proto_msgTypes[10]
+	mi := &file_burnbridge_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -587,7 +1256,7 @@ func (x *CancelJobResponse) String() string {
 func (*CancelJobResponse) ProtoMessage() {}
 
 func (x *CancelJobResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[10]
+	mi := &file_burnbridge_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -600,7 +1269,7 @@ func (x *CancelJobResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CancelJobResponse.ProtoReflect.Descriptor instead.
 func (*CancelJobResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{10}
+	return file_burnbridge_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CancelJobResponse) GetJobId() string {
@@ -621,7 +1290,43 @@ var File_burnbridge_proto protoreflect.FileDescriptor
 
 const file_burnbridge_proto_rawDesc = "" +
 	"\n" +
-	"\x10burnbridge.proto\x12\rburnbridge.v1\"8\n" +
+	"\x10burnbridge.proto\x12\rburnbridge.v1\"\x16\n" +
+	"\x14TestUnitReadyRequest\"\xeb\x01\n" +
+	"\x15TestUnitReadyResponse\x12\x14\n" +
+	"\x05ready\x18\x01 \x01(\bR\x05ready\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\x12!\n" +
+	"\fvolume_label\x18\x03 \x01(\tR\vvolumeLabel\x120\n" +
+	"\x14total_capacity_bytes\x18\x04 \x01(\x03R\x12totalCapacityBytes\x12.\n" +
+	"\x13free_capacity_bytes\x18\x05 \x01(\x03R\x11freeCapacityBytes\x12\x1d\n" +
+	"\n" +
+	"media_type\x18\x06 \x01(\tR\tmediaType\"\x88\x01\n" +
+	"\x11S3PullCredentials\x12\"\n" +
+	"\raccess_key_id\x18\x01 \x01(\tR\vaccessKeyId\x12*\n" +
+	"\x11secret_access_key\x18\x02 \x01(\tR\x0fsecretAccessKey\x12#\n" +
+	"\rsession_token\x18\x03 \x01(\tR\fsessionToken\"\xd0\x02\n" +
+	"\x12S3ObjectPullSource\x12!\n" +
+	"\fendpoint_url\x18\x01 \x01(\tR\vendpointUrl\x12\x16\n" +
+	"\x06region\x18\x02 \x01(\tR\x06region\x12\x16\n" +
+	"\x06bucket\x18\x03 \x01(\tR\x06bucket\x12\x1d\n" +
+	"\n" +
+	"object_key\x18\x04 \x01(\tR\tobjectKey\x12(\n" +
+	"\x10force_path_style\x18\x05 \x01(\bR\x0eforcePathStyle\x12B\n" +
+	"\vcredentials\x18\x06 \x01(\v2 .burnbridge.v1.S3PullCredentialsR\vcredentials\x12*\n" +
+	"\x11presigned_get_url\x18\a \x01(\tR\x0fpresignedGetUrl\x12.\n" +
+	"\x13content_length_hint\x18\b \x01(\x03R\x11contentLengthHint\"u\n" +
+	"!RegisterS3ObjectPullSourceRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x129\n" +
+	"\x06source\x18\x02 \x01(\v2!.burnbridge.v1.S3ObjectPullSourceR\x06source\"$\n" +
+	"\"RegisterS3ObjectPullSourceResponse\"\x91\x01\n" +
+	"\x11ReadObjectRequest\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
+	"\x06bucket\x18\x02 \x01(\tR\x06bucket\x12\x1d\n" +
+	"\n" +
+	"object_key\x18\x03 \x01(\tR\tobjectKey\x12\x16\n" +
+	"\x06offset\x18\x04 \x01(\x03R\x06offset\x12\x16\n" +
+	"\x06length\x18\x05 \x01(\x03R\x06length\"%\n" +
+	"\x0fReadObjectChunk\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\"8\n" +
 	"\x0eObjectMetadata\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value\"\xab\x01\n" +
@@ -632,16 +1337,30 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\x0econtent_length\x18\x03 \x01(\x03R\rcontentLength\x129\n" +
 	"\bmetadata\x18\x04 \x03(\v2\x1d.burnbridge.v1.ObjectMetadataR\bmetadata\"*\n" +
 	"\x11CreateJobResponse\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"h\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"\x98\x01\n" +
 	"\x11UploadObjectChunk\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06offset\x18\x02 \x01(\x03R\x06offset\x12\x12\n" +
 	"\x04data\x18\x03 \x01(\fR\x04data\x12\x10\n" +
-	"\x03eof\x18\x04 \x01(\bR\x03eof\"w\n" +
-	"\x14UploadObjectResponse\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12%\n" +
-	"\x0ebytes_received\x18\x02 \x01(\x03R\rbytesReceived\x12!\n" +
-	"\fchecksum_md5\x18\x03 \x01(\tR\vchecksumMd5\"S\n" +
+	"\x03eof\x18\x04 \x01(\bR\x03eof\x12.\n" +
+	"\x13reused_burned_bytes\x18\x05 \x01(\x03R\x11reusedBurnedBytes\"L\n" +
+	"\n" +
+	"DiscExtent\x12!\n" +
+	"\fdisc_address\x18\x01 \x01(\tR\vdiscAddress\x12\x1b\n" +
+	"\tfile_size\x18\x02 \x01(\x03R\bfileSize\"\xbc\x03\n" +
+	"\x0fUploadObjectAck\x12\x15\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12#\n" +
+	"\rsegment_index\x18\x02 \x01(\x05R\fsegmentIndex\x12\x1f\n" +
+	"\vbyte_offset\x18\x03 \x01(\x03R\n" +
+	"byteOffset\x12\x1b\n" +
+	"\tbyte_size\x18\x04 \x01(\x03R\bbyteSize\x12<\n" +
+	"\fdisc_extents\x18\x05 \x03(\v2\x19.burnbridge.v1.DiscExtentR\vdiscExtents\x12'\n" +
+	"\x0fupload_complete\x18\x06 \x01(\bR\x0euploadComplete\x12%\n" +
+	"\x0ebytes_received\x18\a \x01(\x03R\rbytesReceived\x12!\n" +
+	"\fchecksum_md5\x18\b \x01(\tR\vchecksumMd5\x12P\n" +
+	"\x13segment_burn_result\x18\t \x01(\x0e2 .burnbridge.v1.SegmentBurnResultR\x11segmentBurnResult\x12,\n" +
+	"\x12segment_burn_error\x18\n" +
+	" \x01(\tR\x10segmentBurnError\"S\n" +
 	"\x10CommitJobRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12(\n" +
 	"\x10udf_volume_label\x18\x02 \x01(\tR\x0eudfVolumeLabel\"B\n" +
@@ -658,14 +1377,22 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\"B\n" +
 	"\x11CancelJobResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
-	"\x06status\x18\x02 \x01(\tR\x06status2\xae\x03\n" +
+	"\x06status\x18\x02 \x01(\tR\x06status*t\n" +
+	"\x11SegmentBurnResult\x12#\n" +
+	"\x1fSEGMENT_BURN_RESULT_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16SEGMENT_BURN_RESULT_OK\x10\x01\x12\x1e\n" +
+	"\x1aSEGMENT_BURN_RESULT_FAILED\x10\x022\xdd\x05\n" +
 	"\n" +
 	"BurnBridge\x12N\n" +
-	"\tCreateJob\x12\x1f.burnbridge.v1.CreateJobRequest\x1a .burnbridge.v1.CreateJobResponse\x12W\n" +
-	"\fUploadObject\x12 .burnbridge.v1.UploadObjectChunk\x1a#.burnbridge.v1.UploadObjectResponse(\x01\x12N\n" +
+	"\tCreateJob\x12\x1f.burnbridge.v1.CreateJobRequest\x1a .burnbridge.v1.CreateJobResponse\x12T\n" +
+	"\fUploadObject\x12 .burnbridge.v1.UploadObjectChunk\x1a\x1e.burnbridge.v1.UploadObjectAck(\x010\x01\x12N\n" +
 	"\tCommitJob\x12\x1f.burnbridge.v1.CommitJobRequest\x1a .burnbridge.v1.CommitJobResponse\x12W\n" +
 	"\fGetJobStatus\x12\".burnbridge.v1.GetJobStatusRequest\x1a#.burnbridge.v1.GetJobStatusResponse\x12N\n" +
-	"\tCancelJob\x12\x1f.burnbridge.v1.CancelJobRequest\x1a .burnbridge.v1.CancelJobResponseBDZBgithub.com/versity/versitygw/backend/burnbridge/proto;burnbridgev1b\x06proto3"
+	"\tCancelJob\x12\x1f.burnbridge.v1.CancelJobRequest\x1a .burnbridge.v1.CancelJobResponse\x12P\n" +
+	"\n" +
+	"ReadObject\x12 .burnbridge.v1.ReadObjectRequest\x1a\x1e.burnbridge.v1.ReadObjectChunk0\x01\x12\x81\x01\n" +
+	"\x1aRegisterS3ObjectPullSource\x120.burnbridge.v1.RegisterS3ObjectPullSourceRequest\x1a1.burnbridge.v1.RegisterS3ObjectPullSourceResponse\x12Z\n" +
+	"\rTestUnitReady\x12#.burnbridge.v1.TestUnitReadyRequest\x1a$.burnbridge.v1.TestUnitReadyResponseBDZBgithub.com/versity/versitygw/backend/burnbridge/proto;burnbridgev1b\x06proto3"
 
 var (
 	file_burnbridge_proto_rawDescOnce sync.Once
@@ -679,37 +1406,58 @@ func file_burnbridge_proto_rawDescGZIP() []byte {
 	return file_burnbridge_proto_rawDescData
 }
 
-var file_burnbridge_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_burnbridge_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_burnbridge_proto_msgTypes = make([]protoimpl.MessageInfo, 20)
 var file_burnbridge_proto_goTypes = []any{
-	(*ObjectMetadata)(nil),       // 0: burnbridge.v1.ObjectMetadata
-	(*CreateJobRequest)(nil),     // 1: burnbridge.v1.CreateJobRequest
-	(*CreateJobResponse)(nil),    // 2: burnbridge.v1.CreateJobResponse
-	(*UploadObjectChunk)(nil),    // 3: burnbridge.v1.UploadObjectChunk
-	(*UploadObjectResponse)(nil), // 4: burnbridge.v1.UploadObjectResponse
-	(*CommitJobRequest)(nil),     // 5: burnbridge.v1.CommitJobRequest
-	(*CommitJobResponse)(nil),    // 6: burnbridge.v1.CommitJobResponse
-	(*GetJobStatusRequest)(nil),  // 7: burnbridge.v1.GetJobStatusRequest
-	(*GetJobStatusResponse)(nil), // 8: burnbridge.v1.GetJobStatusResponse
-	(*CancelJobRequest)(nil),     // 9: burnbridge.v1.CancelJobRequest
-	(*CancelJobResponse)(nil),    // 10: burnbridge.v1.CancelJobResponse
+	(SegmentBurnResult)(0),                     // 0: burnbridge.v1.SegmentBurnResult
+	(*TestUnitReadyRequest)(nil),               // 1: burnbridge.v1.TestUnitReadyRequest
+	(*TestUnitReadyResponse)(nil),              // 2: burnbridge.v1.TestUnitReadyResponse
+	(*S3PullCredentials)(nil),                  // 3: burnbridge.v1.S3PullCredentials
+	(*S3ObjectPullSource)(nil),                 // 4: burnbridge.v1.S3ObjectPullSource
+	(*RegisterS3ObjectPullSourceRequest)(nil),  // 5: burnbridge.v1.RegisterS3ObjectPullSourceRequest
+	(*RegisterS3ObjectPullSourceResponse)(nil), // 6: burnbridge.v1.RegisterS3ObjectPullSourceResponse
+	(*ReadObjectRequest)(nil),                  // 7: burnbridge.v1.ReadObjectRequest
+	(*ReadObjectChunk)(nil),                    // 8: burnbridge.v1.ReadObjectChunk
+	(*ObjectMetadata)(nil),                     // 9: burnbridge.v1.ObjectMetadata
+	(*CreateJobRequest)(nil),                   // 10: burnbridge.v1.CreateJobRequest
+	(*CreateJobResponse)(nil),                  // 11: burnbridge.v1.CreateJobResponse
+	(*UploadObjectChunk)(nil),                  // 12: burnbridge.v1.UploadObjectChunk
+	(*DiscExtent)(nil),                         // 13: burnbridge.v1.DiscExtent
+	(*UploadObjectAck)(nil),                    // 14: burnbridge.v1.UploadObjectAck
+	(*CommitJobRequest)(nil),                   // 15: burnbridge.v1.CommitJobRequest
+	(*CommitJobResponse)(nil),                  // 16: burnbridge.v1.CommitJobResponse
+	(*GetJobStatusRequest)(nil),                // 17: burnbridge.v1.GetJobStatusRequest
+	(*GetJobStatusResponse)(nil),               // 18: burnbridge.v1.GetJobStatusResponse
+	(*CancelJobRequest)(nil),                   // 19: burnbridge.v1.CancelJobRequest
+	(*CancelJobResponse)(nil),                  // 20: burnbridge.v1.CancelJobResponse
 }
 var file_burnbridge_proto_depIdxs = []int32{
-	0,  // 0: burnbridge.v1.CreateJobRequest.metadata:type_name -> burnbridge.v1.ObjectMetadata
-	1,  // 1: burnbridge.v1.BurnBridge.CreateJob:input_type -> burnbridge.v1.CreateJobRequest
-	3,  // 2: burnbridge.v1.BurnBridge.UploadObject:input_type -> burnbridge.v1.UploadObjectChunk
-	5,  // 3: burnbridge.v1.BurnBridge.CommitJob:input_type -> burnbridge.v1.CommitJobRequest
-	7,  // 4: burnbridge.v1.BurnBridge.GetJobStatus:input_type -> burnbridge.v1.GetJobStatusRequest
-	9,  // 5: burnbridge.v1.BurnBridge.CancelJob:input_type -> burnbridge.v1.CancelJobRequest
-	2,  // 6: burnbridge.v1.BurnBridge.CreateJob:output_type -> burnbridge.v1.CreateJobResponse
-	4,  // 7: burnbridge.v1.BurnBridge.UploadObject:output_type -> burnbridge.v1.UploadObjectResponse
-	6,  // 8: burnbridge.v1.BurnBridge.CommitJob:output_type -> burnbridge.v1.CommitJobResponse
-	8,  // 9: burnbridge.v1.BurnBridge.GetJobStatus:output_type -> burnbridge.v1.GetJobStatusResponse
-	10, // 10: burnbridge.v1.BurnBridge.CancelJob:output_type -> burnbridge.v1.CancelJobResponse
-	6,  // [6:11] is the sub-list for method output_type
-	1,  // [1:6] is the sub-list for method input_type
-	1,  // [1:1] is the sub-list for extension type_name
-	1,  // [1:1] is the sub-list for extension extendee
-	0,  // [0:1] is the sub-list for field type_name
+	3,  // 0: burnbridge.v1.S3ObjectPullSource.credentials:type_name -> burnbridge.v1.S3PullCredentials
+	4,  // 1: burnbridge.v1.RegisterS3ObjectPullSourceRequest.source:type_name -> burnbridge.v1.S3ObjectPullSource
+	9,  // 2: burnbridge.v1.CreateJobRequest.metadata:type_name -> burnbridge.v1.ObjectMetadata
+	13, // 3: burnbridge.v1.UploadObjectAck.disc_extents:type_name -> burnbridge.v1.DiscExtent
+	0,  // 4: burnbridge.v1.UploadObjectAck.segment_burn_result:type_name -> burnbridge.v1.SegmentBurnResult
+	10, // 5: burnbridge.v1.BurnBridge.CreateJob:input_type -> burnbridge.v1.CreateJobRequest
+	12, // 6: burnbridge.v1.BurnBridge.UploadObject:input_type -> burnbridge.v1.UploadObjectChunk
+	15, // 7: burnbridge.v1.BurnBridge.CommitJob:input_type -> burnbridge.v1.CommitJobRequest
+	17, // 8: burnbridge.v1.BurnBridge.GetJobStatus:input_type -> burnbridge.v1.GetJobStatusRequest
+	19, // 9: burnbridge.v1.BurnBridge.CancelJob:input_type -> burnbridge.v1.CancelJobRequest
+	7,  // 10: burnbridge.v1.BurnBridge.ReadObject:input_type -> burnbridge.v1.ReadObjectRequest
+	5,  // 11: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:input_type -> burnbridge.v1.RegisterS3ObjectPullSourceRequest
+	1,  // 12: burnbridge.v1.BurnBridge.TestUnitReady:input_type -> burnbridge.v1.TestUnitReadyRequest
+	11, // 13: burnbridge.v1.BurnBridge.CreateJob:output_type -> burnbridge.v1.CreateJobResponse
+	14, // 14: burnbridge.v1.BurnBridge.UploadObject:output_type -> burnbridge.v1.UploadObjectAck
+	16, // 15: burnbridge.v1.BurnBridge.CommitJob:output_type -> burnbridge.v1.CommitJobResponse
+	18, // 16: burnbridge.v1.BurnBridge.GetJobStatus:output_type -> burnbridge.v1.GetJobStatusResponse
+	20, // 17: burnbridge.v1.BurnBridge.CancelJob:output_type -> burnbridge.v1.CancelJobResponse
+	8,  // 18: burnbridge.v1.BurnBridge.ReadObject:output_type -> burnbridge.v1.ReadObjectChunk
+	6,  // 19: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:output_type -> burnbridge.v1.RegisterS3ObjectPullSourceResponse
+	2,  // 20: burnbridge.v1.BurnBridge.TestUnitReady:output_type -> burnbridge.v1.TestUnitReadyResponse
+	13, // [13:21] is the sub-list for method output_type
+	5,  // [5:13] is the sub-list for method input_type
+	5,  // [5:5] is the sub-list for extension type_name
+	5,  // [5:5] is the sub-list for extension extendee
+	0,  // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_burnbridge_proto_init() }
@@ -722,13 +1470,14 @@ func file_burnbridge_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_burnbridge_proto_rawDesc), len(file_burnbridge_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   11,
+			NumEnums:      1,
+			NumMessages:   20,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_burnbridge_proto_goTypes,
 		DependencyIndexes: file_burnbridge_proto_depIdxs,
+		EnumInfos:         file_burnbridge_proto_enumTypes,
 		MessageInfos:      file_burnbridge_proto_msgTypes,
 	}.Build()
 	File_burnbridge_proto = out.File

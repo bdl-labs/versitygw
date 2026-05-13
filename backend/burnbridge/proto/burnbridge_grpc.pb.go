@@ -19,22 +19,39 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	BurnBridge_CreateJob_FullMethodName    = "/burnbridge.v1.BurnBridge/CreateJob"
-	BurnBridge_UploadObject_FullMethodName = "/burnbridge.v1.BurnBridge/UploadObject"
-	BurnBridge_CommitJob_FullMethodName    = "/burnbridge.v1.BurnBridge/CommitJob"
-	BurnBridge_GetJobStatus_FullMethodName = "/burnbridge.v1.BurnBridge/GetJobStatus"
-	BurnBridge_CancelJob_FullMethodName    = "/burnbridge.v1.BurnBridge/CancelJob"
+	BurnBridge_CreateJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CreateJob"
+	BurnBridge_UploadObject_FullMethodName               = "/burnbridge.v1.BurnBridge/UploadObject"
+	BurnBridge_CommitJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CommitJob"
+	BurnBridge_GetJobStatus_FullMethodName               = "/burnbridge.v1.BurnBridge/GetJobStatus"
+	BurnBridge_CancelJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CancelJob"
+	BurnBridge_ReadObject_FullMethodName                 = "/burnbridge.v1.BurnBridge/ReadObject"
+	BurnBridge_RegisterS3ObjectPullSource_FullMethodName = "/burnbridge.v1.BurnBridge/RegisterS3ObjectPullSource"
+	BurnBridge_TestUnitReady_FullMethodName              = "/burnbridge.v1.BurnBridge/TestUnitReady"
 )
 
 // BurnBridgeClient is the client API for BurnBridge service.
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
+//
+// BurnBridge recorder API. UploadObject is bidirectional: after each logical segment the server sends
+// UploadObjectAck (upload_complete=false); after the client's eof chunk, the server sends a final
+// UploadObjectAck with upload_complete=true and whole-object checksum_md5.
 type BurnBridgeClient interface {
 	CreateJob(ctx context.Context, in *CreateJobRequest, opts ...grpc.CallOption) (*CreateJobResponse, error)
-	UploadObject(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadObjectChunk, UploadObjectResponse], error)
+	UploadObject(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UploadObjectChunk, UploadObjectAck], error)
 	CommitJob(ctx context.Context, in *CommitJobRequest, opts ...grpc.CallOption) (*CommitJobResponse, error)
 	GetJobStatus(ctx context.Context, in *GetJobStatusRequest, opts ...grpc.CallOption) (*GetJobStatusResponse, error)
 	CancelJob(ctx context.Context, in *CancelJobRequest, opts ...grpc.CallOption) (*CancelJobResponse, error)
+	// ReadObject streams object bytes like a seekable file: the object is addressed only by bucket + object_key,
+	// then offset selects the start of the byte stream. job_id (field 1) is optional legacy; clients should leave
+	// it unset and servers must not require it for reads. length == 0 means stream from offset to end of object.
+	ReadObject(ctx context.Context, in *ReadObjectRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadObjectChunk], error)
+	// RegisterS3ObjectPullSource tells the recorder how to fetch object bytes from an S3-compatible server (SigV4 GetObject
+	// or presigned URL) for this job_id, instead of or in addition to UploadObject chunks from the gateway.
+	RegisterS3ObjectPullSource(ctx context.Context, in *RegisterS3ObjectPullSourceRequest, opts ...grpc.CallOption) (*RegisterS3ObjectPullSourceResponse, error)
+	// TestUnitReady reports whether the optical unit / current loaded disc session is ready for data I/O.
+	// The gateway calls this at startup (with an empty request) and before Put/Get; response includes volume_label when ready.
+	TestUnitReady(ctx context.Context, in *TestUnitReadyRequest, opts ...grpc.CallOption) (*TestUnitReadyResponse, error)
 }
 
 type burnBridgeClient struct {
@@ -55,18 +72,18 @@ func (c *burnBridgeClient) CreateJob(ctx context.Context, in *CreateJobRequest, 
 	return out, nil
 }
 
-func (c *burnBridgeClient) UploadObject(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadObjectChunk, UploadObjectResponse], error) {
+func (c *burnBridgeClient) UploadObject(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UploadObjectChunk, UploadObjectAck], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	stream, err := c.cc.NewStream(ctx, &BurnBridge_ServiceDesc.Streams[0], BurnBridge_UploadObject_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
-	x := &grpc.GenericClientStream[UploadObjectChunk, UploadObjectResponse]{ClientStream: stream}
+	x := &grpc.GenericClientStream[UploadObjectChunk, UploadObjectAck]{ClientStream: stream}
 	return x, nil
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type BurnBridge_UploadObjectClient = grpc.ClientStreamingClient[UploadObjectChunk, UploadObjectResponse]
+type BurnBridge_UploadObjectClient = grpc.BidiStreamingClient[UploadObjectChunk, UploadObjectAck]
 
 func (c *burnBridgeClient) CommitJob(ctx context.Context, in *CommitJobRequest, opts ...grpc.CallOption) (*CommitJobResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -98,15 +115,68 @@ func (c *burnBridgeClient) CancelJob(ctx context.Context, in *CancelJobRequest, 
 	return out, nil
 }
 
+func (c *burnBridgeClient) ReadObject(ctx context.Context, in *ReadObjectRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[ReadObjectChunk], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &BurnBridge_ServiceDesc.Streams[1], BurnBridge_ReadObject_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[ReadObjectRequest, ReadObjectChunk]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BurnBridge_ReadObjectClient = grpc.ServerStreamingClient[ReadObjectChunk]
+
+func (c *burnBridgeClient) RegisterS3ObjectPullSource(ctx context.Context, in *RegisterS3ObjectPullSourceRequest, opts ...grpc.CallOption) (*RegisterS3ObjectPullSourceResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RegisterS3ObjectPullSourceResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_RegisterS3ObjectPullSource_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) TestUnitReady(ctx context.Context, in *TestUnitReadyRequest, opts ...grpc.CallOption) (*TestUnitReadyResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(TestUnitReadyResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_TestUnitReady_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BurnBridgeServer is the server API for BurnBridge service.
 // All implementations must embed UnimplementedBurnBridgeServer
 // for forward compatibility.
+//
+// BurnBridge recorder API. UploadObject is bidirectional: after each logical segment the server sends
+// UploadObjectAck (upload_complete=false); after the client's eof chunk, the server sends a final
+// UploadObjectAck with upload_complete=true and whole-object checksum_md5.
 type BurnBridgeServer interface {
 	CreateJob(context.Context, *CreateJobRequest) (*CreateJobResponse, error)
-	UploadObject(grpc.ClientStreamingServer[UploadObjectChunk, UploadObjectResponse]) error
+	UploadObject(grpc.BidiStreamingServer[UploadObjectChunk, UploadObjectAck]) error
 	CommitJob(context.Context, *CommitJobRequest) (*CommitJobResponse, error)
 	GetJobStatus(context.Context, *GetJobStatusRequest) (*GetJobStatusResponse, error)
 	CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error)
+	// ReadObject streams object bytes like a seekable file: the object is addressed only by bucket + object_key,
+	// then offset selects the start of the byte stream. job_id (field 1) is optional legacy; clients should leave
+	// it unset and servers must not require it for reads. length == 0 means stream from offset to end of object.
+	ReadObject(*ReadObjectRequest, grpc.ServerStreamingServer[ReadObjectChunk]) error
+	// RegisterS3ObjectPullSource tells the recorder how to fetch object bytes from an S3-compatible server (SigV4 GetObject
+	// or presigned URL) for this job_id, instead of or in addition to UploadObject chunks from the gateway.
+	RegisterS3ObjectPullSource(context.Context, *RegisterS3ObjectPullSourceRequest) (*RegisterS3ObjectPullSourceResponse, error)
+	// TestUnitReady reports whether the optical unit / current loaded disc session is ready for data I/O.
+	// The gateway calls this at startup (with an empty request) and before Put/Get; response includes volume_label when ready.
+	TestUnitReady(context.Context, *TestUnitReadyRequest) (*TestUnitReadyResponse, error)
 	mustEmbedUnimplementedBurnBridgeServer()
 }
 
@@ -120,7 +190,7 @@ type UnimplementedBurnBridgeServer struct{}
 func (UnimplementedBurnBridgeServer) CreateJob(context.Context, *CreateJobRequest) (*CreateJobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateJob not implemented")
 }
-func (UnimplementedBurnBridgeServer) UploadObject(grpc.ClientStreamingServer[UploadObjectChunk, UploadObjectResponse]) error {
+func (UnimplementedBurnBridgeServer) UploadObject(grpc.BidiStreamingServer[UploadObjectChunk, UploadObjectAck]) error {
 	return status.Error(codes.Unimplemented, "method UploadObject not implemented")
 }
 func (UnimplementedBurnBridgeServer) CommitJob(context.Context, *CommitJobRequest) (*CommitJobResponse, error) {
@@ -131,6 +201,15 @@ func (UnimplementedBurnBridgeServer) GetJobStatus(context.Context, *GetJobStatus
 }
 func (UnimplementedBurnBridgeServer) CancelJob(context.Context, *CancelJobRequest) (*CancelJobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CancelJob not implemented")
+}
+func (UnimplementedBurnBridgeServer) ReadObject(*ReadObjectRequest, grpc.ServerStreamingServer[ReadObjectChunk]) error {
+	return status.Error(codes.Unimplemented, "method ReadObject not implemented")
+}
+func (UnimplementedBurnBridgeServer) RegisterS3ObjectPullSource(context.Context, *RegisterS3ObjectPullSourceRequest) (*RegisterS3ObjectPullSourceResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RegisterS3ObjectPullSource not implemented")
+}
+func (UnimplementedBurnBridgeServer) TestUnitReady(context.Context, *TestUnitReadyRequest) (*TestUnitReadyResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method TestUnitReady not implemented")
 }
 func (UnimplementedBurnBridgeServer) mustEmbedUnimplementedBurnBridgeServer() {}
 func (UnimplementedBurnBridgeServer) testEmbeddedByValue()                    {}
@@ -172,11 +251,11 @@ func _BurnBridge_CreateJob_Handler(srv interface{}, ctx context.Context, dec fun
 }
 
 func _BurnBridge_UploadObject_Handler(srv interface{}, stream grpc.ServerStream) error {
-	return srv.(BurnBridgeServer).UploadObject(&grpc.GenericServerStream[UploadObjectChunk, UploadObjectResponse]{ServerStream: stream})
+	return srv.(BurnBridgeServer).UploadObject(&grpc.GenericServerStream[UploadObjectChunk, UploadObjectAck]{ServerStream: stream})
 }
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
-type BurnBridge_UploadObjectServer = grpc.ClientStreamingServer[UploadObjectChunk, UploadObjectResponse]
+type BurnBridge_UploadObjectServer = grpc.BidiStreamingServer[UploadObjectChunk, UploadObjectAck]
 
 func _BurnBridge_CommitJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CommitJobRequest)
@@ -232,6 +311,53 @@ func _BurnBridge_CancelJob_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BurnBridge_ReadObject_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(ReadObjectRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(BurnBridgeServer).ReadObject(m, &grpc.GenericServerStream[ReadObjectRequest, ReadObjectChunk]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BurnBridge_ReadObjectServer = grpc.ServerStreamingServer[ReadObjectChunk]
+
+func _BurnBridge_RegisterS3ObjectPullSource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RegisterS3ObjectPullSourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).RegisterS3ObjectPullSource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_RegisterS3ObjectPullSource_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).RegisterS3ObjectPullSource(ctx, req.(*RegisterS3ObjectPullSourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_TestUnitReady_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(TestUnitReadyRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).TestUnitReady(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_TestUnitReady_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).TestUnitReady(ctx, req.(*TestUnitReadyRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BurnBridge_ServiceDesc is the grpc.ServiceDesc for BurnBridge service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -255,12 +381,26 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "CancelJob",
 			Handler:    _BurnBridge_CancelJob_Handler,
 		},
+		{
+			MethodName: "RegisterS3ObjectPullSource",
+			Handler:    _BurnBridge_RegisterS3ObjectPullSource_Handler,
+		},
+		{
+			MethodName: "TestUnitReady",
+			Handler:    _BurnBridge_TestUnitReady_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "UploadObject",
 			Handler:       _BurnBridge_UploadObject_Handler,
+			ServerStreams: true,
 			ClientStreams: true,
+		},
+		{
+			StreamName:    "ReadObject",
+			Handler:       _BurnBridge_ReadObject_Handler,
+			ServerStreams: true,
 		},
 	},
 	Metadata: "burnbridge.proto",

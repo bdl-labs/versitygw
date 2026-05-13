@@ -68,8 +68,7 @@ The `gateway.backend.type` value selects the storage backend. Use `gateway.backe
 | Backend | Description | Example `gateway.backend.args` |
 |---------|-------------|--------------------------------|
 | [posix](https://github.com/versity/versitygw/wiki/POSIX-Backend) | POSIX-compatible local or network filesystem (default) | `/mnt/data` |
-| [s3](https://github.com/versity/versitygw/wiki/S3-Backend) | Proxy to an existing S3-compatible object store | `--access KEY --secret SECRET --endpoint https://s3.example.com` |
-| [azure](https://github.com/versity/versitygw/wiki/AzureBlob-Backend) | Azure Blob Storage | `--account myaccount --key mykey` |
+| burnbridge | Optical recorder bridge (gRPC + SQLite meta) | `--grpc-addr recorder:50051 --meta-db /data/meta.sqlite` |
 | [plugin](https://github.com/versity/versitygw/wiki/Plugin-Backend) | Custom backend via shared library plugin | `/path/to/plugin.so` |
 
 ## Optional Features

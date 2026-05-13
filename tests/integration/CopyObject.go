@@ -328,12 +328,6 @@ func CopyObject_should_replace_tagging(s *S3Conf) error {
 			{"key%20key=value%20value", map[string]string{"key key": "value value"}, nil},
 			{"key%5Fkey=value%5Fvalue", map[string]string{"key_key": "value_value"}, nil},
 		} {
-			if s.azureTests {
-				// azure doesn't support '@' character
-				if strings.Contains(el.tagging, "@") {
-					continue
-				}
-			}
 			err := testTagging(el.tagging, el.result, el.expectedErr)
 			if err != nil {
 				return fmt.Errorf("test case %v failed: %w", i+1, err)

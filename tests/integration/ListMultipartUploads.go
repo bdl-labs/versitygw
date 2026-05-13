@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
@@ -301,12 +300,6 @@ func ListMultipartUploads_keyMarker_not_from_list(s *S3Conf) error {
 					UploadId:     out.UploadId,
 					StorageClass: types.StorageClassStandard,
 				})
-				if s.azureTests {
-					// add an artificial delay for azure tests
-					// as azure uploads all these mps with the same
-					// identical creation time
-					time.Sleep(time.Second)
-				}
 			}
 		}
 

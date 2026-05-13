@@ -4,12 +4,83 @@ package burnbridge.v1;
 
 option go_package = "github.com/versity/versitygw/backend/burnbridge/proto;burnbridgev1";
 
+// BurnBridge recorder API. UploadObject is bidirectional: after each logical segment the server sends
+// UploadObjectAck (upload_complete=false); after the client's eof chunk, the server sends a final
+// UploadObjectAck with upload_complete=true and whole-object checksum_md5.
 service BurnBridge {
   rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
-  rpc UploadObject(stream UploadObjectChunk) returns (UploadObjectResponse);
+  rpc UploadObject(stream UploadObjectChunk) returns (stream UploadObjectAck);
   rpc CommitJob(CommitJobRequest) returns (CommitJobResponse);
   rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
+  // ReadObject streams object bytes like a seekable file: the object is addressed only by bucket + object_key,
+  // then offset selects the start of the byte stream. job_id (field 1) is optional legacy; clients should leave
+  // it unset and servers must not require it for reads. length == 0 means stream from offset to end of object.
+  rpc ReadObject(ReadObjectRequest) returns (stream ReadObjectChunk);
+  // RegisterS3ObjectPullSource tells the recorder how to fetch object bytes from an S3-compatible server (SigV4 GetObject
+  // or presigned URL) for this job_id, instead of or in addition to UploadObject chunks from the gateway.
+  rpc RegisterS3ObjectPullSource(RegisterS3ObjectPullSourceRequest) returns (RegisterS3ObjectPullSourceResponse);
+  // TestUnitReady reports whether the optical unit / current loaded disc session is ready for data I/O.
+  // The gateway calls this at startup (with an empty request) and before Put/Get; response includes volume_label when ready.
+  rpc TestUnitReady(TestUnitReadyRequest) returns (TestUnitReadyResponse);
+}
+
+// TestUnitReadyRequest carries no parameters: the recorder evaluates only the currently loaded media / session.
+message TestUnitReadyRequest {}
+
+message TestUnitReadyResponse {
+  bool ready = 1;
+  // Human-readable reason when ready is false (empty when ready is true).
+  string message = 2;
+  // Disc volume label (e.g. UDF) when ready; gateway maps it to the S3 bucket name at startup.
+  string volume_label = 3;
+  // Optional capacity / media hints for the gateway’s DiscInfo JSON (0 / empty means not reported).
+  int64 total_capacity_bytes = 4;
+  int64 free_capacity_bytes = 5;
+  string media_type = 6;
+}
+
+// S3PullCredentials is optional SigV4 access for GetObject against endpoint_url.
+message S3PullCredentials {
+  string access_key_id = 1;
+  string secret_access_key = 2;
+  string session_token = 3; // optional (STS)
+}
+
+// S3ObjectPullSource identifies one object on an S3-compatible API for direct byte fetch by the recorder.
+message S3ObjectPullSource {
+  // Base URL of the S3 API (scheme + host[:port]), e.g. https://s3.amazonaws.com or http://versitygw:9000
+  string endpoint_url = 1;
+  string region = 2; // AWS region; may be empty for some on-prem gateways (recorder chooses signing rules)
+  string bucket = 3;
+  string object_key = 4;
+  bool force_path_style = 5;
+  S3PullCredentials credentials = 6;
+  // If set, recorder MAY use HTTP GET on this URL to read the object without SigV4 (e.g. pre-signed link).
+  string presigned_get_url = 7;
+  // Expected size from CreateJob; 0 if unknown.
+  int64 content_length_hint = 8;
+}
+
+message RegisterS3ObjectPullSourceRequest {
+  string job_id = 1;
+  S3ObjectPullSource source = 2;
+}
+
+message RegisterS3ObjectPullSourceResponse {
+  // Reserved for future ack fields.
+}
+
+message ReadObjectRequest {
+  string job_id = 1; // optional; ignored for reads — object identity is bucket + object_key only
+  string bucket = 2;
+  string object_key = 3;
+  int64 offset = 4;
+  int64 length = 5;
+}
+
+message ReadObjectChunk {
+  bytes data = 1;
 }
 
 message ObjectMetadata {
@@ -33,12 +104,38 @@ message UploadObjectChunk {
   int64 offset = 2;
   bytes data = 3;
   bool eof = 4;
+  // If > 0, bytes [offset, offset+reused_burned_bytes) are already on media for this object; data must be empty.
+  // The server should advance its write pointer without writing duplicate data (resume / idempotent chunk).
+  int64 reused_burned_bytes = 5;
 }
 
-message UploadObjectResponse {
+// DiscExtent is one contiguous on-media region for part of an object.
+message DiscExtent {
+  string disc_address = 1;
+  int64 file_size = 2;
+}
+
+// SegmentBurnResult is the recorder-reported outcome for one logical segment (when upload_complete is false).
+enum SegmentBurnResult {
+  SEGMENT_BURN_RESULT_UNSPECIFIED = 0; // treated as OK for backward compatibility
+  SEGMENT_BURN_RESULT_OK = 1;
+  SEGMENT_BURN_RESULT_FAILED = 2;
+}
+
+// UploadObjectAck is sent by the recorder after each logical segment (and optionally as a final summary).
+message UploadObjectAck {
   string job_id = 1;
-  int64 bytes_received = 2;
-  string checksum_md5 = 3;
+  int32 segment_index = 2;
+  int64 byte_offset = 3;
+  int64 byte_size = 4;
+  repeated DiscExtent disc_extents = 5;
+  // If true, this is the last ack for the stream (upload finished). checksum / bytes apply to the whole object.
+  bool upload_complete = 6;
+  int64 bytes_received = 7;
+  string checksum_md5 = 8;
+  // When upload_complete is false: physical burn outcome for this segment. UNSPECIFIED means success.
+  SegmentBurnResult segment_burn_result = 9;
+  string segment_burn_error = 10; // optional; set when segment_burn_result is FAILED
 }
 
 message CommitJobRequest {

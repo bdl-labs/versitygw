@@ -64,7 +64,7 @@ func TestPresignedAuthentication(ts *TestState) {
 	ts.Run(PresignedAuth_incorrect_secret_key)
 	ts.Run(PresignedAuth_PutObject_success)
 	ts.Run(PresignedAuth_Put_GetObject_with_data)
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(PresignedAuth_Put_GetObject_with_UTF8_chars)
 	}
 	ts.Run(PresignedAuth_UploadPart)
@@ -173,7 +173,7 @@ func TestPutObject(ts *TestState) {
 	ts.Run(PutObject_conditional_writes)
 	ts.Run(PutObject_should_combine_metadata)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(PutObject_checksum_algorithm_and_header_mismatch)
 		ts.Run(PutObject_multiple_checksum_headers)
 		ts.Run(PutObject_invalid_checksum_header)
@@ -210,7 +210,7 @@ func TestHeadObject(ts *TestState) {
 	ts.Run(HeadObject_dir_with_range)
 	ts.Run(HeadObject_conditional_reads)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(HeadObject_not_enabled_checksum_mode)
 		ts.Run(HeadObject_checksums)
 		ts.Run(HeadObject_ranged_with_checksum_mode)
@@ -236,7 +236,7 @@ func TestGetObjectAttributes(ts *TestState) {
 	ts.Run(GetObjectAttributes_empty_attrs)
 	ts.Run(GetObjectAttributes_existing_object)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(GetObjectAttributes_checksums)
 	}
 }
@@ -251,7 +251,7 @@ func TestGetObject(ts *TestState) {
 	ts.Sync(GetObject_large_object)
 	ts.Run(GetObject_conditional_reads)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(GetObject_not_enabled_checksum_mode)
 		ts.Run(GetObject_checksums)
 		ts.Run(GetObject_dir_object_checksum)
@@ -293,7 +293,7 @@ func TestListObjects(ts *TestState) {
 	ts.Run(ListObjects_mp_masking_truncation)
 	ts.Run(ListObjects_mp_masking_delimiter)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(ListObjects_with_checksum)
 	}
 }
@@ -312,7 +312,7 @@ func TestListObjectsV2(ts *TestState) {
 	ts.Run(ListObjectsV2_with_owner)
 	ts.Run(ListObjectsV2_non_truncated_common_prefixes)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(ListObjectsV2_with_checksum)
 	}
 	ts.Run(ListObjectsV2_invalid_parent_prefix)
@@ -370,7 +370,7 @@ func TestCopyObject(ts *TestState) {
 	ts.Run(CopyObject_conditional_reads)
 	ts.Run(CopyObject_object_acl_not_supported)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(CopyObject_invalid_checksum_algorithm)
 		ts.Run(CopyObject_create_checksum_on_copy)
 		ts.Run(CopyObject_should_copy_the_existing_checksum)
@@ -420,7 +420,7 @@ func TestCreateMultipartUpload(ts *TestState) {
 	ts.Run(CreateMultipartUpload_invalid_object_lock_mode)
 	ts.Run(CreateMultipartUpload_object_acl_not_supported)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(CreateMultipartUpload_invalid_checksum_algorithm)
 		ts.Run(CreateMultipartUpload_empty_checksum_algorithm_with_checksum_type)
 		ts.Run(CreateMultipartUpload_type_algo_mismatch)
@@ -436,7 +436,7 @@ func TestUploadPart(ts *TestState) {
 	ts.Run(UploadPart_non_existing_key)
 	ts.Run(UploadPart_non_existing_mp_upload)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(UploadPart_multiple_checksum_headers)
 		ts.Run(UploadPart_invalid_checksum_header)
 		ts.Run(UploadPart_checksum_header_and_algo_mismatch)
@@ -464,7 +464,7 @@ func TestUploadPartCopy(ts *TestState) {
 	ts.Run(UploadPartCopy_greater_range_than_obj_size)
 	ts.Run(UploadPartCopy_by_range_success)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(UploadPartCopy_should_copy_the_checksum)
 		ts.Run(UploadPartCopy_should_not_copy_the_checksum)
 		ts.Run(UploadPartCopy_should_calculate_the_checksum)
@@ -482,7 +482,7 @@ func TestListParts(ts *TestState) {
 	ts.Run(ListParts_exceeding_max_parts)
 	ts.Run(ListParts_truncated)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(ListParts_with_checksums)
 		ts.Run(ListParts_null_checksums)
 	}
@@ -503,7 +503,7 @@ func TestListMultipartUploads(ts *TestState) {
 	ts.Run(ListMultipartUploads_both_delimiter_and_prefix)
 	ts.Run(ListMultipartUploads_delimiter_no_matches)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(ListMultipartUploads_with_checksums)
 	}
 }
@@ -529,7 +529,7 @@ func TestCompleteMultipartUpload(ts *TestState) {
 	ts.Run(CompleteMultipartUpload_mpu_object_size)
 	ts.Run(CompleteMultipartUpload_conditional_writes)
 	//TODO: remove the condition after implementing checksums in azure
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(CompleteMultipartUpload_invalid_checksum_type)
 		ts.Run(CompleteMultipartUpload_invalid_checksum_part)
 		ts.Run(CompleteMultipartUpload_multiple_checksum_part)
@@ -551,7 +551,7 @@ func TestCompleteMultipartUpload(ts *TestState) {
 	}
 	ts.Run(CompleteMultipartUpload_success)
 	ts.Run(CompleteMultipartUpload_already_completed)
-	if !(ts.conf.azureTests || ts.conf.sidecarTests) {
+	if !(false || ts.conf.sidecarTests) {
 		ts.Run(CompleteMultipartUpload_racey_success)
 		ts.Run(CompleteMultipartUpload_racey_data_integrity)
 	}
@@ -826,7 +826,7 @@ func TestFullFlow(ts *TestState) {
 	TestGetObject(ts)
 	TestListObjects(ts)
 	TestListObjectsV2(ts)
-	if !ts.conf.versioningEnabled && !ts.conf.azureTests {
+	if !ts.conf.versioningEnabled && !false {
 		TestListObjectVersions_VD(ts)
 	}
 	TestDeleteObject(ts)
@@ -837,7 +837,7 @@ func TestFullFlow(ts *TestState) {
 	TestDeleteObjectTagging(ts)
 	TestCreateMultipartUpload(ts)
 	TestUploadPart(ts)
-	if !ts.conf.azureTests {
+	if !false {
 		TestUploadPartCopy(ts)
 	}
 	TestListParts(ts)
@@ -870,7 +870,7 @@ func TestFullFlow(ts *TestState) {
 	TestSignedStreaminPayloadTrailer(ts)
 	// FIXME: The tests should pass for azure as well
 	// but this issue should be fixed with https://github.com/versity/versitygw/issues/1336
-	if !ts.conf.azureTests {
+	if !false {
 		TestPublicBuckets(ts)
 	}
 	if ts.conf.versioningEnabled {
@@ -1109,7 +1109,7 @@ func TestPostObject(ts *TestState) {
 	ts.Run(PostObject_invalid_tagging)
 	ts.Run(PostObject_success_with_tagging)
 	ts.Run(PostObject_success_double_dash_boundary)
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(PostObject_invalid_checksum_value)
 		ts.Run(PostObject_invalid_checksum_algorithm)
 		ts.Run(PostObject_multiple_checksum_headers)
@@ -1124,7 +1124,7 @@ func TestServer(ts *TestState) {
 
 func TestUnsignedStreaminPayloadTrailer(ts *TestState) {
 	// azure doesn't support checksums
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(UnsignedStreaminPayloadTrailer_malformed_trailer)
 		ts.Run(UnsignedStreamingPayloadTrailer_missing_invalid_dec_content_length)
 		ts.Run(UnsignedStreamingPayloadTrailer_invalid_trailing_checksum)
@@ -1146,7 +1146,7 @@ func TestUnsignedStreaminPayloadTrailer(ts *TestState) {
 }
 
 func TestSignedStreaminPayload(ts *TestState) {
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(SignedStreamingPayload_invalid_encoding)
 		ts.Run(SignedStreamingPayload_invalid_chunk_size)
 		ts.Run(SignedStreamingPayload_decoded_content_length_mismatch)
@@ -1154,7 +1154,7 @@ func TestSignedStreaminPayload(ts *TestState) {
 }
 
 func TestSignedStreaminPayloadTrailer(ts *TestState) {
-	if !ts.conf.azureTests {
+	if !false {
 		ts.Run(SignedStreamingPayloadTrailer_malformed_trailer)
 		ts.Run(SignedStreamingPayloadTrailer_incomplete_body)
 		ts.Run(SignedStreamingPayloadTrailer_missing_x_amz_trailer_header)

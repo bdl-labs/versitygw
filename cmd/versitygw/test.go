@@ -37,7 +37,6 @@ var (
 	hostStyle         bool
 	checksumDisable   bool
 	versioningEnabled bool
-	azureTests        bool
 	sidecarTests      bool
 	tlsStatus         bool
 	parallel          bool
@@ -110,12 +109,6 @@ func initTestCommands() []*cli.Command {
 					Usage:       "Test the bucket object versioning, if the versioning is enabled",
 					Destination: &versioningEnabled,
 					Aliases:     []string{"vs"},
-				},
-				&cli.BoolFlag{
-					Name:        "azure-test-mode",
-					Usage:       "Skips tests that are not supported by Azure",
-					Destination: &azureTests,
-					Aliases:     []string{"azure"},
 				},
 				&cli.BoolFlag{
 					Name:        "sidecar-test-mode",
@@ -335,9 +328,6 @@ func getAction(tf testFunc) func(ctx *cli.Context) error {
 		if versioningEnabled {
 			opts = append(opts, integration.WithVersioningEnabled())
 		}
-		if azureTests {
-			opts = append(opts, integration.WithAzureMode())
-		}
 		if sidecarTests {
 			opts = append(opts, integration.WithSidecarMode())
 		}
@@ -384,9 +374,6 @@ func extractIntTests() (commands []*cli.Command) {
 				if hostStyle {
 					opts = append(opts, integration.WithHostStyle())
 				}
-				if azureTests {
-					opts = append(opts, integration.WithAzureMode())
-				}
 				if sidecarTests {
 					opts = append(opts, integration.WithSidecarMode())
 				}
@@ -401,12 +388,6 @@ func extractIntTests() (commands []*cli.Command) {
 					Usage:       "Test the bucket object versioning, if the versioning is enabled",
 					Destination: &versioningEnabled,
 					Aliases:     []string{"vs"},
-				},
-				&cli.BoolFlag{
-					Name:        "azure-test-mode",
-					Usage:       "Skips tests that are not supported by Azure",
-					Destination: &azureTests,
-					Aliases:     []string{"azure"},
 				},
 				&cli.BoolFlag{
 					Name:        "sidecar-test-mode",
