@@ -256,11 +256,12 @@ under the License.
 
     function loadConfiguredGateways() {
       const cfg = window.__VGWCONFIG__ || {};
-      if (!Array.isArray(cfg.gateways)) return { gateways: [], adminGateways: [], defaultRegion: null };
+      if (!Array.isArray(cfg.gateways)) return { gateways: [], adminGateways: [], defaultRegion: null, forceSinglePutUpload: false };
       return {
         gateways: cfg.gateways,
         adminGateways: cfg.adminGateways || cfg.gateways || [],
         defaultRegion: normalizeRegion(typeof cfg.defaultRegion === 'string' ? cfg.defaultRegion : null),
+        forceSinglePutUpload: !!cfg.forceSinglePutUpload,
       };
     }
 
@@ -269,6 +270,7 @@ under the License.
       configuredGateways = uniqNonEmpty(cfg.gateways);
       configuredAdminGateways = uniqNonEmpty(cfg.adminGateways);
       configuredDefaultRegion = cfg.defaultRegion;
+      api.setForceSinglePutUpload(!!cfg.forceSinglePutUpload);
 
       // Apply default region from server only if user hasn't changed it yet
       if (configuredDefaultRegion) {

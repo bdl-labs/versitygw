@@ -2,63 +2,135 @@ syntax = "proto3";
 
 package burnbridge.v1;
 
+// .NET Core gRPC generated namespace
+option csharp_namespace = "BurnServer.Protos.BurnBridge.V1";
+
+// GO gRPC generated namespace
 option go_package = "github.com/versity/versitygw/backend/burnbridge/proto;burnbridgev1";
 
-// BurnBridge recorder API. UploadObject is bidirectional: after each logical segment the server sends
-// UploadObjectAck (upload_complete=false); after the client's eof chunk, the server sends a final
-// UploadObjectAck with upload_complete=true and whole-object checksum_md5.
+// BurnBridge recorder API.
+//
+// Compatibility goal:
+// - Keep wire fields compatible with versitygw/backend/burnbridge/proto/burnbridge.proto
+// - Allow direct interop between Go gateway and .NET Core BurnServer
 service BurnBridge {
+  // Create a logical write job for one S3 object.
   rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
+
+  // Bidirectional upload stream.
+  // Server should ack per logical segment and optionally emit final summary ack.
   rpc UploadObject(stream UploadObjectChunk) returns (stream UploadObjectAck);
+
+  // Finalize a job and persist layout/session metadata.
   rpc CommitJob(CommitJobRequest) returns (CommitJobResponse);
+
+  // Query current job status.
   rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
+
+  // Request cooperative cancel.
   rpc CancelJob(CancelJobRequest) returns (CancelJobResponse);
-  // ReadObject streams object bytes like a seekable file: the object is addressed only by bucket + object_key,
-  // then offset selects the start of the byte stream. job_id (field 1) is optional legacy; clients should leave
-  // it unset and servers must not require it for reads. length == 0 means stream from offset to end of object.
+
+  // Read object bytes by (bucket, object_key) from offset.
+  // length == 0 means stream to object end.
   rpc ReadObject(ReadObjectRequest) returns (stream ReadObjectChunk);
-  // RegisterS3ObjectPullSource tells the recorder how to fetch object bytes from an S3-compatible server (SigV4 GetObject
-  // or presigned URL) for this job_id, instead of or in addition to UploadObject chunks from the gateway.
+
+  // Register pull source so recorder can fetch bytes directly from S3-compatible endpoint.
   rpc RegisterS3ObjectPullSource(RegisterS3ObjectPullSourceRequest) returns (RegisterS3ObjectPullSourceResponse);
-  // TestUnitReady reports whether the optical unit / current loaded disc session is ready for data I/O.
-  // The gateway calls this at startup (with an empty request) and before Put/Get; response includes volume_label when ready.
+
+  // Probe whether current unit/session is ready for I/O.
   rpc TestUnitReady(TestUnitReadyRequest) returns (TestUnitReadyResponse);
+
+  // Query drive + disc information.
+  rpc GetDiscInfo(GetDiscInfoRequest) returns (GetDiscInfoResponse);
+
+  // Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
+  rpc FinalizeLayout(FinalizeLayoutRequest) returns (FinalizeLayoutResponse);
 }
 
-// TestUnitReadyRequest carries no parameters: the recorder evaluates only the currently loaded media / session.
 message TestUnitReadyRequest {}
 
 message TestUnitReadyResponse {
   bool ready = 1;
-  // Human-readable reason when ready is false (empty when ready is true).
   string message = 2;
-  // Disc volume label (e.g. UDF) when ready; gateway maps it to the S3 bucket name at startup.
   string volume_label = 3;
-  // Optional capacity / media hints for the gateway’s DiscInfo JSON (0 / empty means not reported).
   int64 total_capacity_bytes = 4;
   int64 free_capacity_bytes = 5;
   string media_type = 6;
 }
 
-// S3PullCredentials is optional SigV4 access for GetObject against endpoint_url.
+message GetDiscInfoRequest {
+  int32 device_index = 1;
+  bool include_session_disc_id = 2;
+  bool include_drive_identity = 3;
+}
+
+message GetDiscInfoResponse {
+  OpticalDriveIdentity drive = 1;
+  OpticalDiscInfo disc = 2;
+}
+
+message OpticalDriveIdentity {
+  string vendor_id = 1;
+  string product_id = 2;
+  string product_revision = 3;
+  string serial_number = 4;
+  bool is_mmc_unit = 5;
+}
+
+message OpticalDiscInfo {
+  int32 media_profile = 1;
+  bool media_is_blank = 2;
+  bool media_is_cd = 3;
+  bool media_is_dvd = 4;
+  bool media_is_bd = 5;
+
+  int32 profile_code = 6;
+  string profile_name = 7;
+
+  int32 disc_status_code = 8;
+  string disc_status_name = 9;
+
+  bool is_erasable = 10;
+
+  string disc_vendor_id = 11;
+  string disc_serial_number_hex = 12;
+
+  int32 block_size_bytes = 13;
+  int32 next_recordable_lba = 14;
+  // User-data byte totals from Primo block counters times block_size_bytes (bluray-demo: scaled capacity / free space).
+  int64 media_capacity = 15;
+  int64 media_free_space = 16;
+  // Consumed user-data bytes: bluray-demo Burner.MediaUsedSpace after scaling by block_size (max(0, media_capacity - media_free_space) with BurnServer scaling).
+  int64 media_used_space = 17;
+
+  repeated DiscRwSpeedDescriptor rw_speeds = 18;
+  SessionDiscId session_disc_id = 19;
+}
+
+message DiscRwSpeedDescriptor {
+  int32 read_value = 1;
+  int32 write_value = 2;
+}
+
+message SessionDiscId {
+  bool is_finalized = 1;
+  string temp_disc_id = 2;
+}
+
 message S3PullCredentials {
   string access_key_id = 1;
   string secret_access_key = 2;
-  string session_token = 3; // optional (STS)
+  string session_token = 3;
 }
 
-// S3ObjectPullSource identifies one object on an S3-compatible API for direct byte fetch by the recorder.
 message S3ObjectPullSource {
-  // Base URL of the S3 API (scheme + host[:port]), e.g. https://s3.amazonaws.com or http://versitygw:9000
   string endpoint_url = 1;
-  string region = 2; // AWS region; may be empty for some on-prem gateways (recorder chooses signing rules)
+  string region = 2;
   string bucket = 3;
   string object_key = 4;
   bool force_path_style = 5;
   S3PullCredentials credentials = 6;
-  // If set, recorder MAY use HTTP GET on this URL to read the object without SigV4 (e.g. pre-signed link).
   string presigned_get_url = 7;
-  // Expected size from CreateJob; 0 if unknown.
   int64 content_length_hint = 8;
 }
 
@@ -67,12 +139,10 @@ message RegisterS3ObjectPullSourceRequest {
   S3ObjectPullSource source = 2;
 }
 
-message RegisterS3ObjectPullSourceResponse {
-  // Reserved for future ack fields.
-}
+message RegisterS3ObjectPullSourceResponse {}
 
 message ReadObjectRequest {
-  string job_id = 1; // optional; ignored for reads — object identity is bucket + object_key only
+  string job_id = 1; // optional legacy field
   string bucket = 2;
   string object_key = 3;
   int64 offset = 4;
@@ -104,43 +174,38 @@ message UploadObjectChunk {
   int64 offset = 2;
   bytes data = 3;
   bool eof = 4;
-  // If > 0, bytes [offset, offset+reused_burned_bytes) are already on media for this object; data must be empty.
-  // The server should advance its write pointer without writing duplicate data (resume / idempotent chunk).
   int64 reused_burned_bytes = 5;
 }
 
-// DiscExtent is one contiguous on-media region for part of an object.
 message DiscExtent {
   string disc_address = 1;
   int64 file_size = 2;
 }
 
-// SegmentBurnResult is the recorder-reported outcome for one logical segment (when upload_complete is false).
 enum SegmentBurnResult {
-  SEGMENT_BURN_RESULT_UNSPECIFIED = 0; // treated as OK for backward compatibility
+  SEGMENT_BURN_RESULT_UNSPECIFIED = 0;
   SEGMENT_BURN_RESULT_OK = 1;
   SEGMENT_BURN_RESULT_FAILED = 2;
 }
 
-// UploadObjectAck is sent by the recorder after each logical segment (and optionally as a final summary).
 message UploadObjectAck {
   string job_id = 1;
   int32 segment_index = 2;
   int64 byte_offset = 3;
   int64 byte_size = 4;
   repeated DiscExtent disc_extents = 5;
-  // If true, this is the last ack for the stream (upload finished). checksum / bytes apply to the whole object.
   bool upload_complete = 6;
   int64 bytes_received = 7;
   string checksum_md5 = 8;
-  // When upload_complete is false: physical burn outcome for this segment. UNSPECIFIED means success.
   SegmentBurnResult segment_burn_result = 9;
-  string segment_burn_error = 10; // optional; set when segment_burn_result is FAILED
+  string segment_burn_error = 10;
 }
 
 message CommitJobRequest {
   string job_id = 1;
   string udf_volume_label = 2;
+  FinalizeManifest finalize_manifest = 3;
+  bool close_disc = 4;
 }
 
 message CommitJobResponse {
@@ -165,4 +230,34 @@ message CancelJobRequest {
 message CancelJobResponse {
   string job_id = 1;
   string status = 2;
+}
+
+message FinalizeLayoutRequest {
+  string bucket = 1;
+  string udf_volume_label = 2;
+  bool close_disc = 3;
+}
+
+message FinalizeLayoutResponse {
+  string bucket = 1;
+  string status = 2;
+  string message = 3;
+}
+
+message FinalizeManifest {
+  repeated FinalizeFile files = 1;
+}
+
+message FinalizeFile {
+  string object_key = 1;
+  int64 file_size = 2;
+  repeated SegmentLayout segments = 3;
+}
+
+message SegmentLayout {
+  int32 segment_index = 1;
+  int64 byte_offset = 2;
+  int64 byte_size = 3;
+  string checksum_md5 = 4;
+  repeated DiscExtent disc_extents = 5;
 }

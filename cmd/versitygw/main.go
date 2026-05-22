@@ -1073,9 +1073,10 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		}
 
 		opts = append(opts, s3api.WithWebUI(webuiS3Prefix, &webui.ServerConfig{
-			Gateways:      s3WebGateways,
-			AdminGateways: s3WebAdminGateways,
-			Region:        region,
+			Gateways:             s3WebGateways,
+			AdminGateways:        s3WebAdminGateways,
+			Region:               region,
+			ForceSinglePutUpload: true,
 		}))
 	}
 
@@ -1252,9 +1253,10 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		}
 
 		webSrv = webui.NewServer(&webui.ServerConfig{
-			Gateways:      gateways,
-			AdminGateways: adminGateways,
-			Region:        region,
+			Gateways:             gateways,
+			AdminGateways:        adminGateways,
+			Region:               region,
+			ForceSinglePutUpload: true,
 		}, webOpts...)
 	}
 

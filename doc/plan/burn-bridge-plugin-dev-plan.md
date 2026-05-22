@@ -5,7 +5,7 @@
 ## 1. 项目背景与目标
 
 ### 1.1 背景
-当前目标是将 VersityGW 作为 S3 网关前端，通过内置 BurnBridge 后端将对象数据桥接到 .NET Core gRPC 刻录服务，最终由 PrimoBurner SDK 的 BlockDevice 能力实现光盘流式刻录。
+当前目标是将 VersityGW 作为 S3 网关前端，通过内置 BurnBridge 后端将对象数据桥接到 .NET Core gRPC 刻录服务，最终由 PrimoBurner SDK 的 `block-device` 程序能力实现光盘流式刻录。
 
 目标数据链路：
 
@@ -21,7 +21,7 @@
 **In Scope**
 - Go 内置后端开发（实现 `backend.Backend`，通过 `versitygw burnbridge` 子命令加载）。
 - S3 写入路径（PutObject、Multipart Upload）到 gRPC 流式传输映射。
-- .NET gRPC Burn Service 协议对接（以流式 chunk 传输 + commit 模式）。
+- .NET gRPC Burn Service 协议对接（基于 `primoburner-net/samples/block-device/grpc/v1/block_device.proto`，以流式 chunk 传输 + commit 模式）。
 - 刻录任务状态模型与状态查询接口。
 - 失败重试、取消、超时、幂等策略。
 - 端到端测试与上线方案。
@@ -58,6 +58,10 @@
 
 5. **错误映射**
    - gRPC 错误码与 PrimoBurner 异常映射到 S3 友好错误（如 5xx/4xx）。
+
+6. **刻录程序选型（已定）**
+   - 刻录执行程序统一采用 `primoburner-net/samples/block-device`。
+   - 不新增平行刻录引擎，BurnBridge 仅对接 `block-device` 的 gRPC 服务实现。
 
 ---
 

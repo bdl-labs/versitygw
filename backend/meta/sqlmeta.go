@@ -24,8 +24,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/versity/versitygw/s3err"
-	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -94,6 +94,12 @@ type BurnObjectSegment struct {
 	ChecksumMD5 string
 	State       BurnSegmentState
 	DiscExtents []BurnDiscExtent
+}
+
+// BurnObjectSegmentDetail includes segment index for ordered manifest assembly.
+type BurnObjectSegmentDetail struct {
+	SegmentIndex int
+	BurnObjectSegment
 }
 
 // Burned reports whether this segment is known to have been placed successfully on media.
@@ -182,12 +188,12 @@ func (s SqlMeta) GetBurnObjectSegment(bucket, object string, segmentIndex int) (
 	var out BurnObjectSegment
 	err := s.withDB("get burn object segment", func(db *gorm.DB) error {
 		var row burnbridgeObjectSegment
-		err := db.Where("bucket = ? AND object_name = ? AND segment_index = ?", bucket, object, segmentIndex).First(&row).Error
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return ErrNoSuchKey
-			}
-			return mapSQLError("get burn object segment", err)
+		tx := db.Where("bucket = ? AND object_name = ? AND segment_index = ?", bucket, object, segmentIndex).Limit(1).Find(&row)
+		if tx.Error != nil {
+			return mapSQLError("get burn object segment", tx.Error)
+		}
+		if tx.RowsAffected == 0 {
+			return ErrNoSuchKey
 		}
 		extents, perr := parseDiscExtentsJSON(row.DiscExtents)
 		if perr != nil {
@@ -251,6 +257,66 @@ func (s SqlMeta) DeleteBurnObjectSegments(bucket, object string) error {
 	})
 }
 
+// DeleteBurnObjectSegmentsFrom removes tail segment rows for an object starting at fromSegmentIndex (inclusive).
+func (s SqlMeta) DeleteBurnObjectSegmentsFrom(bucket, object string, fromSegmentIndex int) error {
+	_, err := s.DeleteBurnObjectSegmentsFromWithCount(bucket, object, fromSegmentIndex)
+	return err
+}
+
+// DeleteBurnObjectSegmentsFromWithCount removes tail segment rows and returns deleted row count.
+func (s SqlMeta) DeleteBurnObjectSegmentsFromWithCount(bucket, object string, fromSegmentIndex int) (int64, error) {
+	var deleted int64
+	if err := s.withDB("delete burn object segments from index", func(db *gorm.DB) error {
+		res := db.Where("bucket = ? AND object_name = ? AND segment_index >= ?", bucket, object, fromSegmentIndex).
+			Delete(&burnbridgeObjectSegment{})
+		if err := res.Error; err != nil {
+			return mapSQLError("delete burn object segments from index", err)
+		}
+		deleted = res.RowsAffected
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// ListBurnObjectSegments returns all segment rows for an object ordered by segment_index.
+func (s SqlMeta) ListBurnObjectSegments(bucket, object string) ([]BurnObjectSegmentDetail, error) {
+	var out []BurnObjectSegmentDetail
+	err := s.withDB("list burn object segments", func(db *gorm.DB) error {
+		var rows []burnbridgeObjectSegment
+		if err := db.Where("bucket = ? AND object_name = ?", bucket, object).
+			Order("segment_index ASC").
+			Find(&rows).Error; err != nil {
+			return mapSQLError("list burn object segments", err)
+		}
+
+		result := make([]BurnObjectSegmentDetail, 0, len(rows))
+		for _, row := range rows {
+			extents, perr := parseDiscExtentsJSON(row.DiscExtents)
+			if perr != nil {
+				return perr
+			}
+			result = append(result, BurnObjectSegmentDetail{
+				SegmentIndex: row.SegmentIndex,
+				BurnObjectSegment: BurnObjectSegment{
+					ByteOffset:  row.ByteOffset,
+					ByteSize:    row.ByteSize,
+					ChecksumMD5: row.ChecksumMD5,
+					State:       BurnSegmentState(row.BurnState),
+					DiscExtents: extents,
+				},
+			})
+		}
+		out = result
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // CommittedObjectSummary is one object row derived from SQLite metadata (burnbridge PutObject completion).
 type CommittedObjectSummary struct {
 	ObjectKey          string
@@ -278,12 +344,12 @@ const BurnbridgeDiscInfoAttribute = "burnbridge-disc-info"
 
 // BurnbridgeDiscInfoDocument is JSON returned by GetObject/HeadObject for key BurnbridgeDiscInfoObjectKey.
 type BurnbridgeDiscInfoDocument struct {
-	Bucket              string `json:"bucket"`
-	VolumeLabel         string `json:"volumeLabel"`
-	UpdatedAt           string `json:"updatedAt"` // RFC3339Nano
-	TotalCapacityBytes  int64  `json:"totalCapacityBytes,omitempty"`
-	FreeCapacityBytes   int64  `json:"freeCapacityBytes,omitempty"`
-	MediaType           string `json:"mediaType,omitempty"`
+	Bucket             string `json:"bucket"`
+	VolumeLabel        string `json:"volumeLabel"`
+	UpdatedAt          string `json:"updatedAt"` // RFC3339Nano
+	TotalCapacityBytes int64  `json:"totalCapacityBytes,omitempty"`
+	FreeCapacityBytes  int64  `json:"freeCapacityBytes,omitempty"`
+	MediaType          string `json:"mediaType,omitempty"`
 }
 
 // StoreBurnbridgeDiscInfo upserts disc JSON for the reserved DiscInfo key (not visible in ListObjects).
@@ -304,6 +370,41 @@ func (s SqlMeta) StoreBurnbridgeDiscInfo(doc *BurnbridgeDiscInfoDocument) error 
 // GetBurnbridgeDiscInfoJSON returns raw JSON bytes for GetObject/HeadObject on BurnbridgeDiscInfoObjectKey.
 func (s SqlMeta) GetBurnbridgeDiscInfoJSON(bucket string) ([]byte, error) {
 	return s.RetrieveAttribute(nil, bucket, BurnbridgeDiscInfoObjectKey, BurnbridgeDiscInfoAttribute)
+}
+
+// BurnbridgeFinalizeLayoutObjectKey triggers UDF/disc finalization via GetObject against the recorder.
+const BurnbridgeFinalizeLayoutObjectKey = "FinalizeLayout"
+
+// BurnbridgeFinalizeLayoutAttribute holds JSON documenting the last FinalizeLayout gRPC invocation.
+const BurnbridgeFinalizeLayoutAttribute = "burnbridge-finalize-layout"
+
+// BurnbridgeFinalizeLayoutDocument captures the outcome of invoking the recorder finalize RPC (from gateway).
+type BurnbridgeFinalizeLayoutDocument struct {
+	Bucket          string `json:"bucket"`
+	RecorderStatus  string `json:"recorderStatus"`
+	RecorderMessage string `json:"recorderMessage,omitempty"`
+	CloseDisc       bool   `json:"closeDisc,omitempty"`
+	CompletedAtUtc  string `json:"completedAtUtc"` // RFC3339Nano when the gateway persisted this record
+	GrpcOK          bool   `json:"grpcOk"`
+	GrpcCode        string `json:"grpcCode,omitempty"`
+	GrpcDetails     string `json:"grpcDetails,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// StoreBurnbridgeFinalizeLayoutJSON saves the finalize outcome for reserved key BurnbridgeFinalizeLayoutObjectKey.
+func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, payload []byte) error {
+	if strings.TrimSpace(bucket) == "" {
+		return fmt.Errorf("finalize layout: empty bucket")
+	}
+	if len(payload) == 0 {
+		return fmt.Errorf("finalize layout: empty payload")
+	}
+	return s.StoreAttribute(nil, bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute, payload)
+}
+
+// GetBurnbridgeFinalizeLayoutJSON returns raw JSON persisted for BurnbridgeFinalizeLayoutObjectKey (if HeadObject/GetObject before first GET finalized, returns ErrNoSuchKey).
+func (s SqlMeta) GetBurnbridgeFinalizeLayoutJSON(bucket string) ([]byte, error) {
+	return s.RetrieveAttribute(nil, bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute)
 }
 
 // BurnbridgeCommittedRecord is JSON-encoded into metadata_entries under BurnbridgeCommittedAttribute.
