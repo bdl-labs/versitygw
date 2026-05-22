@@ -3003,7 +3003,7 @@ under the License.
         const key = currentPrefix + file.name;
 
         try {
-          if (file.size >= MULTIPART_THRESHOLD) {
+          if (!api.forceSinglePutUpload() && file.size >= MULTIPART_THRESHOLD) {
             // Use multipart upload for large files
             await uploadMultipart(file, key);
           } else {

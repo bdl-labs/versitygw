@@ -120,6 +120,7 @@ class VersityAPI {
     this.region = 'us-east-1';
     this.addressingStyle = 'path'; // 'path' or 'virtual-host'
     this._isAdmin = false;      // Role flag
+    this._forceSinglePutUpload = false;
   }
 
   /**
@@ -229,6 +230,15 @@ class VersityAPI {
     sessionStorage.setItem('vgw_addressing_style', this.addressingStyle);
   }
 
+  setForceSinglePutUpload(forceSingle) {
+    this._forceSinglePutUpload = !!forceSingle;
+    sessionStorage.setItem('vgw_force_single_put_upload', this._forceSinglePutUpload ? 'true' : 'false');
+  }
+
+  forceSinglePutUpload() {
+    return !!this._forceSinglePutUpload;
+  }
+
   /**
    * Set admin role flag
    */
@@ -248,6 +258,7 @@ class VersityAPI {
     const region = sessionStorage.getItem('vgw_region') || 'us-east-1';
     const addressingStyle = sessionStorage.getItem('vgw_addressing_style') || 'path';
     const isAdmin = sessionStorage.getItem('vgw_is_admin') === 'true';
+    const forceSinglePutUpload = sessionStorage.getItem('vgw_force_single_put_upload') === 'true';
 
     // Support legacy single endpoint storage
     const legacyEndpoint = sessionStorage.getItem('vgw_endpoint');
@@ -259,6 +270,7 @@ class VersityAPI {
       this.region = region;
       this.addressingStyle = addressingStyle;
       this._isAdmin = isAdmin;
+      this._forceSinglePutUpload = forceSinglePutUpload;
       return true;
     }
     return false;
@@ -273,6 +285,7 @@ class VersityAPI {
     this.s3Endpoint = null;
     this.addressingStyle = 'path';
     this._isAdmin = false;
+    this._forceSinglePutUpload = false;
     this._userType = 'user';
     this._accessibleGateways = [];
     sessionStorage.removeItem('vgw_admin_endpoint');
@@ -283,6 +296,7 @@ class VersityAPI {
     sessionStorage.removeItem('vgw_region');
     sessionStorage.removeItem('vgw_addressing_style');
     sessionStorage.removeItem('vgw_is_admin');
+    sessionStorage.removeItem('vgw_force_single_put_upload');
     sessionStorage.removeItem('vgw_user_type');
     sessionStorage.removeItem('vgw_accessible_gateways');
   }
@@ -328,6 +342,7 @@ class VersityAPI {
       accessKey: this.credentials.accessKey,
       region: this.region,
       isAdmin: this._isAdmin
+      ,forceSinglePutUpload: this._forceSinglePutUpload
     };
   }
 

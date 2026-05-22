@@ -96,3 +96,37 @@ go test ./...
 ```
 
 BurnBridge 包当前可能无单测文件；修改核心逻辑后至少保证全仓 `./...` 通过编译与相关包的测试。
+
+### 故障注入恢复脚本（压测级）
+
+新增脚本：`tests/burnbridge_recovery_fault_injection.sh`
+
+用途：模拟“上传中断（断电/进程崩溃）→ 服务重启 → 重试 PUT”，并校验：
+
+- 最终对象字节一致性（SHA-256）
+- 恢复统计日志是否产出（`segments_skipped` / `segments_replayed` / `segments_trimmed` / `skip_hit_rate_pct` / `elapsed_ms`）
+
+运行前需要设置环境变量：
+
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`
+- `BURNBRIDGE_DB_PATH`
+- `BURNSERVER_START_CMD`（例如 `dotnet run --project /path/to/BurnServer.csproj`）
+- `BURNSERVER_PROCESS_NAME`（例如 `BurnServer`）
+- `VERSITYGW_START_CMD`（例如 `./versitygw ... burnbridge ...`）
+
+默认值（可省略参数）：
+
+- `S3 endpoint`: `http://127.0.0.1:10000`
+- `bucket`: `mybucket`
+- `object key`: `test.bin`
+- `VGW_BURNBRIDGE_GRPC_ADDR`: `127.0.0.1:50051`（脚本内默认导出）
+
+示例：
+
+```bash
+chmod +x tests/burnbridge_recovery_fault_injection.sh
+tests/burnbridge_recovery_fault_injection.sh
+
+# 或指定
+tests/burnbridge_recovery_fault_injection.sh http://127.0.0.1:10000 mybucket recover-test.bin 5
+```

@@ -119,6 +119,26 @@ Please refer to the [chart's README](./chart/README.md) for more information and
 
 For building, regenerating `burnbridge` protobuf stubs, CLI flags, and architecture notes when continuing work on another machine, see [doc/BURNBRIDGE_DEVELOPMENT.md](./doc/BURNBRIDGE_DEVELOPMENT.md).
 
+Quick local start example (BurnServer on `127.0.0.1:50051`):
+
+```powershell
+.\versitygw.exe --port :10000 --access admin --secret admin123456 burnbridge --db-path ".\burnbridge-meta.db" --grpc-addr "127.0.0.1:50051" --grpc-dial-timeout 120s --grpc-ready-timeout 90s --grpc-ping-timeout 60s
+```
+
+Environment-variable variant:
+
+```powershell
+$env:VGW_ACCESS="admin"
+$env:VGW_SECRET="admin123456"
+$env:VGW_BURNBRIDGE_DB_PATH="D:\BRS\versitygw\burnbridge-meta.db"
+$env:VGW_BURNBRIDGE_GRPC_ADDR="127.0.0.1:50051"
+$env:VGW_BURNBRIDGE_GRPC_DIAL_TIMEOUT="120s"
+$env:VGW_BURNBRIDGE_GRPC_READY_TIMEOUT="90s"
+$env:VGW_BURNBRIDGE_GRPC_PING_TIMEOUT="60s"
+
+.\versitygw.exe --port :10000 burnbridge
+```
+
 ***
 
 #### Versity gives you clarity and control over your archival storage, so you can allocate more resources to your core mission.

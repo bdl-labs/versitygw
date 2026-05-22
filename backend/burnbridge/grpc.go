@@ -18,12 +18,16 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"time"
 
 	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
+	"github.com/versity/versitygw/s3err"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
@@ -76,6 +80,8 @@ func dialBurnBridgeGRPC(ctx context.Context, grpcReadyTimeout time.Duration, add
 	if err != nil {
 		return nil, fmt.Errorf("grpc new client: %w", err)
 	}
+	// NewClient is lazy by default; proactively start connection so readiness wait can progress.
+	conn.Connect()
 
 	waitCtx, cancel := context.WithTimeout(ctx, grpcReadyTimeout)
 	defer cancel()
@@ -108,4 +114,95 @@ func grpcConnectivityPing(ctx context.Context, client burnbridgev1.BurnBridgeCli
 		// Any other code means the server responded to the method.
 		return nil
 	}
+}
+
+// grpcObjectReadCloser streams exactly byteCount bytes from ReadObject (recorder-side byte stream from offset).
+type grpcObjectReadCloser struct {
+	stream grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk]
+	left   int64
+	buf    []byte
+	off    int
+	closed bool
+}
+
+func (g *grpcObjectReadCloser) Read(p []byte) (n int, err error) {
+	if g.closed {
+		return 0, io.EOF
+	}
+	if g.left == 0 {
+		g.shutdown()
+		return 0, io.EOF
+	}
+	for n < len(p) {
+		if g.off >= len(g.buf) {
+			msg, err := g.stream.Recv()
+			if errors.Is(err, io.EOF) {
+				if g.left > 0 {
+					g.shutdown()
+					return n, io.ErrUnexpectedEOF
+				}
+				g.shutdown()
+				return n, io.EOF
+			}
+			if err != nil {
+				g.shutdown()
+				return n, err
+			}
+			g.buf = msg.GetData()
+			g.off = 0
+			continue
+		}
+		c := copy(p[n:], g.buf[g.off:])
+		if int64(c) > g.left {
+			c = int(g.left)
+		}
+		g.off += c
+		n += c
+		g.left -= int64(c)
+		if g.left == 0 {
+			return n, nil
+		}
+	}
+	return n, nil
+}
+
+func (g *grpcObjectReadCloser) shutdown() {
+	if g.closed {
+		return
+	}
+	g.closed = true
+	_ = g.stream.CloseSend()
+}
+
+func (g *grpcObjectReadCloser) Close() error {
+	g.shutdown()
+	return nil
+}
+
+func mapReadFallbackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		return err
+	}
+	switch st.Code() {
+	case codes.Unimplemented:
+		return s3err.APIError{
+			Code: "BurnbridgeMediaNotVisible",
+			Description: "Object metadata is committed but the file is not yet visible under the configured read mount and the recorder does not implement ReadObject (or cannot serve this object yet). " +
+				"Ensure the BurnBridge server supports ReadObject and still holds the object bytes.",
+			HTTPStatusCode: http.StatusServiceUnavailable,
+		}
+	case codes.NotFound:
+		return s3err.GetAPIError(s3err.ErrNoSuchKey)
+	default:
+		return err
+	}
+}
+
+func isGRPCUnimplemented(err error) bool {
+	st, ok := status.FromError(err)
+	return ok && st.Code() == codes.Unimplemented
 }

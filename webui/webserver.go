@@ -31,10 +31,11 @@ import (
 
 // ServerConfig holds the server configuration
 type ServerConfig struct {
-	Gateways      []string // S3 API gateways
-	AdminGateways []string // Admin API gateways (defaults to Gateways if empty)
-	Region        string
-	CORSOrigin    string
+	Gateways             []string // S3 API gateways
+	AdminGateways        []string // Admin API gateways (defaults to Gateways if empty)
+	Region               string
+	CORSOrigin           string
+	ForceSinglePutUpload bool // when true, explorer forces single PUT uploads
 }
 
 // Server is the main GUI server
@@ -148,9 +149,10 @@ func (s *Server) handleIndexHTML(c *fiber.Ctx) error {
 	}
 
 	configJSON, err := json.Marshal(map[string]any{
-		"gateways":      s.config.Gateways,
-		"adminGateways": adminGateways,
-		"defaultRegion": s.config.Region,
+		"gateways":             s.config.Gateways,
+		"adminGateways":        adminGateways,
+		"defaultRegion":        s.config.Region,
+		"forceSinglePutUpload": s.config.ForceSinglePutUpload,
 	})
 	if err != nil {
 		return fiber.ErrInternalServerError
