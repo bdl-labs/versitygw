@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/urfave/cli/v2"
@@ -221,12 +223,13 @@ func runBurnbridge(ctx *cli.Context) error {
 		RecorderS3SessionToken:    burnbridgeRecorderS3SessionToken,
 		RecorderS3ForcePathStyle:  burnbridgeRecorderS3ForcePathStyle,
 		RecorderS3PresignedGetURL: burnbridgeRecorderS3PresignedGetURL,
-		AllowCreateBucketBinding:  true,
+	AllowCreateBucketBinding:  true,
 	}
 
 	if flashEmmcOptimized {
 		opts.SQLiteMaintCtx = ctx.Context
 	}
+	applyBurnBridgeEnvOverrides(&opts)
 	if cfg, _, err := archiveconfig.Load(""); err == nil {
 		opts.AllowCreateBucketBinding = cfg.OpticalArchive.Recorder.AllowCreateBucketBinding
 		opts.ManageRecorderProcessLocally = cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally
@@ -242,4 +245,47 @@ func runBurnbridge(ctx *cli.Context) error {
 		return fmt.Errorf("init burnbridge backend: %w", err)
 	}
 	return runGateway(ctx.Context, be)
+}
+
+func applyBurnBridgeEnvOverrides(opts *burnbridge.Options) {
+	if opts == nil {
+		return
+	}
+	overrideBoolEnv(&opts.ManageRecorderProcessLocally, "VGW_BURNBRIDGE_MANAGE_RECORDER_PROCESS_LOCALLY")
+	overrideStringEnv(&opts.RecorderServiceName, "VGW_BURNBRIDGE_RECORDER_SERVICE_NAME")
+	overrideStringEnv(&opts.RecorderProcessPattern, "VGW_BURNBRIDGE_RECORDER_PROCESS_PATTERN")
+	overrideStringEnv(&opts.RecorderStartCommand, "VGW_BURNBRIDGE_RECORDER_START_COMMAND")
+	overrideStringEnv(&opts.RecorderWorkingDirectory, "VGW_BURNBRIDGE_RECORDER_WORKING_DIRECTORY")
+	overrideIntEnv(&opts.RecorderHealthCheckSeconds, "VGW_BURNBRIDGE_RECORDER_HEALTH_CHECK_SECONDS")
+}
+
+func overrideStringEnv(target *string, key string) {
+	if target == nil {
+		return
+	}
+	if value, ok := os.LookupEnv(key); ok {
+		*target = strings.TrimSpace(value)
+	}
+}
+
+func overrideBoolEnv(target *bool, key string) {
+	if target == nil {
+		return
+	}
+	if value, ok := os.LookupEnv(key); ok {
+		if parsed, err := strconv.ParseBool(strings.TrimSpace(value)); err == nil {
+			*target = parsed
+		}
+	}
+}
+
+func overrideIntEnv(target *int, key string) {
+	if target == nil {
+		return
+	}
+	if value, ok := os.LookupEnv(key); ok {
+		if parsed, err := strconv.Atoi(strings.TrimSpace(value)); err == nil {
+			*target = parsed
+		}
+	}
 }

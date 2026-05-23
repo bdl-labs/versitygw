@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -342,8 +344,167 @@ func Load(configPath string) (File, string, error) {
 	if strings.TrimSpace(cfg.OpticalArchive.LinuxServices.MountRefreshServiceType) == "" {
 		cfg.OpticalArchive.LinuxServices.MountRefreshServiceType = defaults.OpticalArchive.LinuxServices.MountRefreshServiceType
 	}
+	applyEnvOverrides(&cfg)
 
 	return cfg, resolved, nil
+}
+
+func applyEnvOverrides(cfg *File) {
+	if cfg == nil {
+		return
+	}
+
+	applyStringOverride(&cfg.OpticalArchive.Gateway.ConfigApiUsername, "OpticalArchive", "Gateway", "ConfigApiUsername")
+	applyStringOverride(&cfg.OpticalArchive.Gateway.ConfigApiPassword, "OpticalArchive", "Gateway", "ConfigApiPassword")
+	applyStringOverride(&cfg.OpticalArchive.Gateway.ConfigFilePath, "OpticalArchive", "Gateway", "ConfigFilePath")
+	applyStringOverride(&cfg.OpticalArchive.Gateway.BurnServerConfigPath, "OpticalArchive", "Gateway", "BurnServerConfigPath")
+	applyStringOverride(&cfg.OpticalArchive.Gateway.GatewayMetadataDbPath, "OpticalArchive", "Gateway", "GatewayMetadataDbPath")
+
+	applyStringOverride(&cfg.OpticalArchive.ReadMountPath, "OpticalArchive", "ReadMountPath")
+
+	applyIntOverride(&cfg.OpticalArchive.Recorder.DriveIndex, "OpticalArchive", "Recorder", "DriveIndex")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.LayoutDbPath, "OpticalArchive", "Recorder", "LayoutDbPath")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate, "OpticalArchive", "Recorder", "MetadataDbFileNameTemplate")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.GrpcChunkSize, "OpticalArchive", "Recorder", "GrpcChunkSize")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.DiscSerialStrategy, "OpticalArchive", "Recorder", "DiscSerialStrategy")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.VolumeLabelStrategy, "OpticalArchive", "Recorder", "VolumeLabelStrategy")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.SerialPrefix, "OpticalArchive", "Recorder", "SerialPrefix")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.VolumeLabelPrefix, "OpticalArchive", "Recorder", "VolumeLabelPrefix")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.GeneratedSerialLength, "OpticalArchive", "Recorder", "GeneratedSerialLength")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength, "OpticalArchive", "Recorder", "GeneratedVolumeLabelLength")
+	applyBoolOverride(&cfg.OpticalArchive.Recorder.AllowCreateBucketBinding, "OpticalArchive", "Recorder", "AllowCreateBucketBinding")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.LicenseFilePath, "OpticalArchive", "Recorder", "LicenseFilePath")
+
+	applyIntOverride(&cfg.OpticalArchive.Runtime.SectorSizeBytes, "OpticalArchive", "Runtime", "SectorSizeBytes")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.BlocksPerTransfer, "OpticalArchive", "Runtime", "BlocksPerTransfer")
+	applyInt64Override(&cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes, "OpticalArchive", "Runtime", "SessionCacheCapacityBytes")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.WriteBufferBytes, "OpticalArchive", "Runtime", "WriteBufferBytes")
+
+	applyBoolOverride(&cfg.OpticalArchive.Redundancy.Enabled, "OpticalArchive", "Redundancy", "Enabled")
+	applyIntOverride(&cfg.OpticalArchive.Redundancy.DataBlockCount, "OpticalArchive", "Redundancy", "DataBlockCount")
+	applyIntOverride(&cfg.OpticalArchive.Redundancy.ParityBlockCount, "OpticalArchive", "Redundancy", "ParityBlockCount")
+	applyIntOverride(&cfg.OpticalArchive.Redundancy.BlockSizeBytes, "OpticalArchive", "Redundancy", "BlockSizeBytes")
+
+	applyStringOverride(&cfg.OpticalArchive.GatewayInterop.GrpcAddr, "OpticalArchive", "GatewayInterop", "GrpcAddr")
+	applyIntOverride(&cfg.OpticalArchive.GatewayInterop.GrpcDialTimeoutSeconds, "OpticalArchive", "GatewayInterop", "GrpcDialTimeoutSeconds")
+	applyIntOverride(&cfg.OpticalArchive.GatewayInterop.GrpcReadyTimeoutSeconds, "OpticalArchive", "GatewayInterop", "GrpcReadyTimeoutSeconds")
+	applyIntOverride(&cfg.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds, "OpticalArchive", "GatewayInterop", "GrpcPingTimeoutSeconds")
+
+	applyStringOverride(&cfg.OpticalArchive.Logging.Gateway.AccessLogPath, "OpticalArchive", "Logging", "Gateway", "AccessLogPath")
+	applyStringOverride(&cfg.OpticalArchive.Logging.Gateway.AdminLogPath, "OpticalArchive", "Logging", "Gateway", "AdminLogPath")
+	applyIntOverride(&cfg.OpticalArchive.Logging.Gateway.FileSizeMb, "OpticalArchive", "Logging", "Gateway", "FileSizeMb")
+	applyIntOverride(&cfg.OpticalArchive.Logging.Gateway.MaxBackups, "OpticalArchive", "Logging", "Gateway", "MaxBackups")
+	applyIntOverride(&cfg.OpticalArchive.Logging.Gateway.RetentionDays, "OpticalArchive", "Logging", "Gateway", "RetentionDays")
+	applyBoolOverride(&cfg.OpticalArchive.Logging.Gateway.EnableCompression, "OpticalArchive", "Logging", "Gateway", "EnableCompression")
+
+	applyStringOverride(&cfg.OpticalArchive.Logging.Recorder.LogDirectory, "OpticalArchive", "Logging", "Recorder", "LogDirectory")
+	applyIntOverride(&cfg.OpticalArchive.Logging.Recorder.FileSizeMb, "OpticalArchive", "Logging", "Recorder", "FileSizeMb")
+	applyIntOverride(&cfg.OpticalArchive.Logging.Recorder.RetentionDays, "OpticalArchive", "Logging", "Recorder", "RetentionDays")
+	applyBoolOverride(&cfg.OpticalArchive.Logging.Recorder.EnableCompression, "OpticalArchive", "Logging", "Recorder", "EnableCompression")
+	applyStringOverride(&cfg.OpticalArchive.Logging.Recorder.MinLevel, "OpticalArchive", "Logging", "Recorder", "MinLevel")
+
+	applyStringOverride(&cfg.OpticalArchive.Upgrade.GatewayStagingDirectory, "OpticalArchive", "Upgrade", "GatewayStagingDirectory")
+	applyStringOverride(&cfg.OpticalArchive.Upgrade.RecorderStagingDirectory, "OpticalArchive", "Upgrade", "RecorderStagingDirectory")
+	applyStringOverride(&cfg.OpticalArchive.Upgrade.GatewayApplyCommand, "OpticalArchive", "Upgrade", "GatewayApplyCommand")
+	applyStringOverride(&cfg.OpticalArchive.Upgrade.RecorderApplyCommand, "OpticalArchive", "Upgrade", "RecorderApplyCommand")
+
+	applyBoolOverride(&cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally, "OpticalArchive", "LinuxServices", "ManageRecorderProcessLocally")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.RecorderServiceName, "OpticalArchive", "LinuxServices", "RecorderServiceName")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.RecorderProcessPattern, "OpticalArchive", "LinuxServices", "RecorderProcessPattern")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.RecorderStartCommand, "OpticalArchive", "LinuxServices", "RecorderStartCommand")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.RecorderWorkingDirectory, "OpticalArchive", "LinuxServices", "RecorderWorkingDirectory")
+	applyIntOverride(&cfg.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds, "OpticalArchive", "LinuxServices", "RecorderHealthCheckSeconds")
+	applyBoolOverride(&cfg.OpticalArchive.LinuxServices.MountRefreshEnabled, "OpticalArchive", "LinuxServices", "MountRefreshEnabled")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.MountRefreshServiceType, "OpticalArchive", "LinuxServices", "MountRefreshServiceType")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.MountRefreshMountPath, "OpticalArchive", "LinuxServices", "MountRefreshMountPath")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.MountRefreshDevice, "OpticalArchive", "LinuxServices", "MountRefreshDevice")
+	applyStringOverride(&cfg.OpticalArchive.LinuxServices.MountRefreshCommand, "OpticalArchive", "LinuxServices", "MountRefreshCommand")
+}
+
+func applyStringOverride(target *string, parts ...string) {
+	if target == nil {
+		return
+	}
+	if raw, ok := lookupEnvOverride(parts...); ok {
+		*target = strings.TrimSpace(raw)
+	}
+}
+
+func applyIntOverride(target *int, parts ...string) {
+	if target == nil {
+		return
+	}
+	if raw, ok := lookupEnvOverride(parts...); ok {
+		if value, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil {
+			*target = value
+		}
+	}
+}
+
+func applyInt64Override(target *int64, parts ...string) {
+	if target == nil {
+		return
+	}
+	if raw, ok := lookupEnvOverride(parts...); ok {
+		if value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64); err == nil {
+			*target = value
+		}
+	}
+}
+
+func applyBoolOverride(target *bool, parts ...string) {
+	if target == nil {
+		return
+	}
+	if raw, ok := lookupEnvOverride(parts...); ok {
+		if value, err := strconv.ParseBool(strings.TrimSpace(raw)); err == nil {
+			*target = value
+		}
+	}
+}
+
+func lookupEnvOverride(parts ...string) (string, bool) {
+	for _, key := range envOverrideKeys(parts...) {
+		if value, ok := os.LookupEnv(key); ok {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func envOverrideKeys(parts ...string) []string {
+	if len(parts) == 0 {
+		return nil
+	}
+
+	dotnetStyle := strings.Join(parts, "__")
+	snakeParts := make([]string, 0, len(parts))
+	for _, part := range parts {
+		snakeParts = append(snakeParts, strings.ToUpper(camelToSnake(part)))
+	}
+
+	return []string{
+		dotnetStyle,
+		strings.Join(snakeParts, "__"),
+	}
+}
+
+func camelToSnake(in string) string {
+	if in == "" {
+		return ""
+	}
+
+	var out []rune
+	for i, r := range in {
+		if i > 0 && unicode.IsUpper(r) {
+			prev := rune(in[i-1])
+			if unicode.IsLower(prev) || unicode.IsDigit(prev) {
+				out = append(out, '_')
+			}
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
 
 func Save(configPath string, cfg File) error {
