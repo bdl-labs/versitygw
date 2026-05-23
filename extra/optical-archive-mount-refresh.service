@@ -1,0 +1,8 @@
+[Unit]
+Description=Optical Archive Mount Refresh Helper
+After=optical-archive-recorder.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/optical-archive/optical-archive.env
+ExecStart=/bin/sh -lc '${OPTICAL_ARCHIVE_MOUNT_REFRESH_COMMAND}'

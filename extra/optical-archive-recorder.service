@@ -1,0 +1,15 @@
+[Unit]
+Description=Optical Archive BurnServer
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/optical-archive/recorder
+Environment=OPTICAL_ARCHIVE_CONFIG_PATH=/etc/optical-archive/optical-archive.config.json
+ExecStart=/usr/bin/dotnet /opt/optical-archive/recorder/BurnServer.dll
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

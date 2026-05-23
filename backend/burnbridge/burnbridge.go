@@ -95,6 +95,10 @@ type Options struct {
 	RecorderS3PresignedGetURL string // optional; if set, recorder may prefer GET to this URL
 
 	AllowCreateBucketBinding bool
+	ManageRecorderProcessLocally bool
+	RecorderStartCommand         string
+	RecorderWorkingDirectory     string
+	RecorderHealthCheckSeconds   int
 }
 
 // objectLockIndex maps (bucket,key) to a fixed shard; see objectLockShards in constants.go.
@@ -346,6 +350,9 @@ func New(opts Options) (*BurnBridge, error) {
 		return nil, fmt.Errorf("burnbridge: grpc address required (e.g. 127.0.0.1:50051)")
 	}
 	normalizeOpts(&opts)
+	if err := maybeStartLocalRecorderProcess(opts); err != nil {
+		return nil, err
+	}
 
 	var metaOpts []meta.SqlMetaOption
 	if opts.SQLiteMaintCtx != nil {

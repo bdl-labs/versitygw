@@ -154,6 +154,21 @@
           </section>
 
           <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Linux Services</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="flex items-center gap-3 pt-8"><input id="linux-manage-recorder" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Gateway starts local recorder</label></div>
+              <div><label class="block text-sm font-medium mb-2">Recorder Health Check Seconds</label><input id="linux-recorder-health-seconds" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Recorder Start Command</label><input id="linux-recorder-start-command" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Recorder Working Directory</label><input id="linux-recorder-working-directory" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div class="flex items-center gap-3 pt-8"><input id="linux-mount-refresh-enabled" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Enable Linux mount refresh</label></div>
+              <div><label class="block text-sm font-medium mb-2">Mount Refresh Mode</label><input id="linux-mount-refresh-type" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Mount Path</label><input id="linux-mount-refresh-path" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Mount Device</label><input id="linux-mount-refresh-device" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div class="md:col-span-2"><label class="block text-sm font-medium mb-2">Mount Refresh Command</label><input id="linux-mount-refresh-command" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
             <h2 class="text-lg font-semibold text-charcoal mb-4">Admin Actions</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div class="space-y-3">
@@ -226,6 +241,7 @@
       const loggingGateway = archiveGroup(payload, 'LoggingGateway');
       const loggingRecorder = archiveGroup(payload, 'LoggingRecorder');
       const upgrade = archiveGroup(payload, 'Upgrade');
+      const linuxServices = archiveGroup(payload, 'LinuxServices');
 
       document.getElementById('gw-config-path').value = gateway.ConfigFilePath || '';
       document.getElementById('gw-api-user').value = gateway.ConfigApiUsername || '';
@@ -271,6 +287,15 @@
       document.getElementById('upgrade-recorder-dir').value = upgrade.RecorderStagingDirectory || '';
       document.getElementById('upgrade-gateway-command').value = upgrade.GatewayApplyCommand || '';
       document.getElementById('upgrade-recorder-command').value = upgrade.RecorderApplyCommand || '';
+      document.getElementById('linux-manage-recorder').checked = !!linuxServices.ManageRecorderProcessLocally;
+      document.getElementById('linux-recorder-start-command').value = linuxServices.RecorderStartCommand || '';
+      document.getElementById('linux-recorder-working-directory').value = linuxServices.RecorderWorkingDirectory || '';
+      document.getElementById('linux-recorder-health-seconds').value = linuxServices.RecorderHealthCheckSeconds ?? 30;
+      document.getElementById('linux-mount-refresh-enabled').checked = !!linuxServices.MountRefreshEnabled;
+      document.getElementById('linux-mount-refresh-type').value = linuxServices.MountRefreshServiceType || '';
+      document.getElementById('linux-mount-refresh-path').value = linuxServices.MountRefreshMountPath || '';
+      document.getElementById('linux-mount-refresh-device').value = linuxServices.MountRefreshDevice || '';
+      document.getElementById('linux-mount-refresh-command').value = linuxServices.MountRefreshCommand || '';
     }
 
     function collectArchiveConfig() {
@@ -319,6 +344,15 @@
       cfg.OpticalArchive.Upgrade.RecorderStagingDirectory = document.getElementById('upgrade-recorder-dir').value.trim();
       cfg.OpticalArchive.Upgrade.GatewayApplyCommand = document.getElementById('upgrade-gateway-command').value.trim();
       cfg.OpticalArchive.Upgrade.RecorderApplyCommand = document.getElementById('upgrade-recorder-command').value.trim();
+      cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally = document.getElementById('linux-manage-recorder').checked;
+      cfg.OpticalArchive.LinuxServices.RecorderStartCommand = document.getElementById('linux-recorder-start-command').value.trim();
+      cfg.OpticalArchive.LinuxServices.RecorderWorkingDirectory = document.getElementById('linux-recorder-working-directory').value.trim();
+      cfg.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds = Number(document.getElementById('linux-recorder-health-seconds').value || 0);
+      cfg.OpticalArchive.LinuxServices.MountRefreshEnabled = document.getElementById('linux-mount-refresh-enabled').checked;
+      cfg.OpticalArchive.LinuxServices.MountRefreshServiceType = document.getElementById('linux-mount-refresh-type').value.trim();
+      cfg.OpticalArchive.LinuxServices.MountRefreshMountPath = document.getElementById('linux-mount-refresh-path').value.trim();
+      cfg.OpticalArchive.LinuxServices.MountRefreshDevice = document.getElementById('linux-mount-refresh-device').value.trim();
+      cfg.OpticalArchive.LinuxServices.MountRefreshCommand = document.getElementById('linux-mount-refresh-command').value.trim();
       return cfg;
     }
 

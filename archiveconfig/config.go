@@ -29,6 +29,7 @@ type OpticalArchive struct {
 	GatewayInterop    GatewayInterop      `json:"GatewayInterop"`
 	Logging           Logging             `json:"Logging"`
 	Upgrade           Upgrade             `json:"Upgrade"`
+	LinuxServices     LinuxServices       `json:"LinuxServices"`
 	DiscBucketBindings []DiscBucketBinding `json:"DiscBucketBindings"`
 }
 
@@ -81,6 +82,18 @@ type Upgrade struct {
 	RecorderStagingDirectory string `json:"RecorderStagingDirectory"`
 	GatewayApplyCommand      string `json:"GatewayApplyCommand"`
 	RecorderApplyCommand     string `json:"RecorderApplyCommand"`
+}
+
+type LinuxServices struct {
+	ManageRecorderProcessLocally bool   `json:"ManageRecorderProcessLocally"`
+	RecorderStartCommand         string `json:"RecorderStartCommand"`
+	RecorderWorkingDirectory     string `json:"RecorderWorkingDirectory"`
+	RecorderHealthCheckSeconds   int    `json:"RecorderHealthCheckSeconds"`
+	MountRefreshEnabled          bool   `json:"MountRefreshEnabled"`
+	MountRefreshServiceType      string `json:"MountRefreshServiceType"`
+	MountRefreshMountPath        string `json:"MountRefreshMountPath"`
+	MountRefreshDevice           string `json:"MountRefreshDevice"`
+	MountRefreshCommand          string `json:"MountRefreshCommand"`
 }
 
 type Logging struct {
@@ -181,6 +194,17 @@ func DefaultFile(path string) File {
 				RecorderStagingDirectory: "D:\\BRS\\primoburner-net\\samples\\BurnServer\\upgrade",
 				GatewayApplyCommand:      "",
 				RecorderApplyCommand:     "",
+			},
+			LinuxServices: LinuxServices{
+				ManageRecorderProcessLocally: false,
+				RecorderStartCommand:         "",
+				RecorderWorkingDirectory:     "",
+				RecorderHealthCheckSeconds:   30,
+				MountRefreshEnabled:          false,
+				MountRefreshServiceType:      "command",
+				MountRefreshMountPath:        "",
+				MountRefreshDevice:           "",
+				MountRefreshCommand:          "",
 			},
 			DiscBucketBindings: []DiscBucketBinding{},
 		},
@@ -307,6 +331,12 @@ func Load(configPath string) (File, string, error) {
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.Upgrade.RecorderApplyCommand) == "" {
 		cfg.OpticalArchive.Upgrade.RecorderApplyCommand = defaults.OpticalArchive.Upgrade.RecorderApplyCommand
+	}
+	if cfg.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds <= 0 {
+		cfg.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds = defaults.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.LinuxServices.MountRefreshServiceType) == "" {
+		cfg.OpticalArchive.LinuxServices.MountRefreshServiceType = defaults.OpticalArchive.LinuxServices.MountRefreshServiceType
 	}
 
 	return cfg, resolved, nil
