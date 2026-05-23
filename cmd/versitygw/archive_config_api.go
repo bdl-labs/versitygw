@@ -115,6 +115,24 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if next.OpticalArchive.Recorder.GrpcChunkSize <= 0 {
 		next.OpticalArchive.Recorder.GrpcChunkSize = current.OpticalArchive.Recorder.GrpcChunkSize
 	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.DiscSerialStrategy) == "" {
+		next.OpticalArchive.Recorder.DiscSerialStrategy = current.OpticalArchive.Recorder.DiscSerialStrategy
+	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.VolumeLabelStrategy) == "" {
+		next.OpticalArchive.Recorder.VolumeLabelStrategy = current.OpticalArchive.Recorder.VolumeLabelStrategy
+	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.SerialPrefix) == "" {
+		next.OpticalArchive.Recorder.SerialPrefix = current.OpticalArchive.Recorder.SerialPrefix
+	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.VolumeLabelPrefix) == "" {
+		next.OpticalArchive.Recorder.VolumeLabelPrefix = current.OpticalArchive.Recorder.VolumeLabelPrefix
+	}
+	if next.OpticalArchive.Recorder.GeneratedSerialLength <= 0 {
+		next.OpticalArchive.Recorder.GeneratedSerialLength = current.OpticalArchive.Recorder.GeneratedSerialLength
+	}
+	if next.OpticalArchive.Recorder.GeneratedVolumeLabelLength <= 0 {
+		next.OpticalArchive.Recorder.GeneratedVolumeLabelLength = current.OpticalArchive.Recorder.GeneratedVolumeLabelLength
+	}
 	if next.OpticalArchive.Runtime.SectorSizeBytes <= 0 {
 		next.OpticalArchive.Runtime.SectorSizeBytes = current.OpticalArchive.Runtime.SectorSizeBytes
 	}
@@ -167,6 +185,13 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"LayoutDbPath":               cfg.OpticalArchive.Recorder.LayoutDbPath,
 			"MetadataDbFileNameTemplate": cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate,
 			"GrpcChunkSize":              cfg.OpticalArchive.Recorder.GrpcChunkSize,
+			"DiscSerialStrategy":         cfg.OpticalArchive.Recorder.DiscSerialStrategy,
+			"VolumeLabelStrategy":        cfg.OpticalArchive.Recorder.VolumeLabelStrategy,
+			"SerialPrefix":               cfg.OpticalArchive.Recorder.SerialPrefix,
+			"VolumeLabelPrefix":          cfg.OpticalArchive.Recorder.VolumeLabelPrefix,
+			"GeneratedSerialLength":      cfg.OpticalArchive.Recorder.GeneratedSerialLength,
+			"GeneratedVolumeLabelLength": cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength,
+			"AllowCreateBucketBinding":   cfg.OpticalArchive.Recorder.AllowCreateBucketBinding,
 		},
 		"Runtime": map[string]any{
 			"SectorSizeBytes":           cfg.OpticalArchive.Runtime.SectorSizeBytes,

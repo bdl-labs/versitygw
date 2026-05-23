@@ -54,6 +54,70 @@ func (testBurnBridgeClient) FinalizeLayout(context.Context, *burnbridgev1.Finali
 	panic("unexpected FinalizeLayout call")
 }
 
+func TestCreateBucketAllowsBlankDiscBinding(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	b := &BurnBridge{
+		meta:               store,
+		grpc:               testBurnBridgeClient{},
+		allowBucketBinding: true,
+		activeBucket:       "DISC0001",
+		volumeLabelRaw:     "DISC0001",
+		udfLabel:           "DISC0001",
+	}
+
+	err = b.CreateBucket(context.Background(), &s3.CreateBucketInput{
+		Bucket: ptr("archive-20260523"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("CreateBucket returned error: %v", err)
+	}
+	if b.activeBucket != "archive-20260523" {
+		t.Fatalf("active bucket mismatch: %q", b.activeBucket)
+	}
+	if b.udfLabel != "ARCHIVE-20260523" {
+		t.Fatalf("udf label mismatch: %q", b.udfLabel)
+	}
+}
+
+func TestCreateBucketRejectsRebindAfterCommittedObjects(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "file.bin", &meta.BurnbridgeCommittedRecord{
+		Size:         10,
+		ETag:         "\"abc\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:               store,
+		grpc:               testBurnBridgeClient{},
+		allowBucketBinding: true,
+		activeBucket:       "disc-a",
+		volumeLabelRaw:     "DISC-A",
+		udfLabel:           "DISC-A",
+	}
+
+	err = b.CreateBucket(context.Background(), &s3.CreateBucketInput{
+		Bucket: ptr("disc-b"),
+	}, nil)
+	if err == nil {
+		t.Fatal("expected CreateBucket rebind to fail after committed objects exist")
+	}
+}
+
 func TestHeadAndListUseMetadataOnly(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)

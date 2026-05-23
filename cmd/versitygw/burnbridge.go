@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/urfave/cli/v2"
+	"github.com/versity/versitygw/archiveconfig"
 	"github.com/versity/versitygw/backend/burnbridge"
 )
 
@@ -220,10 +221,14 @@ func runBurnbridge(ctx *cli.Context) error {
 		RecorderS3SessionToken:    burnbridgeRecorderS3SessionToken,
 		RecorderS3ForcePathStyle:  burnbridgeRecorderS3ForcePathStyle,
 		RecorderS3PresignedGetURL: burnbridgeRecorderS3PresignedGetURL,
+		AllowCreateBucketBinding:  true,
 	}
 
 	if flashEmmcOptimized {
 		opts.SQLiteMaintCtx = ctx.Context
+	}
+	if cfg, _, err := archiveconfig.Load(""); err == nil {
+		opts.AllowCreateBucketBinding = cfg.OpticalArchive.Recorder.AllowCreateBucketBinding
 	}
 
 	be, err := burnbridge.New(opts)

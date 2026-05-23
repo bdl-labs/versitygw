@@ -73,6 +73,12 @@
               <div><label class="block text-sm font-medium mb-2">Layout DB Path</label><input id="rec-layout-db" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Metadata DB File Template</label><input id="rec-meta-template" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">gRPC Chunk Size</label><input id="rec-grpc-chunk" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Disc Serial Strategy</label><input id="rec-disc-serial-strategy" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Volume Label Strategy</label><input id="rec-volume-label-strategy" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Serial Prefix</label><input id="rec-serial-prefix" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Volume Label Prefix</label><input id="rec-volume-prefix" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Generated Serial Length</label><input id="rec-serial-length" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Generated Volume Length</label><input id="rec-volume-length" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
             </div>
           </section>
 
@@ -166,6 +172,12 @@
       document.getElementById('rec-layout-db').value = recorder.LayoutDbPath || '';
       document.getElementById('rec-meta-template').value = recorder.MetadataDbFileNameTemplate || '';
       document.getElementById('rec-grpc-chunk').value = recorder.GrpcChunkSize ?? 1048576;
+      document.getElementById('rec-disc-serial-strategy').value = recorder.DiscSerialStrategy || '';
+      document.getElementById('rec-volume-label-strategy').value = recorder.VolumeLabelStrategy || '';
+      document.getElementById('rec-serial-prefix').value = recorder.SerialPrefix || '';
+      document.getElementById('rec-volume-prefix').value = recorder.VolumeLabelPrefix || '';
+      document.getElementById('rec-serial-length').value = recorder.GeneratedSerialLength ?? 24;
+      document.getElementById('rec-volume-length').value = recorder.GeneratedVolumeLabelLength ?? 24;
       document.getElementById('rt-sector-size').value = runtime.SectorSizeBytes ?? 2048;
       document.getElementById('rt-blocks-per-transfer').value = runtime.BlocksPerTransfer ?? 16;
       document.getElementById('rt-session-cache').value = runtime.SessionCacheCapacityBytes ?? 0;
@@ -192,6 +204,12 @@
       cfg.OpticalArchive.Recorder.LayoutDbPath = document.getElementById('rec-layout-db').value.trim();
       cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = document.getElementById('rec-meta-template').value.trim();
       cfg.OpticalArchive.Recorder.GrpcChunkSize = Number(document.getElementById('rec-grpc-chunk').value || 0);
+      cfg.OpticalArchive.Recorder.DiscSerialStrategy = document.getElementById('rec-disc-serial-strategy').value.trim();
+      cfg.OpticalArchive.Recorder.VolumeLabelStrategy = document.getElementById('rec-volume-label-strategy').value.trim();
+      cfg.OpticalArchive.Recorder.SerialPrefix = document.getElementById('rec-serial-prefix').value.trim();
+      cfg.OpticalArchive.Recorder.VolumeLabelPrefix = document.getElementById('rec-volume-prefix').value.trim();
+      cfg.OpticalArchive.Recorder.GeneratedSerialLength = Number(document.getElementById('rec-serial-length').value || 0);
+      cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength = Number(document.getElementById('rec-volume-length').value || 0);
       cfg.OpticalArchive.Runtime.SectorSizeBytes = Number(document.getElementById('rt-sector-size').value || 0);
       cfg.OpticalArchive.Runtime.BlocksPerTransfer = Number(document.getElementById('rt-blocks-per-transfer').value || 0);
       cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes = Number(document.getElementById('rt-session-cache').value || 0);

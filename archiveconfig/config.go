@@ -27,6 +27,7 @@ type OpticalArchive struct {
 	Runtime        Runtime        `json:"Runtime"`
 	Redundancy     Redundancy     `json:"Redundancy"`
 	GatewayInterop GatewayInterop `json:"GatewayInterop"`
+	DiscBucketBindings []DiscBucketBinding `json:"DiscBucketBindings"`
 }
 
 type Gateway struct {
@@ -42,6 +43,13 @@ type Recorder struct {
 	LayoutDbPath               string `json:"LayoutDbPath"`
 	MetadataDbFileNameTemplate string `json:"MetadataDbFileNameTemplate"`
 	GrpcChunkSize              int    `json:"GrpcChunkSize"`
+	DiscSerialStrategy         string `json:"DiscSerialStrategy"`
+	VolumeLabelStrategy        string `json:"VolumeLabelStrategy"`
+	SerialPrefix               string `json:"SerialPrefix"`
+	VolumeLabelPrefix          string `json:"VolumeLabelPrefix"`
+	GeneratedSerialLength      int    `json:"GeneratedSerialLength"`
+	GeneratedVolumeLabelLength int    `json:"GeneratedVolumeLabelLength"`
+	AllowCreateBucketBinding   bool   `json:"AllowCreateBucketBinding"`
 }
 
 type Runtime struct {
@@ -65,6 +73,12 @@ type GatewayInterop struct {
 	GrpcPingTimeoutSeconds  int    `json:"GrpcPingTimeoutSeconds"`
 }
 
+type DiscBucketBinding struct {
+	ProbeVolumeLabel string `json:"ProbeVolumeLabel"`
+	Bucket           string `json:"Bucket"`
+	UdfVolumeLabel   string `json:"UdfVolumeLabel"`
+}
+
 func DefaultFile(path string) File {
 	resolved := strings.TrimSpace(path)
 	if resolved == "" {
@@ -86,6 +100,13 @@ func DefaultFile(path string) File {
 				LayoutDbPath:               "D:\\BRS\\primoburner-net\\samples\\BurnServer\\udf-layout.db",
 				MetadataDbFileNameTemplate: "__archive_{bucket}.sqlite3",
 				GrpcChunkSize:              1048576,
+				DiscSerialStrategy:         "hash",
+				VolumeLabelStrategy:        "serial",
+				SerialPrefix:               "OA",
+				VolumeLabelPrefix:          "DISC",
+				GeneratedSerialLength:      24,
+				GeneratedVolumeLabelLength: 24,
+				AllowCreateBucketBinding:   true,
 			},
 			Runtime: Runtime{
 				SectorSizeBytes:           2048,
@@ -105,6 +126,7 @@ func DefaultFile(path string) File {
 				GrpcReadyTimeoutSeconds: 90,
 				GrpcPingTimeoutSeconds:  60,
 			},
+			DiscBucketBindings: []DiscBucketBinding{},
 		},
 	}
 }
@@ -166,6 +188,24 @@ func Load(configPath string) (File, string, error) {
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate) == "" {
 		cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = defaults.OpticalArchive.Recorder.MetadataDbFileNameTemplate
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.DiscSerialStrategy) == "" {
+		cfg.OpticalArchive.Recorder.DiscSerialStrategy = defaults.OpticalArchive.Recorder.DiscSerialStrategy
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.VolumeLabelStrategy) == "" {
+		cfg.OpticalArchive.Recorder.VolumeLabelStrategy = defaults.OpticalArchive.Recorder.VolumeLabelStrategy
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.SerialPrefix) == "" {
+		cfg.OpticalArchive.Recorder.SerialPrefix = defaults.OpticalArchive.Recorder.SerialPrefix
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.VolumeLabelPrefix) == "" {
+		cfg.OpticalArchive.Recorder.VolumeLabelPrefix = defaults.OpticalArchive.Recorder.VolumeLabelPrefix
+	}
+	if cfg.OpticalArchive.Recorder.GeneratedSerialLength <= 0 {
+		cfg.OpticalArchive.Recorder.GeneratedSerialLength = defaults.OpticalArchive.Recorder.GeneratedSerialLength
+	}
+	if cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength <= 0 {
+		cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength = defaults.OpticalArchive.Recorder.GeneratedVolumeLabelLength
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.GatewayInterop.GrpcAddr) == "" {
 		cfg.OpticalArchive.GatewayInterop.GrpcAddr = defaults.OpticalArchive.GatewayInterop.GrpcAddr
@@ -233,4 +273,47 @@ func CheckBasicAuth(headerValue string, cfg File) bool {
 	}
 
 	return parts[0] == expectedUser && parts[1] == expectedPass
+}
+
+func FindDiscBucketBinding(cfg File, probeVolumeLabel string) (DiscBucketBinding, bool) {
+	probe := strings.TrimSpace(probeVolumeLabel)
+	if probe == "" {
+		return DiscBucketBinding{}, false
+	}
+
+	for _, binding := range cfg.OpticalArchive.DiscBucketBindings {
+		if strings.EqualFold(strings.TrimSpace(binding.ProbeVolumeLabel), probe) {
+			return binding, true
+		}
+	}
+
+	return DiscBucketBinding{}, false
+}
+
+func UpsertDiscBucketBinding(cfg *File, probeVolumeLabel, bucket, udfVolumeLabel string) {
+	if cfg == nil {
+		return
+	}
+
+	probe := strings.TrimSpace(probeVolumeLabel)
+	bkt := strings.TrimSpace(bucket)
+	udf := strings.TrimSpace(udfVolumeLabel)
+	if probe == "" || bkt == "" || udf == "" {
+		return
+	}
+
+	for i := range cfg.OpticalArchive.DiscBucketBindings {
+		if strings.EqualFold(strings.TrimSpace(cfg.OpticalArchive.DiscBucketBindings[i].ProbeVolumeLabel), probe) {
+			cfg.OpticalArchive.DiscBucketBindings[i].ProbeVolumeLabel = probe
+			cfg.OpticalArchive.DiscBucketBindings[i].Bucket = bkt
+			cfg.OpticalArchive.DiscBucketBindings[i].UdfVolumeLabel = udf
+			return
+		}
+	}
+
+	cfg.OpticalArchive.DiscBucketBindings = append(cfg.OpticalArchive.DiscBucketBindings, DiscBucketBinding{
+		ProbeVolumeLabel: probe,
+		Bucket:           bkt,
+		UdfVolumeLabel:   udf,
+	})
 }

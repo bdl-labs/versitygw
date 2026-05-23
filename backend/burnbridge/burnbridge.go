@@ -93,6 +93,8 @@ type Options struct {
 	RecorderS3SessionToken    string
 	RecorderS3ForcePathStyle  bool
 	RecorderS3PresignedGetURL string // optional; if set, recorder may prefer GET to this URL
+
+	AllowCreateBucketBinding bool
 }
 
 // objectLockIndex maps (bucket,key) to a fixed shard; see objectLockShards in constants.go.
@@ -160,6 +162,7 @@ type BurnBridge struct {
 	// activeBucket is the S3 bucket name for this session, derived from the disc volume label at New().
 	activeBucket   string
 	volumeLabelRaw string
+	allowBucketBinding bool
 }
 
 var _ backend.Backend = &BurnBridge{}
@@ -239,6 +242,10 @@ func sanitizeS3BucketFromVolumeLabel(raw string) (string, error) {
 	return s, nil
 }
 
+func volumeLabelFromBucketName(bucket string) string {
+	return strings.TrimSpace(strings.ToUpper(bucket))
+}
+
 func probeRecorderDiscAtStartup(ctx context.Context, client burnbridgev1.BurnBridgeClient) (bucket string, rawVolume string, readyResp *burnbridgev1.TestUnitReadyResponse, err error) {
 	resp, err := client.TestUnitReady(ctx, &burnbridgev1.TestUnitReadyRequest{})
 	if err != nil {
@@ -259,6 +266,23 @@ func probeRecorderDiscAtStartup(ctx context.Context, client burnbridgev1.BurnBri
 		return "", "", nil, fmt.Errorf("burnbridge: %w", err)
 	}
 	return bucket, raw, resp, nil
+}
+
+func loadDiscBucketBinding(rawVolume string) (archiveconfig.DiscBucketBinding, bool) {
+	cfg, _, err := archiveconfig.Load("")
+	if err != nil {
+		return archiveconfig.DiscBucketBinding{}, false
+	}
+	return archiveconfig.FindDiscBucketBinding(cfg, rawVolume)
+}
+
+func persistDiscBucketBinding(rawVolume, bucket, udfVolumeLabel string) error {
+	cfg, path, err := archiveconfig.Load("")
+	if err != nil {
+		return err
+	}
+	archiveconfig.UpsertDiscBucketBinding(&cfg, rawVolume, bucket, udfVolumeLabel)
+	return archiveconfig.Save(path, cfg)
 }
 
 func discInfoDocFromProto(s3Bucket string, resp *burnbridgev1.TestUnitReadyResponse) *meta.BurnbridgeDiscInfoDocument {
@@ -349,6 +373,14 @@ func New(opts Options) (*BurnBridge, error) {
 		_ = conn.Close()
 		return nil, err
 	}
+	if binding, ok := loadDiscBucketBinding(rawVol); ok {
+		if strings.TrimSpace(binding.Bucket) != "" {
+			activeBucket = strings.TrimSpace(binding.Bucket)
+		}
+		if strings.TrimSpace(opts.UDFVolumeLabel) == "" && strings.TrimSpace(binding.UdfVolumeLabel) != "" {
+			opts.UDFVolumeLabel = strings.TrimSpace(binding.UdfVolumeLabel)
+		}
+	}
 	if activeBucket != "" {
 		if doc := discInfoDocFromProto(activeBucket, turResp); doc != nil {
 			if perr := metaStore.StoreBurnbridgeDiscInfo(doc); perr != nil {
@@ -400,6 +432,7 @@ func New(opts Options) (*BurnBridge, error) {
 
 		activeBucket:   activeBucket,
 		volumeLabelRaw: rawVol,
+		allowBucketBinding: opts.AllowCreateBucketBinding,
 
 		recorderS3Endpoint:        strings.TrimSpace(opts.RecorderS3Endpoint),
 		recorderS3Region:          strings.TrimSpace(opts.RecorderS3Region),
@@ -452,6 +485,51 @@ func (b *BurnBridge) burnbridgeBucketExists(name string) bool {
 	return name != "" && name == b.activeBucket
 }
 
+func (b *BurnBridge) createBucketBindingAllowed() bool {
+	return b.allowBucketBinding
+}
+
+func (b *BurnBridge) canRebindActiveBucket(target string) bool {
+	if strings.TrimSpace(target) == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(target), strings.TrimSpace(b.activeBucket)) {
+		return true
+	}
+	committed, err := b.meta.ListCommittedObjects(b.activeBucket)
+	if err != nil {
+		return false
+	}
+	return len(committed) == 0
+}
+
+func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
+	if strings.TrimSpace(bucket) == "" {
+		return fmt.Errorf("burnbridge: empty bucket binding")
+	}
+	if strings.TrimSpace(volumeLabel) == "" {
+		return fmt.Errorf("burnbridge: empty volume label binding")
+	}
+
+	originalProbe := strings.TrimSpace(b.volumeLabelRaw)
+	b.activeBucket = bucket
+	b.volumeLabelRaw = volumeLabel
+	b.udfLabel = volumeLabel
+	if originalProbe != "" {
+		if err := persistDiscBucketBinding(originalProbe, bucket, volumeLabel); err != nil {
+			return err
+		}
+	}
+	return b.meta.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:             bucket,
+		VolumeLabel:        volumeLabel,
+		UpdatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
+		TotalCapacityBytes: 0,
+		FreeCapacityBytes:  0,
+		MediaType:          "uninitialized",
+	})
+}
+
 // ------------------------------
 // Bucket APIs
 // ------------------------------
@@ -468,6 +546,42 @@ func (b *BurnBridge) ListBuckets(context.Context, s3response.ListBucketsInput) (
 			Bucket: []s3response.ListAllMyBucketsEntry{{Name: name, CreationDate: time.Now()}},
 		},
 	}, nil
+}
+
+func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput, _ []byte) error {
+	if input == nil || input.Bucket == nil {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if !b.createBucketBindingAllowed() {
+		return s3err.APIError{
+			Code:           "MethodNotAllowed",
+			Description:    "BurnBridge create bucket binding is disabled by configuration.",
+			HTTPStatusCode: http.StatusMethodNotAllowed,
+		}
+	}
+
+	requestedBucket := strings.TrimSpace(*input.Bucket)
+	if requestedBucket == "" {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+
+	targetVolumeLabel := volumeLabelFromBucketName(requestedBucket)
+	sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(targetVolumeLabel)
+	if err != nil || !strings.EqualFold(sanitizedBucket, requestedBucket) {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+
+	if strings.TrimSpace(b.activeBucket) == "" {
+		return b.bindActiveBucket(requestedBucket, targetVolumeLabel)
+	}
+	if strings.EqualFold(b.activeBucket, requestedBucket) {
+		return s3err.GetAPIError(s3err.ErrBucketAlreadyOwnedByYou)
+	}
+	if !b.canRebindActiveBucket(requestedBucket) {
+		return s3err.GetAPIError(s3err.ErrBucketAlreadyExists)
+	}
+
+	return b.bindActiveBucket(requestedBucket, targetVolumeLabel)
 }
 
 // HeadBucket confirms the bucket exists and the recorder reports the optical unit ready for this bucket.
