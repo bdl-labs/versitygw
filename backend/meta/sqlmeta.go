@@ -407,6 +407,11 @@ func (s SqlMeta) GetBurnbridgeFinalizeLayoutJSON(bucket string) ([]byte, error) 
 	return s.RetrieveAttribute(nil, bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute)
 }
 
+// DeleteBurnbridgeFinalizeLayoutJSON removes the cached finalize transcript for the reserved FinalizeLayout key.
+func (s SqlMeta) DeleteBurnbridgeFinalizeLayoutJSON(bucket string) error {
+	return s.DeleteAttribute(bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute)
+}
+
 // BurnbridgeCommittedRecord is JSON-encoded into metadata_entries under BurnbridgeCommittedAttribute.
 type BurnbridgeCommittedRecord struct {
 	JobID              string            `json:"jobId,omitempty"`

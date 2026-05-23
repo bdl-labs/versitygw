@@ -382,12 +382,17 @@ func New(opts Options) (*BurnBridge, error) {
 		readMount = filepath.Clean(readMount)
 	}
 
+	udfLabel := strings.TrimSpace(opts.UDFVolumeLabel)
+	if udfLabel == "" {
+		udfLabel = strings.TrimSpace(rawVol)
+	}
+
 	return &BurnBridge{
 		meta:             metaStore,
 		grpc:             client,
 		grpcConn:         conn,
 		chunkSize:        opts.ChunkSize,
-		udfLabel:         opts.UDFVolumeLabel,
+		udfLabel:         udfLabel,
 		readMount:        readMount,
 		cancelJobTimeout: opts.CancelJobTimeout,
 		putObjectTimeout: opts.PutObjectTimeout,
@@ -704,6 +709,15 @@ func shouldReuseFinalizeLayoutTranscript(bucket string, raw []byte) bool {
 	return doc.GrpcOK && strings.EqualFold(strings.TrimSpace(doc.RecorderStatus), "finalized")
 }
 
+func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
+	if err := b.meta.DeleteBurnbridgeFinalizeLayoutJSON(bucket); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		slog.Warn("burnbridge: failed to invalidate cached FinalizeLayout transcript",
+			"bucket", bucket, "err", err)
+		return
+	}
+	slog.Info("burnbridge: invalidated cached FinalizeLayout transcript", "bucket", bucket)
+}
+
 func (b *BurnBridge) loadOrFinalizeLayoutTranscript(ctx context.Context, bucket string, closeDisc bool) ([]byte, error) {
 	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, prev) {
 		return prev, nil
@@ -726,7 +740,7 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 	}
 
 	if key == meta.BurnbridgeFinalizeLayoutObjectKey {
-		raw, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket)
+		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, false)
 		if err != nil {
 			if errors.Is(err, meta.ErrNoSuchKey) {
 				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
@@ -1733,6 +1747,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	if err := b.meta.StoreBurnbridgeCommitted(nil, bucket, key, committedRec); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
+	b.invalidateFinalizeLayoutTranscript(bucket)
 
 	out := s3response.PutObjectOutput{
 		ETag: etag,
