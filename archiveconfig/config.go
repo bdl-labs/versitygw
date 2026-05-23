@@ -21,18 +21,19 @@ type File struct {
 }
 
 type OpticalArchive struct {
-	Gateway       Gateway       `json:"Gateway"`
-	Recorder      Recorder      `json:"Recorder"`
-	Runtime       Runtime       `json:"Runtime"`
-	Redundancy    Redundancy    `json:"Redundancy"`
+	Gateway        Gateway        `json:"Gateway"`
+	ReadMountPath  string         `json:"ReadMountPath"`
+	Recorder       Recorder       `json:"Recorder"`
+	Runtime        Runtime        `json:"Runtime"`
+	Redundancy     Redundancy     `json:"Redundancy"`
 	GatewayInterop GatewayInterop `json:"GatewayInterop"`
 }
 
 type Gateway struct {
-	ConfigApiUsername    string `json:"ConfigApiUsername"`
-	ConfigApiPassword    string `json:"ConfigApiPassword"`
-	ConfigFilePath       string `json:"ConfigFilePath"`
-	BurnServerConfigPath string `json:"BurnServerConfigPath"`
+	ConfigApiUsername     string `json:"ConfigApiUsername"`
+	ConfigApiPassword     string `json:"ConfigApiPassword"`
+	ConfigFilePath        string `json:"ConfigFilePath"`
+	BurnServerConfigPath  string `json:"BurnServerConfigPath"`
 	GatewayMetadataDbPath string `json:"GatewayMetadataDbPath"`
 }
 
@@ -41,14 +42,13 @@ type Recorder struct {
 	LayoutDbPath               string `json:"LayoutDbPath"`
 	MetadataDbFileNameTemplate string `json:"MetadataDbFileNameTemplate"`
 	GrpcChunkSize              int    `json:"GrpcChunkSize"`
-	ReadMountPath              string `json:"ReadMountPath"`
 }
 
 type Runtime struct {
-	SectorSizeBytes            int   `json:"SectorSizeBytes"`
-	BlocksPerTransfer          int   `json:"BlocksPerTransfer"`
-	SessionCacheCapacityBytes  int64 `json:"SessionCacheCapacityBytes"`
-	WriteBufferBytes           int   `json:"WriteBufferBytes"`
+	SectorSizeBytes           int   `json:"SectorSizeBytes"`
+	BlocksPerTransfer         int   `json:"BlocksPerTransfer"`
+	SessionCacheCapacityBytes int64 `json:"SessionCacheCapacityBytes"`
+	WriteBufferBytes          int   `json:"WriteBufferBytes"`
 }
 
 type Redundancy struct {
@@ -60,7 +60,6 @@ type Redundancy struct {
 
 type GatewayInterop struct {
 	GrpcAddr                string `json:"GrpcAddr"`
-	ReadMountPath           string `json:"ReadMountPath"`
 	GrpcDialTimeoutSeconds  int    `json:"GrpcDialTimeoutSeconds"`
 	GrpcReadyTimeoutSeconds int    `json:"GrpcReadyTimeoutSeconds"`
 	GrpcPingTimeoutSeconds  int    `json:"GrpcPingTimeoutSeconds"`
@@ -75,18 +74,18 @@ func DefaultFile(path string) File {
 	return File{
 		OpticalArchive: OpticalArchive{
 			Gateway: Gateway{
-				ConfigApiUsername:    DefaultConfigUsername,
-				ConfigApiPassword:    DefaultConfigPassword,
-				ConfigFilePath:       resolved,
-				BurnServerConfigPath: "D:\\BRS\\primoburner-net\\samples\\BurnServer\\appsettings.json",
+				ConfigApiUsername:     DefaultConfigUsername,
+				ConfigApiPassword:     DefaultConfigPassword,
+				ConfigFilePath:        resolved,
+				BurnServerConfigPath:  "D:\\BRS\\primoburner-net\\samples\\BurnServer\\appsettings.json",
 				GatewayMetadataDbPath: "D:\\BRS\\versitygw\\burnbridge-meta.db",
 			},
+			ReadMountPath: "",
 			Recorder: Recorder{
 				DriveIndex:                 0,
 				LayoutDbPath:               "D:\\BRS\\primoburner-net\\samples\\BurnServer\\udf-layout.db",
 				MetadataDbFileNameTemplate: "__archive_{bucket}.sqlite3",
 				GrpcChunkSize:              1048576,
-				ReadMountPath:              "",
 			},
 			Runtime: Runtime{
 				SectorSizeBytes:           2048,
@@ -102,7 +101,6 @@ func DefaultFile(path string) File {
 			},
 			GatewayInterop: GatewayInterop{
 				GrpcAddr:                "127.0.0.1:50051",
-				ReadMountPath:           "",
 				GrpcDialTimeoutSeconds:  120,
 				GrpcReadyTimeoutSeconds: 90,
 				GrpcPingTimeoutSeconds:  60,
@@ -144,6 +142,7 @@ func Load(configPath string) (File, string, error) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return File{}, resolved, fmt.Errorf("parse archive config: %w", err)
 	}
+	defaults := DefaultFile(resolved)
 	if strings.TrimSpace(cfg.OpticalArchive.Gateway.ConfigFilePath) == "" {
 		cfg.OpticalArchive.Gateway.ConfigFilePath = resolved
 	}
@@ -157,25 +156,48 @@ func Load(configPath string) (File, string, error) {
 		cfg.OpticalArchive.Gateway.BurnServerConfigPath = DefaultFile(resolved).OpticalArchive.Gateway.BurnServerConfigPath
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.Gateway.GatewayMetadataDbPath) == "" {
-		cfg.OpticalArchive.Gateway.GatewayMetadataDbPath = DefaultFile(resolved).OpticalArchive.Gateway.GatewayMetadataDbPath
+		cfg.OpticalArchive.Gateway.GatewayMetadataDbPath = defaults.OpticalArchive.Gateway.GatewayMetadataDbPath
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.ReadMountPath) == "" {
+		cfg.OpticalArchive.ReadMountPath = legacyReadMountPath(raw)
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.LayoutDbPath) == "" {
-		cfg.OpticalArchive.Recorder.LayoutDbPath = DefaultFile(resolved).OpticalArchive.Recorder.LayoutDbPath
+		cfg.OpticalArchive.Recorder.LayoutDbPath = defaults.OpticalArchive.Recorder.LayoutDbPath
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate) == "" {
-		cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = DefaultFile(resolved).OpticalArchive.Recorder.MetadataDbFileNameTemplate
-	}
-	if strings.TrimSpace(cfg.OpticalArchive.Recorder.ReadMountPath) == "" {
-		cfg.OpticalArchive.Recorder.ReadMountPath = DefaultFile(resolved).OpticalArchive.Recorder.ReadMountPath
+		cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = defaults.OpticalArchive.Recorder.MetadataDbFileNameTemplate
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.GatewayInterop.GrpcAddr) == "" {
-		cfg.OpticalArchive.GatewayInterop.GrpcAddr = DefaultFile(resolved).OpticalArchive.GatewayInterop.GrpcAddr
-	}
-	if strings.TrimSpace(cfg.OpticalArchive.GatewayInterop.ReadMountPath) == "" {
-		cfg.OpticalArchive.GatewayInterop.ReadMountPath = DefaultFile(resolved).OpticalArchive.GatewayInterop.ReadMountPath
+		cfg.OpticalArchive.GatewayInterop.GrpcAddr = defaults.OpticalArchive.GatewayInterop.GrpcAddr
 	}
 
 	return cfg, resolved, nil
+}
+
+func legacyReadMountPath(raw []byte) string {
+	type legacyFile struct {
+		OpticalArchive struct {
+			ReadMountPath string `json:"ReadMountPath"`
+			Recorder      struct {
+				ReadMountPath string `json:"ReadMountPath"`
+			} `json:"Recorder"`
+			GatewayInterop struct {
+				ReadMountPath string `json:"ReadMountPath"`
+			} `json:"GatewayInterop"`
+		} `json:"OpticalArchive"`
+	}
+
+	var legacy legacyFile
+	if err := json.Unmarshal(raw, &legacy); err != nil {
+		return ""
+	}
+	if strings.TrimSpace(legacy.OpticalArchive.ReadMountPath) != "" {
+		return strings.TrimSpace(legacy.OpticalArchive.ReadMountPath)
+	}
+	if strings.TrimSpace(legacy.OpticalArchive.Recorder.ReadMountPath) != "" {
+		return strings.TrimSpace(legacy.OpticalArchive.Recorder.ReadMountPath)
+	}
+	return strings.TrimSpace(legacy.OpticalArchive.GatewayInterop.ReadMountPath)
 }
 
 func Save(configPath string, cfg File) error {

@@ -266,7 +266,7 @@ block-device 写入机制：
    - `SectorSizeBytes / BlocksPerTransfer / SessionCacheCapacityBytes`
    - 通过 BurnServer 启动注入环境变量统一
 4. read mount
-   - 网关 `--read-mount` 与 BurnServer `BurnBridge:ReadMountPath` 需一致（若启用 ReadObject 挂载读）
+   - 网关与 BurnServer 统一读取 `OpticalArchive:ReadMountPath`（若启用 ReadObject 挂载读）
 
 ---
 

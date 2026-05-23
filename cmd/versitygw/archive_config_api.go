@@ -29,7 +29,7 @@ func archiveConfigGetHandler() fiber.Handler {
 
 		response := map[string]any{
 			"path":   path,
-			"groups":  archiveConfigGroups(cfg),
+			"groups": archiveConfigGroups(cfg),
 			"config": cfg,
 		}
 		return c.JSON(response)
@@ -103,8 +103,8 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if strings.TrimSpace(next.OpticalArchive.Gateway.GatewayMetadataDbPath) == "" {
 		next.OpticalArchive.Gateway.GatewayMetadataDbPath = current.OpticalArchive.Gateway.GatewayMetadataDbPath
 	}
-	if strings.TrimSpace(next.OpticalArchive.Recorder.ReadMountPath) == "" {
-		next.OpticalArchive.Recorder.ReadMountPath = current.OpticalArchive.Recorder.ReadMountPath
+	if strings.TrimSpace(next.OpticalArchive.ReadMountPath) == "" {
+		next.OpticalArchive.ReadMountPath = current.OpticalArchive.ReadMountPath
 	}
 	if strings.TrimSpace(next.OpticalArchive.Recorder.LayoutDbPath) == "" {
 		next.OpticalArchive.Recorder.LayoutDbPath = current.OpticalArchive.Recorder.LayoutDbPath
@@ -136,9 +136,6 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if next.OpticalArchive.Redundancy.BlockSizeBytes <= 0 {
 		next.OpticalArchive.Redundancy.BlockSizeBytes = current.OpticalArchive.Redundancy.BlockSizeBytes
 	}
-	if strings.TrimSpace(next.OpticalArchive.GatewayInterop.ReadMountPath) == "" {
-		next.OpticalArchive.GatewayInterop.ReadMountPath = current.OpticalArchive.GatewayInterop.ReadMountPath
-	}
 	if strings.TrimSpace(next.OpticalArchive.GatewayInterop.GrpcAddr) == "" {
 		next.OpticalArchive.GatewayInterop.GrpcAddr = current.OpticalArchive.GatewayInterop.GrpcAddr
 	}
@@ -156,23 +153,25 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 	return map[string]any{
 		"Gateway": map[string]any{
-			"ConfigApiUsername":    cfg.OpticalArchive.Gateway.ConfigApiUsername,
-			"ConfigApiPassword":    cfg.OpticalArchive.Gateway.ConfigApiPassword,
-			"ConfigFilePath":       cfg.OpticalArchive.Gateway.ConfigFilePath,
-			"BurnServerConfigPath": cfg.OpticalArchive.Gateway.BurnServerConfigPath,
+			"ConfigApiUsername":     cfg.OpticalArchive.Gateway.ConfigApiUsername,
+			"ConfigApiPassword":     cfg.OpticalArchive.Gateway.ConfigApiPassword,
+			"ConfigFilePath":        cfg.OpticalArchive.Gateway.ConfigFilePath,
+			"BurnServerConfigPath":  cfg.OpticalArchive.Gateway.BurnServerConfigPath,
 			"GatewayMetadataDbPath": cfg.OpticalArchive.Gateway.GatewayMetadataDbPath,
+		},
+		"Shared": map[string]any{
+			"ReadMountPath": cfg.OpticalArchive.ReadMountPath,
 		},
 		"Recorder": map[string]any{
 			"DriveIndex":                 cfg.OpticalArchive.Recorder.DriveIndex,
 			"LayoutDbPath":               cfg.OpticalArchive.Recorder.LayoutDbPath,
 			"MetadataDbFileNameTemplate": cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate,
 			"GrpcChunkSize":              cfg.OpticalArchive.Recorder.GrpcChunkSize,
-			"ReadMountPath":              cfg.OpticalArchive.Recorder.ReadMountPath,
 		},
 		"Runtime": map[string]any{
 			"SectorSizeBytes":           cfg.OpticalArchive.Runtime.SectorSizeBytes,
 			"BlocksPerTransfer":         cfg.OpticalArchive.Runtime.BlocksPerTransfer,
-			"SessionCacheCapacityBytes":  cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes,
+			"SessionCacheCapacityBytes": cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes,
 			"WriteBufferBytes":          cfg.OpticalArchive.Runtime.WriteBufferBytes,
 		},
 		"Redundancy": map[string]any{
@@ -183,10 +182,9 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 		},
 		"GatewayInterop": map[string]any{
 			"GrpcAddr":                cfg.OpticalArchive.GatewayInterop.GrpcAddr,
-			"ReadMountPath":           cfg.OpticalArchive.GatewayInterop.ReadMountPath,
 			"GrpcDialTimeoutSeconds":  cfg.OpticalArchive.GatewayInterop.GrpcDialTimeoutSeconds,
-			"GrpcReadyTimeoutSeconds":  cfg.OpticalArchive.GatewayInterop.GrpcReadyTimeoutSeconds,
-			"GrpcPingTimeoutSeconds":   cfg.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds,
+			"GrpcReadyTimeoutSeconds": cfg.OpticalArchive.GatewayInterop.GrpcReadyTimeoutSeconds,
+			"GrpcPingTimeoutSeconds":  cfg.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds,
 		},
 	}
 }

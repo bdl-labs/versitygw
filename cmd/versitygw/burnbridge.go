@@ -25,7 +25,6 @@ var (
 	burnbridgeGRPCPingTimeout      time.Duration
 	burnbridgeGRPCCancelJobTimeout time.Duration
 	burnbridgePutObjectTimeout     time.Duration
-	burnbridgeReadMountPath        string
 	// Recorder-side S3 pull (RegisterS3ObjectPullSource)
 	burnbridgeRecorderS3Endpoint        string
 	burnbridgeRecorderS3Region          string
@@ -92,12 +91,6 @@ func burnbridgeCommand() *cli.Command {
 				Usage:       "UDF volume label passed to CommitJob",
 				EnvVars:     []string{"VGW_BURNBRIDGE_UDF_VOLUME_LABEL"},
 				Destination: &burnbridgeUDFVolumeLabel,
-			},
-			&cli.StringFlag{
-				Name:        "read-mount",
-				Usage:       "read burned objects from {mount}/{bucket}/{key} after the disc is finalized and mounted (see BurnbridgeMediaNotVisible if file not on mount yet)",
-				EnvVars:     []string{"VGW_BURNBRIDGE_READ_MOUNT"},
-				Destination: &burnbridgeReadMountPath,
 			},
 			&cli.IntFlag{
 				Name:        "grpc-chunk-size",
@@ -206,7 +199,6 @@ func runBurnbridge(ctx *cli.Context) error {
 
 	opts := burnbridge.Options{
 		DBPath:                 dbPath,
-		ReadMountPath:          burnbridgeReadMountPath,
 		GRPCAddr:               grpcAddr,
 		GRPCUseTLS:             burnbridgeGRPCUseTLS,
 		GRPCCAFile:             burnbridgeGRPCCAFile,

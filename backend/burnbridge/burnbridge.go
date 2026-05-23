@@ -37,6 +37,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/versity/versitygw/archiveconfig"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
@@ -377,7 +378,7 @@ func New(opts Options) (*BurnBridge, error) {
 		}
 	}
 
-	readMount := strings.TrimSpace(opts.ReadMountPath)
+	readMount := strings.TrimSpace(sharedReadMountPath())
 	if readMount != "" {
 		readMount = filepath.Clean(readMount)
 	}
@@ -409,6 +410,14 @@ func New(opts Options) (*BurnBridge, error) {
 		recorderS3PresignedGetURL: strings.TrimSpace(opts.RecorderS3PresignedGetURL),
 		putQueueSem:               make(chan struct{}, defaultPutQueueLimit),
 	}, nil
+}
+
+func sharedReadMountPath() string {
+	cfg, _, err := archiveconfig.Load("")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.OpticalArchive.ReadMountPath)
 }
 
 func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {

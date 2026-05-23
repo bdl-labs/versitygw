@@ -73,7 +73,6 @@
               <div><label class="block text-sm font-medium mb-2">Layout DB Path</label><input id="rec-layout-db" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Metadata DB File Template</label><input id="rec-meta-template" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">gRPC Chunk Size</label><input id="rec-grpc-chunk" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
-              <div><label class="block text-sm font-medium mb-2">Read Mount Path</label><input id="rec-read-mount" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
             </div>
           </section>
 
@@ -101,10 +100,16 @@
             <h2 class="text-lg font-semibold text-charcoal mb-4">Gateway Interop</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div><label class="block text-sm font-medium mb-2">gRPC Addr</label><input id="gw-grpc-addr" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
-              <div><label class="block text-sm font-medium mb-2">Read Mount Path</label><input id="gw-read-mount" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">gRPC Dial Timeout Seconds</label><input id="gw-grpc-dial" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">gRPC Ready Timeout Seconds</label><input id="gw-grpc-ready" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">gRPC Ping Timeout Seconds</label><input id="gw-grpc-ping" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Shared</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">Read Mount Path</label><input id="shared-read-mount" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
             </div>
           </section>
         </div>
@@ -150,6 +155,7 @@
       const runtime = archiveGroup(payload, 'Runtime');
       const redundancy = archiveGroup(payload, 'Redundancy');
       const interop = archiveGroup(payload, 'GatewayInterop');
+      const shared = archiveGroup(payload, 'Shared');
 
       document.getElementById('gw-config-path').value = gateway.ConfigFilePath || '';
       document.getElementById('gw-api-user').value = gateway.ConfigApiUsername || '';
@@ -160,7 +166,6 @@
       document.getElementById('rec-layout-db').value = recorder.LayoutDbPath || '';
       document.getElementById('rec-meta-template').value = recorder.MetadataDbFileNameTemplate || '';
       document.getElementById('rec-grpc-chunk').value = recorder.GrpcChunkSize ?? 1048576;
-      document.getElementById('rec-read-mount').value = recorder.ReadMountPath || '';
       document.getElementById('rt-sector-size').value = runtime.SectorSizeBytes ?? 2048;
       document.getElementById('rt-blocks-per-transfer').value = runtime.BlocksPerTransfer ?? 16;
       document.getElementById('rt-session-cache').value = runtime.SessionCacheCapacityBytes ?? 0;
@@ -170,10 +175,10 @@
       document.getElementById('rs-data-count').value = redundancy.DataBlockCount ?? 30;
       document.getElementById('rs-parity-count').value = redundancy.ParityBlockCount ?? 2;
       document.getElementById('gw-grpc-addr').value = interop.GrpcAddr || '';
-      document.getElementById('gw-read-mount').value = interop.ReadMountPath || '';
       document.getElementById('gw-grpc-dial').value = interop.GrpcDialTimeoutSeconds ?? 120;
       document.getElementById('gw-grpc-ready').value = interop.GrpcReadyTimeoutSeconds ?? 90;
       document.getElementById('gw-grpc-ping').value = interop.GrpcPingTimeoutSeconds ?? 60;
+      document.getElementById('shared-read-mount').value = shared.ReadMountPath || '';
     }
 
     function collectArchiveConfig() {
@@ -187,7 +192,6 @@
       cfg.OpticalArchive.Recorder.LayoutDbPath = document.getElementById('rec-layout-db').value.trim();
       cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = document.getElementById('rec-meta-template').value.trim();
       cfg.OpticalArchive.Recorder.GrpcChunkSize = Number(document.getElementById('rec-grpc-chunk').value || 0);
-      cfg.OpticalArchive.Recorder.ReadMountPath = document.getElementById('rec-read-mount').value.trim();
       cfg.OpticalArchive.Runtime.SectorSizeBytes = Number(document.getElementById('rt-sector-size').value || 0);
       cfg.OpticalArchive.Runtime.BlocksPerTransfer = Number(document.getElementById('rt-blocks-per-transfer').value || 0);
       cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes = Number(document.getElementById('rt-session-cache').value || 0);
@@ -197,10 +201,10 @@
       cfg.OpticalArchive.Redundancy.DataBlockCount = Number(document.getElementById('rs-data-count').value || 0);
       cfg.OpticalArchive.Redundancy.ParityBlockCount = Number(document.getElementById('rs-parity-count').value || 0);
       cfg.OpticalArchive.GatewayInterop.GrpcAddr = document.getElementById('gw-grpc-addr').value.trim();
-      cfg.OpticalArchive.GatewayInterop.ReadMountPath = document.getElementById('gw-read-mount').value.trim();
       cfg.OpticalArchive.GatewayInterop.GrpcDialTimeoutSeconds = Number(document.getElementById('gw-grpc-dial').value || 0);
       cfg.OpticalArchive.GatewayInterop.GrpcReadyTimeoutSeconds = Number(document.getElementById('gw-grpc-ready').value || 0);
       cfg.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds = Number(document.getElementById('gw-grpc-ping').value || 0);
+      cfg.OpticalArchive.ReadMountPath = document.getElementById('shared-read-mount').value.trim();
       return cfg;
     }
 
