@@ -2,6 +2,7 @@ package burnbridge
 
 import (
 	"context"
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
@@ -206,6 +207,54 @@ func TestIsLocalRecorderTarget(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecorderProbeAddress(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+		want string
+	}{
+		{name: "loopback passthrough", addr: "127.0.0.1:50051", want: "127.0.0.1:50051"},
+		{name: "localhost passthrough", addr: "localhost:50051", want: "localhost:50051"},
+		{name: "wildcard ipv4 remapped", addr: "0.0.0.0:50051", want: "127.0.0.1:50051"},
+		{name: "wildcard ipv6 remapped", addr: "[::]:50051", want: "[::1]:50051"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := recorderProbeAddress(tt.addr)
+			if err != nil {
+				t.Fatalf("recorderProbeAddress(%q) returned error: %v", tt.addr, err)
+			}
+			if got != tt.want {
+				t.Fatalf("recorderProbeAddress(%q) = %q, want %q", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRecorderEndpointReachable(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err == nil && conn != nil {
+			_ = conn.Close()
+		}
+	}()
+
+	if !recorderEndpointReachable(ln.Addr().String(), time.Second) {
+		t.Fatalf("expected reachable endpoint for %q", ln.Addr().String())
+	}
+
+	<-done
 }
 
 func ptr[T any](v T) *T { return &v }
