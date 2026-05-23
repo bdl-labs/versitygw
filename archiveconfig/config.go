@@ -28,6 +28,7 @@ type OpticalArchive struct {
 	Redundancy        Redundancy          `json:"Redundancy"`
 	GatewayInterop    GatewayInterop      `json:"GatewayInterop"`
 	Logging           Logging             `json:"Logging"`
+	Upgrade           Upgrade             `json:"Upgrade"`
 	DiscBucketBindings []DiscBucketBinding `json:"DiscBucketBindings"`
 }
 
@@ -51,6 +52,7 @@ type Recorder struct {
 	GeneratedSerialLength      int    `json:"GeneratedSerialLength"`
 	GeneratedVolumeLabelLength int    `json:"GeneratedVolumeLabelLength"`
 	AllowCreateBucketBinding   bool   `json:"AllowCreateBucketBinding"`
+	LicenseFilePath            string `json:"LicenseFilePath"`
 }
 
 type Runtime struct {
@@ -72,6 +74,13 @@ type GatewayInterop struct {
 	GrpcDialTimeoutSeconds  int    `json:"GrpcDialTimeoutSeconds"`
 	GrpcReadyTimeoutSeconds int    `json:"GrpcReadyTimeoutSeconds"`
 	GrpcPingTimeoutSeconds  int    `json:"GrpcPingTimeoutSeconds"`
+}
+
+type Upgrade struct {
+	GatewayStagingDirectory  string `json:"GatewayStagingDirectory"`
+	RecorderStagingDirectory string `json:"RecorderStagingDirectory"`
+	GatewayApplyCommand      string `json:"GatewayApplyCommand"`
+	RecorderApplyCommand     string `json:"RecorderApplyCommand"`
 }
 
 type Logging struct {
@@ -130,6 +139,7 @@ func DefaultFile(path string) File {
 				GeneratedSerialLength:      24,
 				GeneratedVolumeLabelLength: 24,
 				AllowCreateBucketBinding:   true,
+				LicenseFilePath:            "D:\\BRS\\primoburner-net\\samples\\BurnServer\\license.xml",
 			},
 			Runtime: Runtime{
 				SectorSizeBytes:           2048,
@@ -165,6 +175,12 @@ func DefaultFile(path string) File {
 					EnableCompression: true,
 					MinLevel:          "Information",
 				},
+			},
+			Upgrade: Upgrade{
+				GatewayStagingDirectory:  "D:\\BRS\\versitygw\\upgrade",
+				RecorderStagingDirectory: "D:\\BRS\\primoburner-net\\samples\\BurnServer\\upgrade",
+				GatewayApplyCommand:      "",
+				RecorderApplyCommand:     "",
 			},
 			DiscBucketBindings: []DiscBucketBinding{},
 		},
@@ -229,6 +245,9 @@ func Load(configPath string) (File, string, error) {
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate) == "" {
 		cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = defaults.OpticalArchive.Recorder.MetadataDbFileNameTemplate
 	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.LicenseFilePath) == "" {
+		cfg.OpticalArchive.Recorder.LicenseFilePath = defaults.OpticalArchive.Recorder.LicenseFilePath
+	}
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.DiscSerialStrategy) == "" {
 		cfg.OpticalArchive.Recorder.DiscSerialStrategy = defaults.OpticalArchive.Recorder.DiscSerialStrategy
 	}
@@ -276,6 +295,18 @@ func Load(configPath string) (File, string, error) {
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.Logging.Recorder.MinLevel) == "" {
 		cfg.OpticalArchive.Logging.Recorder.MinLevel = defaults.OpticalArchive.Logging.Recorder.MinLevel
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Upgrade.GatewayStagingDirectory) == "" {
+		cfg.OpticalArchive.Upgrade.GatewayStagingDirectory = defaults.OpticalArchive.Upgrade.GatewayStagingDirectory
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Upgrade.RecorderStagingDirectory) == "" {
+		cfg.OpticalArchive.Upgrade.RecorderStagingDirectory = defaults.OpticalArchive.Upgrade.RecorderStagingDirectory
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Upgrade.GatewayApplyCommand) == "" {
+		cfg.OpticalArchive.Upgrade.GatewayApplyCommand = defaults.OpticalArchive.Upgrade.GatewayApplyCommand
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Upgrade.RecorderApplyCommand) == "" {
+		cfg.OpticalArchive.Upgrade.RecorderApplyCommand = defaults.OpticalArchive.Upgrade.RecorderApplyCommand
 	}
 
 	return cfg, resolved, nil

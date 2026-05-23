@@ -72,6 +72,7 @@
               <div><label class="block text-sm font-medium mb-2">Drive Index</label><input id="rec-drive-index" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Layout DB Path</label><input id="rec-layout-db" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Metadata DB File Template</label><input id="rec-meta-template" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">License File Path</label><input id="rec-license-path" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">gRPC Chunk Size</label><input id="rec-grpc-chunk" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Disc Serial Strategy</label><input id="rec-disc-serial-strategy" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Volume Label Strategy</label><input id="rec-volume-label-strategy" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
@@ -141,6 +142,39 @@
               <div class="flex items-center gap-3 pt-8"><input id="log-rec-compress" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Compress Archives</label></div>
             </div>
           </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Upgrade</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">Gateway Staging Directory</label><input id="upgrade-gateway-dir" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Recorder Staging Directory</label><input id="upgrade-recorder-dir" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Gateway Apply Command</label><input id="upgrade-gateway-command" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Recorder Apply Command</label><input id="upgrade-recorder-command" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Admin Actions</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div class="space-y-3">
+                <div class="text-sm text-charcoal-300">Recorder License</div>
+                <input id="license-file-input" type="file" class="block w-full text-sm" />
+                <label class="flex items-center gap-2 text-sm text-charcoal"><input id="license-reload-now" type="checkbox" class="h-4 w-4" /> Reload recorder immediately</label>
+                <button id="upload-license-btn" class="px-4 py-2 rounded-lg bg-primary text-white font-medium hover:opacity-90 transition-opacity">Upload License</button>
+              </div>
+              <div class="space-y-3">
+                <div class="text-sm text-charcoal-300">Upgrade Package</div>
+                <select id="upgrade-target" class="w-full rounded-lg border border-gray-200 px-3 py-2">
+                  <option value="gateway">Gateway</option>
+                  <option value="recorder">Recorder</option>
+                </select>
+                <input id="upgrade-file-input" type="file" class="block w-full text-sm" />
+                <button id="upload-upgrade-btn" class="px-4 py-2 rounded-lg bg-primary text-white font-medium hover:opacity-90 transition-opacity">Upload Upgrade</button>
+                <button id="apply-upgrade-btn" class="px-4 py-2 rounded-lg border border-gray-200 text-charcoal hover:bg-gray-50 transition-colors">Apply Last Uploaded Upgrade</button>
+              </div>
+            </div>
+            <pre id="admin-actions-output" class="mt-4 whitespace-pre-wrap rounded-lg bg-surface p-4 text-xs text-charcoal-300"></pre>
+          </section>
         </div>
       </main>
     </div>
@@ -191,6 +225,7 @@
       const shared = archiveGroup(payload, 'Shared');
       const loggingGateway = archiveGroup(payload, 'LoggingGateway');
       const loggingRecorder = archiveGroup(payload, 'LoggingRecorder');
+      const upgrade = archiveGroup(payload, 'Upgrade');
 
       document.getElementById('gw-config-path').value = gateway.ConfigFilePath || '';
       document.getElementById('gw-api-user').value = gateway.ConfigApiUsername || '';
@@ -200,6 +235,7 @@
       document.getElementById('rec-drive-index').value = recorder.DriveIndex ?? 0;
       document.getElementById('rec-layout-db').value = recorder.LayoutDbPath || '';
       document.getElementById('rec-meta-template').value = recorder.MetadataDbFileNameTemplate || '';
+      document.getElementById('rec-license-path').value = recorder.LicenseFilePath || '';
       document.getElementById('rec-grpc-chunk').value = recorder.GrpcChunkSize ?? 1048576;
       document.getElementById('rec-disc-serial-strategy').value = recorder.DiscSerialStrategy || '';
       document.getElementById('rec-volume-label-strategy').value = recorder.VolumeLabelStrategy || '';
@@ -231,6 +267,10 @@
       document.getElementById('log-rec-file-size').value = loggingRecorder.FileSizeMb ?? 64;
       document.getElementById('log-rec-retention').value = loggingRecorder.RetentionDays ?? 30;
       document.getElementById('log-rec-compress').checked = !!loggingRecorder.EnableCompression;
+      document.getElementById('upgrade-gateway-dir').value = upgrade.GatewayStagingDirectory || '';
+      document.getElementById('upgrade-recorder-dir').value = upgrade.RecorderStagingDirectory || '';
+      document.getElementById('upgrade-gateway-command').value = upgrade.GatewayApplyCommand || '';
+      document.getElementById('upgrade-recorder-command').value = upgrade.RecorderApplyCommand || '';
     }
 
     function collectArchiveConfig() {
@@ -243,6 +283,7 @@
       cfg.OpticalArchive.Recorder.DriveIndex = Number(document.getElementById('rec-drive-index').value || 0);
       cfg.OpticalArchive.Recorder.LayoutDbPath = document.getElementById('rec-layout-db').value.trim();
       cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = document.getElementById('rec-meta-template').value.trim();
+      cfg.OpticalArchive.Recorder.LicenseFilePath = document.getElementById('rec-license-path').value.trim();
       cfg.OpticalArchive.Recorder.GrpcChunkSize = Number(document.getElementById('rec-grpc-chunk').value || 0);
       cfg.OpticalArchive.Recorder.DiscSerialStrategy = document.getElementById('rec-disc-serial-strategy').value.trim();
       cfg.OpticalArchive.Recorder.VolumeLabelStrategy = document.getElementById('rec-volume-label-strategy').value.trim();
@@ -274,6 +315,10 @@
       cfg.OpticalArchive.Logging.Recorder.FileSizeMb = Number(document.getElementById('log-rec-file-size').value || 0);
       cfg.OpticalArchive.Logging.Recorder.RetentionDays = Number(document.getElementById('log-rec-retention').value || 0);
       cfg.OpticalArchive.Logging.Recorder.EnableCompression = document.getElementById('log-rec-compress').checked;
+      cfg.OpticalArchive.Upgrade.GatewayStagingDirectory = document.getElementById('upgrade-gateway-dir').value.trim();
+      cfg.OpticalArchive.Upgrade.RecorderStagingDirectory = document.getElementById('upgrade-recorder-dir').value.trim();
+      cfg.OpticalArchive.Upgrade.GatewayApplyCommand = document.getElementById('upgrade-gateway-command').value.trim();
+      cfg.OpticalArchive.Upgrade.RecorderApplyCommand = document.getElementById('upgrade-recorder-command').value.trim();
       return cfg;
     }
 
@@ -302,6 +347,50 @@
 
     document.getElementById('reload-config-btn').addEventListener('click', loadArchiveConfig);
     document.getElementById('save-config-btn').addEventListener('click', saveArchiveConfig);
+    document.getElementById('upload-license-btn').addEventListener('click', async () => {
+      const file = document.getElementById('license-file-input').files[0];
+      if (!file) {
+        showToast('Select a license file first.', 'error');
+        return;
+      }
+      try {
+        const payload = await api.uploadArchiveLicense(buildArchiveAuthHeader(), file, document.getElementById('license-reload-now').checked);
+        document.getElementById('admin-actions-output').textContent = JSON.stringify(payload, null, 2);
+        showToast('License uploaded.', 'success');
+        await loadArchiveConfig();
+      } catch (error) {
+        showToast('Failed to upload license: ' + error.message, 'error');
+      }
+    });
+    document.getElementById('upload-upgrade-btn').addEventListener('click', async () => {
+      const file = document.getElementById('upgrade-file-input').files[0];
+      if (!file) {
+        showToast('Select an upgrade file first.', 'error');
+        return;
+      }
+      try {
+        const payload = await api.uploadArchiveUpgrade(buildArchiveAuthHeader(), document.getElementById('upgrade-target').value, file);
+        sessionStorage.setItem('archive_upgrade_last_file', file.name);
+        document.getElementById('admin-actions-output').textContent = JSON.stringify(payload, null, 2);
+        showToast('Upgrade uploaded.', 'success');
+      } catch (error) {
+        showToast('Failed to upload upgrade: ' + error.message, 'error');
+      }
+    });
+    document.getElementById('apply-upgrade-btn').addEventListener('click', async () => {
+      const fileName = sessionStorage.getItem('archive_upgrade_last_file');
+      if (!fileName) {
+        showToast('Upload an upgrade package first.', 'error');
+        return;
+      }
+      try {
+        const payload = await api.applyArchiveUpgrade(buildArchiveAuthHeader(), document.getElementById('upgrade-target').value, fileName);
+        document.getElementById('admin-actions-output').textContent = JSON.stringify(payload, null, 2);
+        showToast('Upgrade apply command executed.', 'success');
+      } catch (error) {
+        showToast('Failed to apply upgrade: ' + error.message, 'error');
+      }
+    });
     loadArchiveConfig();
   </script>
 </body>

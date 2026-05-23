@@ -878,6 +878,70 @@ class VersityAPI {
     return url.toString();
   }
 
+  async getArchiveVersion(basicAuthHeader) {
+    const response = await fetch(this.getEndpoint(false) + '/__archive/version', {
+      headers: {
+        'Authorization': basicAuthHeader,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return await response.json();
+  }
+
+  async uploadArchiveLicense(basicAuthHeader, file, reloadNow) {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('reloadNow', reloadNow ? 'true' : 'false');
+    const response = await fetch(this.getEndpoint(false) + '/__archive/license', {
+      method: 'POST',
+      headers: {
+        'Authorization': basicAuthHeader,
+      },
+      body: form,
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return await response.json();
+  }
+
+  async uploadArchiveUpgrade(basicAuthHeader, target, file) {
+    const form = new FormData();
+    form.append('target', target);
+    form.append('file', file);
+    const response = await fetch(this.getEndpoint(false) + '/__archive/upgrade/upload', {
+      method: 'POST',
+      headers: {
+        'Authorization': basicAuthHeader,
+      },
+      body: form,
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return await response.json();
+  }
+
+  async applyArchiveUpgrade(basicAuthHeader, target, fileName) {
+    const form = new URLSearchParams();
+    form.set('target', target);
+    form.set('fileName', fileName);
+    const response = await fetch(this.getEndpoint(false) + '/__archive/upgrade/apply', {
+      method: 'POST',
+      headers: {
+        'Authorization': basicAuthHeader,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: form.toString(),
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return await response.json();
+  }
+
   /**
    * Create a new user (Admin API)
    */

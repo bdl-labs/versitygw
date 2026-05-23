@@ -18,6 +18,10 @@ func (testBurnBridgeClient) CreateJob(context.Context, *burnbridgev1.CreateJobRe
 	panic("unexpected CreateJob call")
 }
 
+func (testBurnBridgeClient) GetVersion(context.Context, *burnbridgev1.GetVersionRequest, ...grpc.CallOption) (*burnbridgev1.GetVersionResponse, error) {
+	return &burnbridgev1.GetVersionResponse{}, nil
+}
+
 func (testBurnBridgeClient) UploadObject(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
 	return nil, nil
 }
@@ -52,6 +56,18 @@ func (testBurnBridgeClient) GetDiscInfo(context.Context, *burnbridgev1.GetDiscIn
 
 func (testBurnBridgeClient) FinalizeLayout(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
 	panic("unexpected FinalizeLayout call")
+}
+
+func (testBurnBridgeClient) UpdateLicense(context.Context, *burnbridgev1.UpdateLicenseRequest, ...grpc.CallOption) (*burnbridgev1.UpdateLicenseResponse, error) {
+	panic("unexpected UpdateLicense call")
+}
+
+func (testBurnBridgeClient) UploadUpgradePackage(context.Context, ...grpc.CallOption) (grpc.ClientStreamingClient[burnbridgev1.UploadUpgradePackageChunk, burnbridgev1.UploadUpgradePackageResponse], error) {
+	panic("unexpected UploadUpgradePackage call")
+}
+
+func (testBurnBridgeClient) ApplyUpgrade(context.Context, *burnbridgev1.ApplyUpgradeRequest, ...grpc.CallOption) (*burnbridgev1.ApplyUpgradeResponse, error) {
+	panic("unexpected ApplyUpgrade call")
 }
 
 func TestCreateBucketAllowsBlankDiscBinding(t *testing.T) {

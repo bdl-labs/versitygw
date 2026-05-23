@@ -1097,6 +1097,7 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 
 	opts = append(opts, archiveConfigRouteOptions()...)
 	opts = append(opts, archiveLogRouteOptions()...)
+	opts = append(opts, archiveAdminRouteOptions()...)
 
 	srv, err := s3api.New(be, middlewares.RootUserConfig{
 		Access: rootUserAccess,

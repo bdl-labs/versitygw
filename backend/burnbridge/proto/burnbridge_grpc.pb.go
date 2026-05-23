@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v4.25.9
-// source: burnbridge.proto
+// source: backend/burnbridge/proto/burnbridge.proto
 
 package burnbridgev1
 
@@ -19,6 +19,7 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	BurnBridge_GetVersion_FullMethodName                 = "/burnbridge.v1.BurnBridge/GetVersion"
 	BurnBridge_CreateJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CreateJob"
 	BurnBridge_UploadObject_FullMethodName               = "/burnbridge.v1.BurnBridge/UploadObject"
 	BurnBridge_CommitJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CommitJob"
@@ -29,6 +30,9 @@ const (
 	BurnBridge_TestUnitReady_FullMethodName              = "/burnbridge.v1.BurnBridge/TestUnitReady"
 	BurnBridge_GetDiscInfo_FullMethodName                = "/burnbridge.v1.BurnBridge/GetDiscInfo"
 	BurnBridge_FinalizeLayout_FullMethodName             = "/burnbridge.v1.BurnBridge/FinalizeLayout"
+	BurnBridge_UpdateLicense_FullMethodName              = "/burnbridge.v1.BurnBridge/UpdateLicense"
+	BurnBridge_UploadUpgradePackage_FullMethodName       = "/burnbridge.v1.BurnBridge/UploadUpgradePackage"
+	BurnBridge_ApplyUpgrade_FullMethodName               = "/burnbridge.v1.BurnBridge/ApplyUpgrade"
 )
 
 // BurnBridgeClient is the client API for BurnBridge service.
@@ -41,6 +45,8 @@ const (
 // - Keep wire fields compatible with versitygw/backend/burnbridge/proto/burnbridge.proto
 // - Allow direct interop between Go gateway and .NET Core BurnServer
 type BurnBridgeClient interface {
+	// Query recorder service version and runtime metadata.
+	GetVersion(ctx context.Context, in *GetVersionRequest, opts ...grpc.CallOption) (*GetVersionResponse, error)
 	// Create a logical write job for one S3 object.
 	CreateJob(ctx context.Context, in *CreateJobRequest, opts ...grpc.CallOption) (*CreateJobResponse, error)
 	// Bidirectional upload stream.
@@ -63,6 +69,12 @@ type BurnBridgeClient interface {
 	GetDiscInfo(ctx context.Context, in *GetDiscInfoRequest, opts ...grpc.CallOption) (*GetDiscInfoResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
 	FinalizeLayout(ctx context.Context, in *FinalizeLayoutRequest, opts ...grpc.CallOption) (*FinalizeLayoutResponse, error)
+	// Replace recorder license.xml content and optionally reload the shared burner host.
+	UpdateLicense(ctx context.Context, in *UpdateLicenseRequest, opts ...grpc.CallOption) (*UpdateLicenseResponse, error)
+	// Upload an upgrade package into the recorder staging directory.
+	UploadUpgradePackage(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadUpgradePackageChunk, UploadUpgradePackageResponse], error)
+	// Execute the configured recorder upgrade apply command for a staged package.
+	ApplyUpgrade(ctx context.Context, in *ApplyUpgradeRequest, opts ...grpc.CallOption) (*ApplyUpgradeResponse, error)
 }
 
 type burnBridgeClient struct {
@@ -71,6 +83,16 @@ type burnBridgeClient struct {
 
 func NewBurnBridgeClient(cc grpc.ClientConnInterface) BurnBridgeClient {
 	return &burnBridgeClient{cc}
+}
+
+func (c *burnBridgeClient) GetVersion(ctx context.Context, in *GetVersionRequest, opts ...grpc.CallOption) (*GetVersionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetVersionResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_GetVersion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (c *burnBridgeClient) CreateJob(ctx context.Context, in *CreateJobRequest, opts ...grpc.CallOption) (*CreateJobResponse, error) {
@@ -185,6 +207,39 @@ func (c *burnBridgeClient) FinalizeLayout(ctx context.Context, in *FinalizeLayou
 	return out, nil
 }
 
+func (c *burnBridgeClient) UpdateLicense(ctx context.Context, in *UpdateLicenseRequest, opts ...grpc.CallOption) (*UpdateLicenseResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(UpdateLicenseResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_UpdateLicense_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) UploadUpgradePackage(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadUpgradePackageChunk, UploadUpgradePackageResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &BurnBridge_ServiceDesc.Streams[2], BurnBridge_UploadUpgradePackage_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[UploadUpgradePackageChunk, UploadUpgradePackageResponse]{ClientStream: stream}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BurnBridge_UploadUpgradePackageClient = grpc.ClientStreamingClient[UploadUpgradePackageChunk, UploadUpgradePackageResponse]
+
+func (c *burnBridgeClient) ApplyUpgrade(ctx context.Context, in *ApplyUpgradeRequest, opts ...grpc.CallOption) (*ApplyUpgradeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyUpgradeResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_ApplyUpgrade_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // BurnBridgeServer is the server API for BurnBridge service.
 // All implementations must embed UnimplementedBurnBridgeServer
 // for forward compatibility.
@@ -195,6 +250,8 @@ func (c *burnBridgeClient) FinalizeLayout(ctx context.Context, in *FinalizeLayou
 // - Keep wire fields compatible with versitygw/backend/burnbridge/proto/burnbridge.proto
 // - Allow direct interop between Go gateway and .NET Core BurnServer
 type BurnBridgeServer interface {
+	// Query recorder service version and runtime metadata.
+	GetVersion(context.Context, *GetVersionRequest) (*GetVersionResponse, error)
 	// Create a logical write job for one S3 object.
 	CreateJob(context.Context, *CreateJobRequest) (*CreateJobResponse, error)
 	// Bidirectional upload stream.
@@ -217,6 +274,12 @@ type BurnBridgeServer interface {
 	GetDiscInfo(context.Context, *GetDiscInfoRequest) (*GetDiscInfoResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
 	FinalizeLayout(context.Context, *FinalizeLayoutRequest) (*FinalizeLayoutResponse, error)
+	// Replace recorder license.xml content and optionally reload the shared burner host.
+	UpdateLicense(context.Context, *UpdateLicenseRequest) (*UpdateLicenseResponse, error)
+	// Upload an upgrade package into the recorder staging directory.
+	UploadUpgradePackage(grpc.ClientStreamingServer[UploadUpgradePackageChunk, UploadUpgradePackageResponse]) error
+	// Execute the configured recorder upgrade apply command for a staged package.
+	ApplyUpgrade(context.Context, *ApplyUpgradeRequest) (*ApplyUpgradeResponse, error)
 	mustEmbedUnimplementedBurnBridgeServer()
 }
 
@@ -227,6 +290,9 @@ type BurnBridgeServer interface {
 // pointer dereference when methods are called.
 type UnimplementedBurnBridgeServer struct{}
 
+func (UnimplementedBurnBridgeServer) GetVersion(context.Context, *GetVersionRequest) (*GetVersionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetVersion not implemented")
+}
 func (UnimplementedBurnBridgeServer) CreateJob(context.Context, *CreateJobRequest) (*CreateJobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CreateJob not implemented")
 }
@@ -257,6 +323,15 @@ func (UnimplementedBurnBridgeServer) GetDiscInfo(context.Context, *GetDiscInfoRe
 func (UnimplementedBurnBridgeServer) FinalizeLayout(context.Context, *FinalizeLayoutRequest) (*FinalizeLayoutResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FinalizeLayout not implemented")
 }
+func (UnimplementedBurnBridgeServer) UpdateLicense(context.Context, *UpdateLicenseRequest) (*UpdateLicenseResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method UpdateLicense not implemented")
+}
+func (UnimplementedBurnBridgeServer) UploadUpgradePackage(grpc.ClientStreamingServer[UploadUpgradePackageChunk, UploadUpgradePackageResponse]) error {
+	return status.Error(codes.Unimplemented, "method UploadUpgradePackage not implemented")
+}
+func (UnimplementedBurnBridgeServer) ApplyUpgrade(context.Context, *ApplyUpgradeRequest) (*ApplyUpgradeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ApplyUpgrade not implemented")
+}
 func (UnimplementedBurnBridgeServer) mustEmbedUnimplementedBurnBridgeServer() {}
 func (UnimplementedBurnBridgeServer) testEmbeddedByValue()                    {}
 
@@ -276,6 +351,24 @@ func RegisterBurnBridgeServer(s grpc.ServiceRegistrar, srv BurnBridgeServer) {
 		t.testEmbeddedByValue()
 	}
 	s.RegisterService(&BurnBridge_ServiceDesc, srv)
+}
+
+func _BurnBridge_GetVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetVersionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).GetVersion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_GetVersion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).GetVersion(ctx, req.(*GetVersionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
 }
 
 func _BurnBridge_CreateJob_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
@@ -440,6 +533,49 @@ func _BurnBridge_FinalizeLayout_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BurnBridge_UpdateLicense_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(UpdateLicenseRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).UpdateLicense(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_UpdateLicense_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).UpdateLicense(ctx, req.(*UpdateLicenseRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_UploadUpgradePackage_Handler(srv interface{}, stream grpc.ServerStream) error {
+	return srv.(BurnBridgeServer).UploadUpgradePackage(&grpc.GenericServerStream[UploadUpgradePackageChunk, UploadUpgradePackageResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BurnBridge_UploadUpgradePackageServer = grpc.ClientStreamingServer[UploadUpgradePackageChunk, UploadUpgradePackageResponse]
+
+func _BurnBridge_ApplyUpgrade_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyUpgradeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).ApplyUpgrade(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_ApplyUpgrade_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).ApplyUpgrade(ctx, req.(*ApplyUpgradeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // BurnBridge_ServiceDesc is the grpc.ServiceDesc for BurnBridge service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -447,6 +583,10 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "burnbridge.v1.BurnBridge",
 	HandlerType: (*BurnBridgeServer)(nil),
 	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "GetVersion",
+			Handler:    _BurnBridge_GetVersion_Handler,
+		},
 		{
 			MethodName: "CreateJob",
 			Handler:    _BurnBridge_CreateJob_Handler,
@@ -479,6 +619,14 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 			MethodName: "FinalizeLayout",
 			Handler:    _BurnBridge_FinalizeLayout_Handler,
 		},
+		{
+			MethodName: "UpdateLicense",
+			Handler:    _BurnBridge_UpdateLicense_Handler,
+		},
+		{
+			MethodName: "ApplyUpgrade",
+			Handler:    _BurnBridge_ApplyUpgrade_Handler,
+		},
 	},
 	Streams: []grpc.StreamDesc{
 		{
@@ -492,6 +640,11 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 			Handler:       _BurnBridge_ReadObject_Handler,
 			ServerStreams: true,
 		},
+		{
+			StreamName:    "UploadUpgradePackage",
+			Handler:       _BurnBridge_UploadUpgradePackage_Handler,
+			ClientStreams: true,
+		},
 	},
-	Metadata: "burnbridge.proto",
+	Metadata: "backend/burnbridge/proto/burnbridge.proto",
 }

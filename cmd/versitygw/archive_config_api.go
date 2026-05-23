@@ -112,6 +112,9 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if strings.TrimSpace(next.OpticalArchive.Recorder.MetadataDbFileNameTemplate) == "" {
 		next.OpticalArchive.Recorder.MetadataDbFileNameTemplate = current.OpticalArchive.Recorder.MetadataDbFileNameTemplate
 	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.LicenseFilePath) == "" {
+		next.OpticalArchive.Recorder.LicenseFilePath = current.OpticalArchive.Recorder.LicenseFilePath
+	}
 	if next.OpticalArchive.Recorder.GrpcChunkSize <= 0 {
 		next.OpticalArchive.Recorder.GrpcChunkSize = current.OpticalArchive.Recorder.GrpcChunkSize
 	}
@@ -193,6 +196,18 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if strings.TrimSpace(next.OpticalArchive.Logging.Recorder.MinLevel) == "" {
 		next.OpticalArchive.Logging.Recorder.MinLevel = current.OpticalArchive.Logging.Recorder.MinLevel
 	}
+	if strings.TrimSpace(next.OpticalArchive.Upgrade.GatewayStagingDirectory) == "" {
+		next.OpticalArchive.Upgrade.GatewayStagingDirectory = current.OpticalArchive.Upgrade.GatewayStagingDirectory
+	}
+	if strings.TrimSpace(next.OpticalArchive.Upgrade.RecorderStagingDirectory) == "" {
+		next.OpticalArchive.Upgrade.RecorderStagingDirectory = current.OpticalArchive.Upgrade.RecorderStagingDirectory
+	}
+	if strings.TrimSpace(next.OpticalArchive.Upgrade.GatewayApplyCommand) == "" {
+		next.OpticalArchive.Upgrade.GatewayApplyCommand = current.OpticalArchive.Upgrade.GatewayApplyCommand
+	}
+	if strings.TrimSpace(next.OpticalArchive.Upgrade.RecorderApplyCommand) == "" {
+		next.OpticalArchive.Upgrade.RecorderApplyCommand = current.OpticalArchive.Upgrade.RecorderApplyCommand
+	}
 }
 
 func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
@@ -211,6 +226,7 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"DriveIndex":                 cfg.OpticalArchive.Recorder.DriveIndex,
 			"LayoutDbPath":               cfg.OpticalArchive.Recorder.LayoutDbPath,
 			"MetadataDbFileNameTemplate": cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate,
+			"LicenseFilePath":            cfg.OpticalArchive.Recorder.LicenseFilePath,
 			"GrpcChunkSize":              cfg.OpticalArchive.Recorder.GrpcChunkSize,
 			"DiscSerialStrategy":         cfg.OpticalArchive.Recorder.DiscSerialStrategy,
 			"VolumeLabelStrategy":        cfg.OpticalArchive.Recorder.VolumeLabelStrategy,
@@ -252,6 +268,12 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"RetentionDays":     cfg.OpticalArchive.Logging.Recorder.RetentionDays,
 			"EnableCompression": cfg.OpticalArchive.Logging.Recorder.EnableCompression,
 			"MinLevel":          cfg.OpticalArchive.Logging.Recorder.MinLevel,
+		},
+		"Upgrade": map[string]any{
+			"GatewayStagingDirectory":  cfg.OpticalArchive.Upgrade.GatewayStagingDirectory,
+			"RecorderStagingDirectory": cfg.OpticalArchive.Upgrade.RecorderStagingDirectory,
+			"GatewayApplyCommand":      cfg.OpticalArchive.Upgrade.GatewayApplyCommand,
+			"RecorderApplyCommand":     cfg.OpticalArchive.Upgrade.RecorderApplyCommand,
 		},
 	}
 }

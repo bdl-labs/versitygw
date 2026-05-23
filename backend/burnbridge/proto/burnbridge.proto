@@ -14,6 +14,9 @@ option go_package = "github.com/versity/versitygw/backend/burnbridge/proto;burnb
 // - Keep wire fields compatible with versitygw/backend/burnbridge/proto/burnbridge.proto
 // - Allow direct interop between Go gateway and .NET Core BurnServer
 service BurnBridge {
+  // Query recorder service version and runtime metadata.
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+
   // Create a logical write job for one S3 object.
   rpc CreateJob(CreateJobRequest) returns (CreateJobResponse);
 
@@ -45,6 +48,29 @@ service BurnBridge {
 
   // Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
   rpc FinalizeLayout(FinalizeLayoutRequest) returns (FinalizeLayoutResponse);
+
+  // Replace recorder license.xml content and optionally reload the shared burner host.
+  rpc UpdateLicense(UpdateLicenseRequest) returns (UpdateLicenseResponse);
+
+  // Upload an upgrade package into the recorder staging directory.
+  rpc UploadUpgradePackage(stream UploadUpgradePackageChunk) returns (UploadUpgradePackageResponse);
+
+  // Execute the configured recorder upgrade apply command for a staged package.
+  rpc ApplyUpgrade(ApplyUpgradeRequest) returns (ApplyUpgradeResponse);
+}
+
+message GetVersionRequest {}
+
+message GetVersionResponse {
+  string service_name = 1;
+  string service_version = 2;
+  string assembly_version = 3;
+  string runtime_version = 4;
+  string build_configuration = 5;
+  string process_architecture = 6;
+  string os_description = 7;
+  string base_directory = 8;
+  string license_file_path = 9;
 }
 
 message TestUnitReadyRequest {}
@@ -242,6 +268,46 @@ message FinalizeLayoutResponse {
   string bucket = 1;
   string status = 2;
   string message = 3;
+}
+
+message UpdateLicenseRequest {
+  string file_name = 1;
+  bytes content = 2;
+  bool reload_now = 3;
+}
+
+message UpdateLicenseResponse {
+  string status = 1;
+  string message = 2;
+  string license_file_path = 3;
+  string sha256 = 4;
+}
+
+message UploadUpgradePackageChunk {
+  string file_name = 1;
+  bytes data = 2;
+  bool eof = 3;
+}
+
+message UploadUpgradePackageResponse {
+  string status = 1;
+  string message = 2;
+  string stored_path = 3;
+  int64 bytes_received = 4;
+  string sha256 = 5;
+}
+
+message ApplyUpgradeRequest {
+  string staged_file_name = 1;
+}
+
+message ApplyUpgradeResponse {
+  string status = 1;
+  string message = 2;
+  string command = 3;
+  string staged_path = 4;
+  int32 exit_code = 5;
+  string output = 6;
 }
 
 message FinalizeManifest {
