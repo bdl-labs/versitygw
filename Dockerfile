@@ -1,4 +1,6 @@
-FROM golang:latest
+FROM golang:1.25-alpine AS build
+
+RUN apk add --no-cache ca-certificates git
 
 # Set build arguments with default values
 ARG VERSION="none"
@@ -12,16 +14,18 @@ ENV TIME=${TIME}
 
 WORKDIR /app
 
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
 
-COPY ./ ./
+COPY . ./
 
 WORKDIR /app/cmd/versitygw
 ENV CGO_ENABLED=0
-RUN go build -ldflags "-X=main.Build=${BUILD} -X=main.BuildTime=${TIME} -X=main.Version=${VERSION}" -o versitygw
+RUN go build -trimpath -ldflags "-s -w -X=main.Build=${BUILD} -X=main.BuildTime=${TIME} -X=main.Version=${VERSION}" -o versitygw
 
-FROM alpine:latest
+FROM alpine:3.21
+
+RUN apk add --no-cache ca-certificates
 
 # These arguments can be overridden when building the image
 ARG IAM_DIR=/tmp/vgw
@@ -34,5 +38,7 @@ COPY --from=0 /app/cmd/versitygw/versitygw /usr/local/bin/versitygw
 
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+EXPOSE 7070 7080 8080
 
 ENTRYPOINT [ "/usr/local/bin/docker-entrypoint.sh" ]
