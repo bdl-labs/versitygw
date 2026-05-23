@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VersityGW Admin - Archive Config</title>
+  <script src="assets/js/crypto-js.min.js"></script>
+  <script src="assets/js/tailwind.js"></script>
+  <script src="assets/css/tailwind-config.js"></script>
+  <link rel="stylesheet" href="assets/css/fonts.css">
+  <link rel="stylesheet" href="assets/css/theme.css">
+  <link rel="icon" type="image/png" href="assets/images/favicon.png">
+</head>
+<body class="min-h-screen bg-surface">
+  <script src="js/api.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    if (!requireAdmin()) {}
+  </script>
+  <div class="relative flex h-screen overflow-hidden">
+    <aside class="w-60 h-screen bg-charcoal flex flex-col overflow-auto">
+      <div class="h-16 flex items-center px-6 border-b border-white/10">
+        <a href="https://www.versity.com" target="_blank" rel="noopener noreferrer">
+          <img src="assets/images/Versity-logo-white-horizontal.png" alt="Versity" class="h-10 hover:opacity-80 transition-opacity">
+        </a>
+      </div>
+      <nav class="flex-1 py-4">
+        <div class="px-6 pt-2 pb-2 text-[11px] font-semibold tracking-wider text-white/40 uppercase">Admin</div>
+        <a href="dashboard.html" class="nav-item flex items-center gap-3 px-6 py-3 text-white/70 hover:text-white"><span class="font-medium">Dashboard</span></a>
+        <a href="users.html" class="nav-item flex items-center gap-3 px-6 py-3 text-white/70 hover:text-white"><span class="font-medium">Users</span></a>
+        <a href="buckets.html" class="nav-item flex items-center gap-3 px-6 py-3 text-white/70 hover:text-white"><span class="font-medium">Buckets</span></a>
+        <a href="archive-config.html" class="nav-item active flex items-center gap-3 px-6 py-3 text-white"><span class="font-medium">Archive Config</span></a>
+      </nav>
+    </aside>
+
+    <div class="flex-1 flex flex-col overflow-hidden">
+      <header class="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 flex-shrink-0">
+        <div>
+          <h1 class="text-xl font-semibold text-charcoal">Optical Archive Config</h1>
+          <p id="archive-config-path" class="text-xs text-charcoal-300"></p>
+        </div>
+        <div class="flex gap-3">
+          <button id="reload-config-btn" class="px-3 py-2 rounded-lg border border-gray-200 text-charcoal hover:bg-gray-50 transition-colors">Reload</button>
+          <button id="save-config-btn" class="px-4 py-2 rounded-lg bg-primary text-white font-medium hover:opacity-90 transition-opacity">Save Config</button>
+        </div>
+      </header>
+
+      <main class="flex-1 overflow-auto p-6">
+        <div class="max-w-6xl mx-auto space-y-6">
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Auth</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium text-charcoal mb-2">Current Username</label><input id="auth-user" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium text-charcoal mb-2">Current Password</label><input id="auth-pass" type="password" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Gateway</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">Config File Path</label><input id="gw-config-path" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Config API Username</label><input id="gw-api-user" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Config API Password</label><input id="gw-api-pass" type="password" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">BurnServer Config Path</label><input id="gw-burnserver-path" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Gateway Metadata DB Path</label><input id="gw-meta-db" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Recorder</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">Drive Index</label><input id="rec-drive-index" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Layout DB Path</label><input id="rec-layout-db" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Metadata DB File Template</label><input id="rec-meta-template" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">gRPC Chunk Size</label><input id="rec-grpc-chunk" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Read Mount Path</label><input id="rec-read-mount" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Runtime</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">Sector Size Bytes</label><input id="rt-sector-size" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Blocks Per Transfer</label><input id="rt-blocks-per-transfer" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Session Cache Capacity Bytes</label><input id="rt-session-cache" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Write Buffer Bytes</label><input id="rt-write-buffer" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Redundancy</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="flex items-center gap-3 pt-8"><input id="rs-enabled" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Enabled</label></div>
+              <div><label class="block text-sm font-medium mb-2">Block Size Bytes</label><input id="rs-block-size" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Data Block Count</label><input id="rs-data-count" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Parity Block Count</label><input id="rs-parity-count" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Gateway Interop</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">gRPC Addr</label><input id="gw-grpc-addr" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Read Mount Path</label><input id="gw-read-mount" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">gRPC Dial Timeout Seconds</label><input id="gw-grpc-dial" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">gRPC Ready Timeout Seconds</label><input id="gw-grpc-ready" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">gRPC Ping Timeout Seconds</label><input id="gw-grpc-ping" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    let archiveConfigState = null;
+
+    function buildArchiveAuthHeader() {
+      const user = document.getElementById('auth-user').value || 'admin';
+      const pass = document.getElementById('auth-pass').value || 'admin123';
+      return 'Basic ' + btoa(user + ':' + pass);
+    }
+
+    function archiveGroup(cfg, key) {
+      return cfg?.groups?.[key] || {};
+    }
+
+    async function loadArchiveConfig() {
+      try {
+        const response = await fetch(api.getEndpoint(false) + '/__archive/config', {
+          headers: { 'Authorization': buildArchiveAuthHeader() }
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const payload = await response.json();
+        archiveConfigState = payload.config;
+        renderArchiveConfig(payload.path, payload);
+      } catch (error) {
+        showToast('Failed to load archive config: ' + error.message, 'error');
+      }
+    }
+
+    function renderArchiveConfig(path, payload) {
+      const cfg = payload.config;
+      document.getElementById('archive-config-path').textContent = path;
+      document.getElementById('auth-user').value = cfg.OpticalArchive.Gateway.ConfigApiUsername || '';
+      document.getElementById('auth-pass').value = cfg.OpticalArchive.Gateway.ConfigApiPassword || '';
+
+      const gateway = archiveGroup(payload, 'Gateway');
+      const recorder = archiveGroup(payload, 'Recorder');
+      const runtime = archiveGroup(payload, 'Runtime');
+      const redundancy = archiveGroup(payload, 'Redundancy');
+      const interop = archiveGroup(payload, 'GatewayInterop');
+
+      document.getElementById('gw-config-path').value = gateway.ConfigFilePath || '';
+      document.getElementById('gw-api-user').value = gateway.ConfigApiUsername || '';
+      document.getElementById('gw-api-pass').value = gateway.ConfigApiPassword || '';
+      document.getElementById('gw-burnserver-path').value = gateway.BurnServerConfigPath || '';
+      document.getElementById('gw-meta-db').value = gateway.GatewayMetadataDbPath || '';
+      document.getElementById('rec-drive-index').value = recorder.DriveIndex ?? 0;
+      document.getElementById('rec-layout-db').value = recorder.LayoutDbPath || '';
+      document.getElementById('rec-meta-template').value = recorder.MetadataDbFileNameTemplate || '';
+      document.getElementById('rec-grpc-chunk').value = recorder.GrpcChunkSize ?? 1048576;
+      document.getElementById('rec-read-mount').value = recorder.ReadMountPath || '';
+      document.getElementById('rt-sector-size').value = runtime.SectorSizeBytes ?? 2048;
+      document.getElementById('rt-blocks-per-transfer').value = runtime.BlocksPerTransfer ?? 16;
+      document.getElementById('rt-session-cache').value = runtime.SessionCacheCapacityBytes ?? 0;
+      document.getElementById('rt-write-buffer').value = runtime.WriteBufferBytes ?? 0;
+      document.getElementById('rs-enabled').checked = !!redundancy.Enabled;
+      document.getElementById('rs-block-size').value = redundancy.BlockSizeBytes ?? 2048;
+      document.getElementById('rs-data-count').value = redundancy.DataBlockCount ?? 30;
+      document.getElementById('rs-parity-count').value = redundancy.ParityBlockCount ?? 2;
+      document.getElementById('gw-grpc-addr').value = interop.GrpcAddr || '';
+      document.getElementById('gw-read-mount').value = interop.ReadMountPath || '';
+      document.getElementById('gw-grpc-dial').value = interop.GrpcDialTimeoutSeconds ?? 120;
+      document.getElementById('gw-grpc-ready').value = interop.GrpcReadyTimeoutSeconds ?? 90;
+      document.getElementById('gw-grpc-ping').value = interop.GrpcPingTimeoutSeconds ?? 60;
+    }
+
+    function collectArchiveConfig() {
+      const cfg = JSON.parse(JSON.stringify(archiveConfigState));
+      cfg.OpticalArchive.Gateway.ConfigApiUsername = document.getElementById('gw-api-user').value.trim();
+      cfg.OpticalArchive.Gateway.ConfigApiPassword = document.getElementById('gw-api-pass').value;
+      cfg.OpticalArchive.Gateway.ConfigFilePath = document.getElementById('gw-config-path').value.trim();
+      cfg.OpticalArchive.Gateway.BurnServerConfigPath = document.getElementById('gw-burnserver-path').value.trim();
+      cfg.OpticalArchive.Gateway.GatewayMetadataDbPath = document.getElementById('gw-meta-db').value.trim();
+      cfg.OpticalArchive.Recorder.DriveIndex = Number(document.getElementById('rec-drive-index').value || 0);
+      cfg.OpticalArchive.Recorder.LayoutDbPath = document.getElementById('rec-layout-db').value.trim();
+      cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = document.getElementById('rec-meta-template').value.trim();
+      cfg.OpticalArchive.Recorder.GrpcChunkSize = Number(document.getElementById('rec-grpc-chunk').value || 0);
+      cfg.OpticalArchive.Recorder.ReadMountPath = document.getElementById('rec-read-mount').value.trim();
+      cfg.OpticalArchive.Runtime.SectorSizeBytes = Number(document.getElementById('rt-sector-size').value || 0);
+      cfg.OpticalArchive.Runtime.BlocksPerTransfer = Number(document.getElementById('rt-blocks-per-transfer').value || 0);
+      cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes = Number(document.getElementById('rt-session-cache').value || 0);
+      cfg.OpticalArchive.Runtime.WriteBufferBytes = Number(document.getElementById('rt-write-buffer').value || 0);
+      cfg.OpticalArchive.Redundancy.Enabled = document.getElementById('rs-enabled').checked;
+      cfg.OpticalArchive.Redundancy.BlockSizeBytes = Number(document.getElementById('rs-block-size').value || 0);
+      cfg.OpticalArchive.Redundancy.DataBlockCount = Number(document.getElementById('rs-data-count').value || 0);
+      cfg.OpticalArchive.Redundancy.ParityBlockCount = Number(document.getElementById('rs-parity-count').value || 0);
+      cfg.OpticalArchive.GatewayInterop.GrpcAddr = document.getElementById('gw-grpc-addr').value.trim();
+      cfg.OpticalArchive.GatewayInterop.ReadMountPath = document.getElementById('gw-read-mount').value.trim();
+      cfg.OpticalArchive.GatewayInterop.GrpcDialTimeoutSeconds = Number(document.getElementById('gw-grpc-dial').value || 0);
+      cfg.OpticalArchive.GatewayInterop.GrpcReadyTimeoutSeconds = Number(document.getElementById('gw-grpc-ready').value || 0);
+      cfg.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds = Number(document.getElementById('gw-grpc-ping').value || 0);
+      return cfg;
+    }
+
+    async function saveArchiveConfig() {
+      try {
+        const response = await fetch(api.getEndpoint(false) + '/__archive/config', {
+          method: 'PUT',
+          headers: {
+            'Authorization': buildArchiveAuthHeader(),
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(collectArchiveConfig())
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const payload = await response.json();
+        archiveConfigState = payload.config;
+        document.getElementById('auth-user').value = payload.config.OpticalArchive.Gateway.ConfigApiUsername || '';
+        document.getElementById('auth-pass').value = payload.config.OpticalArchive.Gateway.ConfigApiPassword || '';
+        showToast('Archive config saved.', 'success');
+      } catch (error) {
+        showToast('Failed to save archive config: ' + error.message, 'error');
+      }
+    }
+
+    document.getElementById('reload-config-btn').addEventListener('click', loadArchiveConfig);
+    document.getElementById('save-config-btn').addEventListener('click', saveArchiveConfig);
+    loadArchiveConfig();
+  </script>
+</body>
+</html>

@@ -1080,6 +1080,8 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 		}))
 	}
 
+	opts = append(opts, archiveConfigRouteOptions()...)
+
 	srv, err := s3api.New(be, middlewares.RootUserConfig{
 		Access: rootUserAccess,
 		Secret: rootUserSecret,
