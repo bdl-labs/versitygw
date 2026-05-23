@@ -160,6 +160,17 @@ func NewSqlMeta(dbPath string, opts ...SqlMetaOption) (SqlMeta, error) {
 	return SqlMeta{db: db}, nil
 }
 
+func (s SqlMeta) Close() error {
+	if s.db == nil {
+		return nil
+	}
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
+}
+
 func parseDiscExtentsJSON(s string) ([]BurnDiscExtent, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {

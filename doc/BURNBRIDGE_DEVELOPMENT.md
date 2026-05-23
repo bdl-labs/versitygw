@@ -130,3 +130,10 @@ tests/burnbridge_recovery_fault_injection.sh
 # 或指定
 tests/burnbridge_recovery_fault_injection.sh http://127.0.0.1:10000 mybucket recover-test.bin 5
 ```
+
+## 现状同步
+
+- 网关和刻录端现在统一读取 `OpticalArchive:ReadMountPath`，不再使用旧的 `Recorder.ReadMountPath` / `GatewayInterop.ReadMountPath` 入口。
+- 网关配置支持 `GET` / `PUT /__archive/config`，使用 HTTP Basic Auth 保护，并可在 WebUI 配置页编辑。
+- 刻录端按 `DriveIndex` 选择单一光驱，启动后复用同一个 `DeviceInfo` / `BlockDevice`。
+- 每次 `FinalizeLayout` 成功后，刻录端会覆盖写回 metadata SQLite，并刷新挂载点，便于后续追加会话加载上一次布局。

@@ -159,7 +159,7 @@ func Load(configPath string) (File, string, error) {
 		cfg.OpticalArchive.Gateway.GatewayMetadataDbPath = defaults.OpticalArchive.Gateway.GatewayMetadataDbPath
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.ReadMountPath) == "" {
-		cfg.OpticalArchive.ReadMountPath = legacyReadMountPath(raw)
+		cfg.OpticalArchive.ReadMountPath = defaults.OpticalArchive.ReadMountPath
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.LayoutDbPath) == "" {
 		cfg.OpticalArchive.Recorder.LayoutDbPath = defaults.OpticalArchive.Recorder.LayoutDbPath
@@ -172,32 +172,6 @@ func Load(configPath string) (File, string, error) {
 	}
 
 	return cfg, resolved, nil
-}
-
-func legacyReadMountPath(raw []byte) string {
-	type legacyFile struct {
-		OpticalArchive struct {
-			ReadMountPath string `json:"ReadMountPath"`
-			Recorder      struct {
-				ReadMountPath string `json:"ReadMountPath"`
-			} `json:"Recorder"`
-			GatewayInterop struct {
-				ReadMountPath string `json:"ReadMountPath"`
-			} `json:"GatewayInterop"`
-		} `json:"OpticalArchive"`
-	}
-
-	var legacy legacyFile
-	if err := json.Unmarshal(raw, &legacy); err != nil {
-		return ""
-	}
-	if strings.TrimSpace(legacy.OpticalArchive.ReadMountPath) != "" {
-		return strings.TrimSpace(legacy.OpticalArchive.ReadMountPath)
-	}
-	if strings.TrimSpace(legacy.OpticalArchive.Recorder.ReadMountPath) != "" {
-		return strings.TrimSpace(legacy.OpticalArchive.Recorder.ReadMountPath)
-	}
-	return strings.TrimSpace(legacy.OpticalArchive.GatewayInterop.ReadMountPath)
 }
 
 func Save(configPath string, cfg File) error {

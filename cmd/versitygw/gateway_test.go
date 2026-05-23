@@ -19,7 +19,9 @@ const (
 )
 
 var (
-	wg sync.WaitGroup
+	wg      sync.WaitGroup
+	testDir string
+	testSQL meta.SqlMeta
 )
 
 func initEnv(dir string) {
@@ -50,6 +52,7 @@ func initPosix(ctx context.Context) {
 	}
 
 	tempdir := filepath.Join(path, tdir)
+	testDir = tempdir
 	initEnv(tempdir)
 
 	err = os.RemoveAll(tempdir)
@@ -66,6 +69,7 @@ func initPosix(ctx context.Context) {
 	if err != nil {
 		log.Fatalf("init sql metadata: %v", err)
 	}
+	testSQL = sqlm
 
 	be, err := posix.New(tempdir, sqlm, posix.PosixOpts{
 		NewDirPerm:  0755,
@@ -79,11 +83,6 @@ func initPosix(ctx context.Context) {
 		err = runGateway(ctx, be)
 		if err != nil && err != context.Canceled {
 			log.Fatalf("run gateway: %v", err)
-		}
-
-		err := os.RemoveAll(tempdir)
-		if err != nil {
-			log.Fatalf("remove temp directory: %v", err)
 		}
 	})
 
@@ -116,6 +115,21 @@ func TestIntegration(t *testing.T) {
 
 	cancel()
 	wg.Wait()
+
+	if err := testSQL.Close(); err != nil {
+		log.Printf("close sql metadata: %v", err)
+	}
+
+	if cwd, err := os.Getwd(); err == nil {
+		if err := os.Chdir(filepath.Dir(cwd)); err != nil {
+			log.Fatalf("restore current directory: %v", err)
+		}
+	}
+
+	err = os.RemoveAll(testDir)
+	if err != nil {
+		log.Fatalf("remove temp directory: %v", err)
+	}
 }
 
 func TestValidatePortConflicts(t *testing.T) {
