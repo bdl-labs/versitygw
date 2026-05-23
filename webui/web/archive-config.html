@@ -158,6 +158,8 @@
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div class="flex items-center gap-3 pt-8"><input id="linux-manage-recorder" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Gateway starts local recorder</label></div>
               <div><label class="block text-sm font-medium mb-2">Recorder Health Check Seconds</label><input id="linux-recorder-health-seconds" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Recorder Service Name</label><input id="linux-recorder-service-name" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Recorder Process Pattern</label><input id="linux-recorder-process-pattern" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Recorder Start Command</label><input id="linux-recorder-start-command" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Recorder Working Directory</label><input id="linux-recorder-working-directory" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div class="flex items-center gap-3 pt-8"><input id="linux-mount-refresh-enabled" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Enable Linux mount refresh</label></div>
@@ -288,6 +290,8 @@
       document.getElementById('upgrade-gateway-command').value = upgrade.GatewayApplyCommand || '';
       document.getElementById('upgrade-recorder-command').value = upgrade.RecorderApplyCommand || '';
       document.getElementById('linux-manage-recorder').checked = !!linuxServices.ManageRecorderProcessLocally;
+      document.getElementById('linux-recorder-service-name').value = linuxServices.RecorderServiceName || '';
+      document.getElementById('linux-recorder-process-pattern').value = linuxServices.RecorderProcessPattern || '';
       document.getElementById('linux-recorder-start-command').value = linuxServices.RecorderStartCommand || '';
       document.getElementById('linux-recorder-working-directory').value = linuxServices.RecorderWorkingDirectory || '';
       document.getElementById('linux-recorder-health-seconds').value = linuxServices.RecorderHealthCheckSeconds ?? 30;
@@ -345,6 +349,8 @@
       cfg.OpticalArchive.Upgrade.GatewayApplyCommand = document.getElementById('upgrade-gateway-command').value.trim();
       cfg.OpticalArchive.Upgrade.RecorderApplyCommand = document.getElementById('upgrade-recorder-command').value.trim();
       cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally = document.getElementById('linux-manage-recorder').checked;
+      cfg.OpticalArchive.LinuxServices.RecorderServiceName = document.getElementById('linux-recorder-service-name').value.trim();
+      cfg.OpticalArchive.LinuxServices.RecorderProcessPattern = document.getElementById('linux-recorder-process-pattern').value.trim();
       cfg.OpticalArchive.LinuxServices.RecorderStartCommand = document.getElementById('linux-recorder-start-command').value.trim();
       cfg.OpticalArchive.LinuxServices.RecorderWorkingDirectory = document.getElementById('linux-recorder-working-directory').value.trim();
       cfg.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds = Number(document.getElementById('linux-recorder-health-seconds').value || 0);

@@ -92,6 +92,37 @@ func recorderEndpointReachable(addr string, timeout time.Duration) bool {
 	return true
 }
 
+func recorderServiceActive(serviceName string) (bool, bool) {
+	name := strings.TrimSpace(serviceName)
+	if name == "" || runtime.GOOS != "linux" {
+		return false, false
+	}
+	out, err := exec.Command("systemctl", "is-active", name).CombinedOutput()
+	state := strings.TrimSpace(strings.ToLower(string(out)))
+	if err != nil {
+		if state == "activating" || state == "active" {
+			return true, true
+		}
+		return false, false
+	}
+	return state == "active" || state == "activating", true
+}
+
+func recorderProcessExists(pattern string) (bool, bool) {
+	pat := strings.TrimSpace(pattern)
+	if pat == "" || runtime.GOOS != "linux" {
+		return false, false
+	}
+	err := exec.Command("pgrep", "-f", pat).Run()
+	if err == nil {
+		return true, true
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+		return false, true
+	}
+	return false, false
+}
+
 func waitForRecorderEndpoint(addr string, maxWait time.Duration) error {
 	if maxWait <= 0 {
 		maxWait = 30 * time.Second
@@ -119,6 +150,16 @@ func maybeStartLocalRecorderProcess(opts Options) error {
 		slog.Info("burnbridge: local recorder already running; skip auto-start",
 			"grpcAddr", strings.TrimSpace(opts.GRPCAddr))
 		return nil
+	}
+	if active, known := recorderServiceActive(opts.RecorderServiceName); known && active {
+		slog.Info("burnbridge: recorder service already active; skip auto-start",
+			"service", strings.TrimSpace(opts.RecorderServiceName))
+		return waitForRecorderEndpoint(opts.GRPCAddr, time.Duration(maxInt(opts.RecorderHealthCheckSeconds, 30))*time.Second)
+	}
+	if exists, known := recorderProcessExists(opts.RecorderProcessPattern); known && exists {
+		slog.Info("burnbridge: recorder process already exists; skip auto-start",
+			"pattern", strings.TrimSpace(opts.RecorderProcessPattern))
+		return waitForRecorderEndpoint(opts.GRPCAddr, time.Duration(maxInt(opts.RecorderHealthCheckSeconds, 30))*time.Second)
 	}
 	if strings.TrimSpace(opts.RecorderStartCommand) == "" {
 		return fmt.Errorf("burnbridge: ManageRecorderProcessLocally enabled but RecorderStartCommand is empty")
@@ -157,4 +198,11 @@ func maybeStartLocalRecorderProcess(opts Options) error {
 	slog.Info("burnbridge: local recorder gRPC endpoint became ready",
 		"grpcAddr", strings.TrimSpace(opts.GRPCAddr))
 	return nil
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

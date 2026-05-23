@@ -96,6 +96,8 @@ type Options struct {
 
 	AllowCreateBucketBinding bool
 	ManageRecorderProcessLocally bool
+	RecorderServiceName          string
+	RecorderProcessPattern       string
 	RecorderStartCommand         string
 	RecorderWorkingDirectory     string
 	RecorderHealthCheckSeconds   int

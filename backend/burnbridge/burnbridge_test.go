@@ -257,4 +257,13 @@ func TestRecorderEndpointReachable(t *testing.T) {
 	<-done
 }
 
+func TestMaxInt(t *testing.T) {
+	if got := maxInt(3, 5); got != 5 {
+		t.Fatalf("maxInt(3, 5) = %d, want 5", got)
+	}
+	if got := maxInt(7, 2); got != 7 {
+		t.Fatalf("maxInt(7, 2) = %d, want 7", got)
+	}
+}
+
 func ptr[T any](v T) *T { return &v }

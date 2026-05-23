@@ -86,6 +86,8 @@ type Upgrade struct {
 
 type LinuxServices struct {
 	ManageRecorderProcessLocally bool   `json:"ManageRecorderProcessLocally"`
+	RecorderServiceName          string `json:"RecorderServiceName"`
+	RecorderProcessPattern       string `json:"RecorderProcessPattern"`
 	RecorderStartCommand         string `json:"RecorderStartCommand"`
 	RecorderWorkingDirectory     string `json:"RecorderWorkingDirectory"`
 	RecorderHealthCheckSeconds   int    `json:"RecorderHealthCheckSeconds"`
@@ -197,6 +199,8 @@ func DefaultFile(path string) File {
 			},
 			LinuxServices: LinuxServices{
 				ManageRecorderProcessLocally: false,
+				RecorderServiceName:          "optical-archive-recorder.service",
+				RecorderProcessPattern:       "BurnServer.dll",
 				RecorderStartCommand:         "",
 				RecorderWorkingDirectory:     "",
 				RecorderHealthCheckSeconds:   30,

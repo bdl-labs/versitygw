@@ -211,6 +211,12 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if next.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds <= 0 {
 		next.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds = current.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds
 	}
+	if strings.TrimSpace(next.OpticalArchive.LinuxServices.RecorderServiceName) == "" {
+		next.OpticalArchive.LinuxServices.RecorderServiceName = current.OpticalArchive.LinuxServices.RecorderServiceName
+	}
+	if strings.TrimSpace(next.OpticalArchive.LinuxServices.RecorderProcessPattern) == "" {
+		next.OpticalArchive.LinuxServices.RecorderProcessPattern = current.OpticalArchive.LinuxServices.RecorderProcessPattern
+	}
 	if strings.TrimSpace(next.OpticalArchive.LinuxServices.MountRefreshServiceType) == "" {
 		next.OpticalArchive.LinuxServices.MountRefreshServiceType = current.OpticalArchive.LinuxServices.MountRefreshServiceType
 	}
@@ -283,6 +289,8 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 		},
 		"LinuxServices": map[string]any{
 			"ManageRecorderProcessLocally": cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally,
+			"RecorderServiceName":          cfg.OpticalArchive.LinuxServices.RecorderServiceName,
+			"RecorderProcessPattern":       cfg.OpticalArchive.LinuxServices.RecorderProcessPattern,
 			"RecorderStartCommand":         cfg.OpticalArchive.LinuxServices.RecorderStartCommand,
 			"RecorderWorkingDirectory":     cfg.OpticalArchive.LinuxServices.RecorderWorkingDirectory,
 			"RecorderHealthCheckSeconds":   cfg.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds,

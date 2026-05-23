@@ -230,6 +230,8 @@ func runBurnbridge(ctx *cli.Context) error {
 	if cfg, _, err := archiveconfig.Load(""); err == nil {
 		opts.AllowCreateBucketBinding = cfg.OpticalArchive.Recorder.AllowCreateBucketBinding
 		opts.ManageRecorderProcessLocally = cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally
+		opts.RecorderServiceName = cfg.OpticalArchive.LinuxServices.RecorderServiceName
+		opts.RecorderProcessPattern = cfg.OpticalArchive.LinuxServices.RecorderProcessPattern
 		opts.RecorderStartCommand = cfg.OpticalArchive.LinuxServices.RecorderStartCommand
 		opts.RecorderWorkingDirectory = cfg.OpticalArchive.LinuxServices.RecorderWorkingDirectory
 		opts.RecorderHealthCheckSeconds = cfg.OpticalArchive.LinuxServices.RecorderHealthCheckSeconds
