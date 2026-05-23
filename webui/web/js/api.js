@@ -859,6 +859,25 @@ class VersityAPI {
     return this.parseXmlList(response, 'Accounts');
   }
 
+  async getArchiveLogs(basicAuthHeader) {
+    const response = await fetch(this.getEndpoint(false) + '/__archive/logs', {
+      headers: {
+        'Authorization': basicAuthHeader,
+      },
+    });
+    if (!response.ok) {
+      throw new Error(await response.text());
+    }
+    return await response.json();
+  }
+
+  getArchiveLogDownloadUrl(source, path) {
+    const url = new URL(this.getEndpoint(false) + '/__archive/logs/download');
+    url.searchParams.set('source', source);
+    url.searchParams.set('path', path);
+    return url.toString();
+  }
+
   /**
    * Create a new user (Admin API)
    */

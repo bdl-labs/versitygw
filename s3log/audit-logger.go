@@ -47,6 +47,10 @@ type LogConfig struct {
 	LogFile      string
 	WebhookURL   string
 	AdminLogFile string
+	FileSizeMb   int
+	MaxBackups   int
+	RetentionDays int
+	CompressArchives bool
 
 	// FlashEmmcOptimized stores access/admin logs under FlashLogDir (default /dev/shm/app-log)
 	// with lumberjack rotation and optional background mirror to FlashMirrorDir.
@@ -158,7 +162,7 @@ func InitLogger(cfg *LogConfig) (*Loggers, error) {
 			loggers.S3Logger = l
 		} else {
 			fmt.Printf("initializing S3 access logs with '%v' file\n", cfg.LogFile)
-			l, err := InitFileLogger(cfg.LogFile)
+			l, err := InitFileLoggerWithOptions(cfg.LogFile, cfg.FileSizeMb, cfg.MaxBackups, cfg.RetentionDays, cfg.CompressArchives)
 			if err != nil {
 				return nil, err
 			}
@@ -180,7 +184,7 @@ func InitLogger(cfg *LogConfig) (*Loggers, error) {
 			loggers.AdminLogger = l
 		} else {
 			fmt.Printf("initializing admin access logs with '%v' file\n", cfg.AdminLogFile)
-			l, err := InitAdminFileLogger(cfg.AdminLogFile)
+			l, err := InitAdminFileLoggerWithOptions(cfg.AdminLogFile, cfg.FileSizeMb, cfg.MaxBackups, cfg.RetentionDays, cfg.CompressArchives)
 			if err != nil {
 				return nil, err
 			}

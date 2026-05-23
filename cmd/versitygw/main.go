@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v2"
+	"github.com/versity/versitygw/archiveconfig"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/backend/sysflash"
@@ -991,10 +992,24 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 	}
 
 	mlog := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	loggingCfg := archiveconfig.DefaultFile("").OpticalArchive.Logging.Gateway
+	if cfg, _, cfgErr := archiveconfig.Load(""); cfgErr == nil {
+		loggingCfg = cfg.OpticalArchive.Logging.Gateway
+		if strings.TrimSpace(accessLog) == "" {
+			accessLog = strings.TrimSpace(loggingCfg.AccessLogPath)
+		}
+		if strings.TrimSpace(adminLogFile) == "" {
+			adminLogFile = strings.TrimSpace(loggingCfg.AdminLogPath)
+		}
+	}
 	loggers, err := s3log.InitLogger(&s3log.LogConfig{
 		LogFile:            accessLog,
 		WebhookURL:         logWebhookURL,
 		AdminLogFile:       adminLogFile,
+		FileSizeMb:         loggingCfg.FileSizeMb,
+		MaxBackups:         loggingCfg.MaxBackups,
+		RetentionDays:      loggingCfg.RetentionDays,
+		CompressArchives:   loggingCfg.EnableCompression,
 		FlashEmmcOptimized: flashEmmcOptimized,
 		MirrorCtx:          ctx,
 		MirrorLog:          mlog,
@@ -1081,6 +1096,7 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 	}
 
 	opts = append(opts, archiveConfigRouteOptions()...)
+	opts = append(opts, archiveLogRouteOptions()...)
 
 	srv, err := s3api.New(be, middlewares.RootUserConfig{
 		Access: rootUserAccess,

@@ -256,6 +256,31 @@ under the License.
             </div>
           </div>
 
+          <div class="mt-6 bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-lg font-semibold text-charcoal">Archive Logs</h3>
+              <button id="refresh-archive-logs-btn" class="text-accent hover:text-accent-600 text-sm font-medium">Refresh</button>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead>
+                  <tr class="border-b border-gray-100">
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Source</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">File</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Size</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Modified</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="archive-logs-table">
+                  <tr>
+                    <td colspan="5" class="py-8 text-center text-charcoal-300">Load logs after authentication</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <!-- Recent Users Table -->
           <div class="mt-6 bg-white rounded-xl p-6 shadow-sm border border-gray-100">
             <div class="flex items-center justify-between mb-4">
@@ -292,6 +317,7 @@ under the License.
       initSidebarWithRole();
       updateUserInfo();
       loadDashboard();
+      document.getElementById('refresh-archive-logs-btn').addEventListener('click', loadArchiveLogs);
     }
 
     async function loadDashboard() {
@@ -342,6 +368,7 @@ under the License.
           <span class="w-3 h-3 bg-green-500 rounded-full animate-pulse"></span>
           <p class="text-xl font-bold text-green-600">Connected</p>
         `;
+        await loadArchiveLogs();
       } catch (error) {
         console.error('Error loading dashboard:', error);
         showToast('Error loading dashboard data: ' + error.message, 'error');
@@ -349,6 +376,78 @@ under the License.
         document.getElementById('system-status').innerHTML = `
           <span class="w-3 h-3 bg-red-500 rounded-full"></span>
           <p class="text-xl font-bold text-red-600">Error</p>
+        `;
+      }
+    }
+
+    function buildArchiveAuthHeaderForDashboard() {
+      const user = sessionStorage.getItem('archive_config_user') || 'admin';
+      const pass = sessionStorage.getItem('archive_config_pass') || 'admin123';
+      return 'Basic ' + btoa(user + ':' + pass);
+    }
+
+    async function loadArchiveLogs() {
+      const tbody = document.getElementById('archive-logs-table');
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="5" class="py-8 text-center text-charcoal-300">Loading logs...</td>
+        </tr>
+      `;
+
+      try {
+        const payload = await api.getArchiveLogs(buildArchiveAuthHeaderForDashboard());
+        const items = payload.items || [];
+        if (items.length === 0) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="5" class="py-8 text-center text-charcoal-300">No log files found</td>
+            </tr>
+          `;
+          return;
+        }
+
+        tbody.innerHTML = '';
+        items.slice(0, 10).forEach(item => {
+          const row = document.createElement('tr');
+          row.className = 'border-b border-gray-50 hover:bg-gray-50 transition-colors';
+          row.innerHTML = `
+            <td class="py-3 px-4 text-sm text-charcoal">${escapeHtml(item.source)}</td>
+            <td class="py-3 px-4 text-sm text-charcoal font-mono">${escapeHtml(item.relativePath)}</td>
+            <td class="py-3 px-4 text-sm text-charcoal">${Number(item.sizeBytes || 0).toLocaleString()}</td>
+            <td class="py-3 px-4 text-sm text-charcoal">${escapeHtml(item.modifiedUtc || '-')}</td>
+            <td class="py-3 px-4 text-sm">
+              <button class="text-accent hover:text-accent-600 font-medium" data-download-source="${escapeHtml(item.source)}" data-download-path="${escapeHtml(item.relativePath)}">Download</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+
+        tbody.querySelectorAll('button[data-download-source]').forEach(button => {
+          button.addEventListener('click', async () => {
+            const source = button.getAttribute('data-download-source');
+            const path = button.getAttribute('data-download-path');
+            const response = await fetch(api.getArchiveLogDownloadUrl(source, path), {
+              headers: {
+                'Authorization': buildArchiveAuthHeaderForDashboard(),
+              },
+            });
+            if (!response.ok) {
+              throw new Error(await response.text());
+            }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = path.split('/').pop() || 'archive.log';
+            link.click();
+            URL.revokeObjectURL(url);
+          });
+        });
+      } catch (error) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="5" class="py-8 text-center text-red-500">${escapeHtml(error.message)}</td>
+          </tr>
         `;
       }
     }

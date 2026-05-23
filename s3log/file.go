@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ import (
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 const (
@@ -49,16 +51,48 @@ var _ AuditLogger = &FileLogger{}
 
 // InitFileLogger initializes audit logs to local file
 func InitFileLogger(logname string) (AuditLogger, error) {
+	return InitFileLoggerWithOptions(logname, 0, 0, 0, false)
+}
+
+func InitFileLoggerWithOptions(logname string, fileSizeMb, maxBackups, retentionDays int, compress bool) (AuditLogger, error) {
+	if err := os.MkdirAll(filepath.Dir(logname), 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir log dir: %w", err)
+	}
+	if fileSizeMb <= 0 {
+		fileSizeMb = 64
+	}
+	if maxBackups <= 0 {
+		maxBackups = 16
+	}
+	if retentionDays <= 0 {
+		retentionDays = 30
+	}
+
+	lj := &lumberjack.Logger{
+		Filename:   logname,
+		MaxSize:    fileSizeMb,
+		MaxBackups: maxBackups,
+		MaxAge:     retentionDays,
+		Compress:   compress,
+		LocalTime:  true,
+	}
+	if _, err := fmt.Fprintf(lj, "log starts %v\n", time.Now()); err != nil {
+		_ = lj.Close()
+		return nil, fmt.Errorf("log header: %w", err)
+	}
+
+	fl := &FileLogger{logfile: logname, w: lj}
+	fl.closeFn = func() error { return lj.Close() }
+	fl.rotateFn = func() error { return lj.Rotate() }
+	return fl, nil
+}
+
+func openPlainLogFile(logname string) (*os.File, error) {
 	f, err := os.OpenFile(logname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, logFileMode)
 	if err != nil {
 		return nil, fmt.Errorf("open log: %w", err)
 	}
-
-	fmt.Fprintf(f, "log starts %v\n", time.Now())
-
-	fl := &FileLogger{logfile: logname, w: f}
-	fl.closeFn = func() error { return f.Close() }
-	return fl, nil
+	return f, nil
 }
 
 // Log sends log message to file logger
@@ -240,7 +274,7 @@ func (f *FileLogger) HangUp() error {
 		}
 	}
 
-	nf, err := os.OpenFile(f.logfile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	nf, err := openPlainLogFile(f.logfile)
 	if err != nil {
 		return fmt.Errorf("open log: %w", err)
 	}

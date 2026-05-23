@@ -166,6 +166,33 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if next.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds <= 0 {
 		next.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds = current.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds
 	}
+	if strings.TrimSpace(next.OpticalArchive.Logging.Gateway.AccessLogPath) == "" {
+		next.OpticalArchive.Logging.Gateway.AccessLogPath = current.OpticalArchive.Logging.Gateway.AccessLogPath
+	}
+	if strings.TrimSpace(next.OpticalArchive.Logging.Gateway.AdminLogPath) == "" {
+		next.OpticalArchive.Logging.Gateway.AdminLogPath = current.OpticalArchive.Logging.Gateway.AdminLogPath
+	}
+	if next.OpticalArchive.Logging.Gateway.FileSizeMb <= 0 {
+		next.OpticalArchive.Logging.Gateway.FileSizeMb = current.OpticalArchive.Logging.Gateway.FileSizeMb
+	}
+	if next.OpticalArchive.Logging.Gateway.MaxBackups <= 0 {
+		next.OpticalArchive.Logging.Gateway.MaxBackups = current.OpticalArchive.Logging.Gateway.MaxBackups
+	}
+	if next.OpticalArchive.Logging.Gateway.RetentionDays <= 0 {
+		next.OpticalArchive.Logging.Gateway.RetentionDays = current.OpticalArchive.Logging.Gateway.RetentionDays
+	}
+	if strings.TrimSpace(next.OpticalArchive.Logging.Recorder.LogDirectory) == "" {
+		next.OpticalArchive.Logging.Recorder.LogDirectory = current.OpticalArchive.Logging.Recorder.LogDirectory
+	}
+	if next.OpticalArchive.Logging.Recorder.FileSizeMb <= 0 {
+		next.OpticalArchive.Logging.Recorder.FileSizeMb = current.OpticalArchive.Logging.Recorder.FileSizeMb
+	}
+	if next.OpticalArchive.Logging.Recorder.RetentionDays <= 0 {
+		next.OpticalArchive.Logging.Recorder.RetentionDays = current.OpticalArchive.Logging.Recorder.RetentionDays
+	}
+	if strings.TrimSpace(next.OpticalArchive.Logging.Recorder.MinLevel) == "" {
+		next.OpticalArchive.Logging.Recorder.MinLevel = current.OpticalArchive.Logging.Recorder.MinLevel
+	}
 }
 
 func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
@@ -210,6 +237,21 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"GrpcDialTimeoutSeconds":  cfg.OpticalArchive.GatewayInterop.GrpcDialTimeoutSeconds,
 			"GrpcReadyTimeoutSeconds": cfg.OpticalArchive.GatewayInterop.GrpcReadyTimeoutSeconds,
 			"GrpcPingTimeoutSeconds":  cfg.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds,
+		},
+		"LoggingGateway": map[string]any{
+			"AccessLogPath":     cfg.OpticalArchive.Logging.Gateway.AccessLogPath,
+			"AdminLogPath":      cfg.OpticalArchive.Logging.Gateway.AdminLogPath,
+			"FileSizeMb":        cfg.OpticalArchive.Logging.Gateway.FileSizeMb,
+			"MaxBackups":        cfg.OpticalArchive.Logging.Gateway.MaxBackups,
+			"RetentionDays":     cfg.OpticalArchive.Logging.Gateway.RetentionDays,
+			"EnableCompression": cfg.OpticalArchive.Logging.Gateway.EnableCompression,
+		},
+		"LoggingRecorder": map[string]any{
+			"LogDirectory":      cfg.OpticalArchive.Logging.Recorder.LogDirectory,
+			"FileSizeMb":        cfg.OpticalArchive.Logging.Recorder.FileSizeMb,
+			"RetentionDays":     cfg.OpticalArchive.Logging.Recorder.RetentionDays,
+			"EnableCompression": cfg.OpticalArchive.Logging.Recorder.EnableCompression,
+			"MinLevel":          cfg.OpticalArchive.Logging.Recorder.MinLevel,
 		},
 	}
 }

@@ -35,15 +35,15 @@ var _ AuditLogger = &AdminFileLogger{}
 
 // InitAdminFileLogger initializes audit logs to local file
 func InitAdminFileLogger(logname string) (AuditLogger, error) {
-	f, err := os.OpenFile(logname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	return InitAdminFileLoggerWithOptions(logname, 0, 0, 0, false)
+}
+
+func InitAdminFileLoggerWithOptions(logname string, fileSizeMb, maxBackups, retentionDays int, compress bool) (AuditLogger, error) {
+	fLogger, err := InitFileLoggerWithOptions(logname, fileSizeMb, maxBackups, retentionDays, compress)
 	if err != nil {
-		return nil, fmt.Errorf("open log: %w", err)
+		return nil, err
 	}
-
-	_, _ = io.WriteString(f, fmt.Sprintf("log starts %v\n", time.Now()))
-
-	fl := &FileLogger{logfile: logname, w: f}
-	fl.closeFn = func() error { return f.Close() }
+	fl := fLogger.(*FileLogger)
 	return &AdminFileLogger{FileLogger: *fl}, nil
 }
 

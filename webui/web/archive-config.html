@@ -118,6 +118,29 @@
               <div><label class="block text-sm font-medium mb-2">Read Mount Path</label><input id="shared-read-mount" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
             </div>
           </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Gateway Logging</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">Access Log Path</label><input id="log-gw-access-path" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Admin Log Path</label><input id="log-gw-admin-path" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">File Size MB</label><input id="log-gw-file-size" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Max Backups</label><input id="log-gw-max-backups" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Retention Days</label><input id="log-gw-retention" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div class="flex items-center gap-3 pt-8"><input id="log-gw-compress" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Compress Archives</label></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">Recorder Logging</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div><label class="block text-sm font-medium mb-2">Log Directory</label><input id="log-rec-dir" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Min Level</label><input id="log-rec-level" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">File Size MB</label><input id="log-rec-file-size" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Retention Days</label><input id="log-rec-retention" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div class="flex items-center gap-3 pt-8"><input id="log-rec-compress" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Compress Archives</label></div>
+            </div>
+          </section>
         </div>
       </main>
     </div>
@@ -129,6 +152,8 @@
     function buildArchiveAuthHeader() {
       const user = document.getElementById('auth-user').value || 'admin';
       const pass = document.getElementById('auth-pass').value || 'admin123';
+      sessionStorage.setItem('archive_config_user', user);
+      sessionStorage.setItem('archive_config_pass', pass);
       return 'Basic ' + btoa(user + ':' + pass);
     }
 
@@ -155,6 +180,8 @@
       document.getElementById('archive-config-path').textContent = path;
       document.getElementById('auth-user').value = cfg.OpticalArchive.Gateway.ConfigApiUsername || '';
       document.getElementById('auth-pass').value = cfg.OpticalArchive.Gateway.ConfigApiPassword || '';
+      sessionStorage.setItem('archive_config_user', cfg.OpticalArchive.Gateway.ConfigApiUsername || 'admin');
+      sessionStorage.setItem('archive_config_pass', cfg.OpticalArchive.Gateway.ConfigApiPassword || 'admin123');
 
       const gateway = archiveGroup(payload, 'Gateway');
       const recorder = archiveGroup(payload, 'Recorder');
@@ -162,6 +189,8 @@
       const redundancy = archiveGroup(payload, 'Redundancy');
       const interop = archiveGroup(payload, 'GatewayInterop');
       const shared = archiveGroup(payload, 'Shared');
+      const loggingGateway = archiveGroup(payload, 'LoggingGateway');
+      const loggingRecorder = archiveGroup(payload, 'LoggingRecorder');
 
       document.getElementById('gw-config-path').value = gateway.ConfigFilePath || '';
       document.getElementById('gw-api-user').value = gateway.ConfigApiUsername || '';
@@ -191,6 +220,17 @@
       document.getElementById('gw-grpc-ready').value = interop.GrpcReadyTimeoutSeconds ?? 90;
       document.getElementById('gw-grpc-ping').value = interop.GrpcPingTimeoutSeconds ?? 60;
       document.getElementById('shared-read-mount').value = shared.ReadMountPath || '';
+      document.getElementById('log-gw-access-path').value = loggingGateway.AccessLogPath || '';
+      document.getElementById('log-gw-admin-path').value = loggingGateway.AdminLogPath || '';
+      document.getElementById('log-gw-file-size').value = loggingGateway.FileSizeMb ?? 64;
+      document.getElementById('log-gw-max-backups').value = loggingGateway.MaxBackups ?? 16;
+      document.getElementById('log-gw-retention').value = loggingGateway.RetentionDays ?? 30;
+      document.getElementById('log-gw-compress').checked = !!loggingGateway.EnableCompression;
+      document.getElementById('log-rec-dir').value = loggingRecorder.LogDirectory || '';
+      document.getElementById('log-rec-level').value = loggingRecorder.MinLevel || '';
+      document.getElementById('log-rec-file-size').value = loggingRecorder.FileSizeMb ?? 64;
+      document.getElementById('log-rec-retention').value = loggingRecorder.RetentionDays ?? 30;
+      document.getElementById('log-rec-compress').checked = !!loggingRecorder.EnableCompression;
     }
 
     function collectArchiveConfig() {
@@ -223,6 +263,17 @@
       cfg.OpticalArchive.GatewayInterop.GrpcReadyTimeoutSeconds = Number(document.getElementById('gw-grpc-ready').value || 0);
       cfg.OpticalArchive.GatewayInterop.GrpcPingTimeoutSeconds = Number(document.getElementById('gw-grpc-ping').value || 0);
       cfg.OpticalArchive.ReadMountPath = document.getElementById('shared-read-mount').value.trim();
+      cfg.OpticalArchive.Logging.Gateway.AccessLogPath = document.getElementById('log-gw-access-path').value.trim();
+      cfg.OpticalArchive.Logging.Gateway.AdminLogPath = document.getElementById('log-gw-admin-path').value.trim();
+      cfg.OpticalArchive.Logging.Gateway.FileSizeMb = Number(document.getElementById('log-gw-file-size').value || 0);
+      cfg.OpticalArchive.Logging.Gateway.MaxBackups = Number(document.getElementById('log-gw-max-backups').value || 0);
+      cfg.OpticalArchive.Logging.Gateway.RetentionDays = Number(document.getElementById('log-gw-retention').value || 0);
+      cfg.OpticalArchive.Logging.Gateway.EnableCompression = document.getElementById('log-gw-compress').checked;
+      cfg.OpticalArchive.Logging.Recorder.LogDirectory = document.getElementById('log-rec-dir').value.trim();
+      cfg.OpticalArchive.Logging.Recorder.MinLevel = document.getElementById('log-rec-level').value.trim();
+      cfg.OpticalArchive.Logging.Recorder.FileSizeMb = Number(document.getElementById('log-rec-file-size').value || 0);
+      cfg.OpticalArchive.Logging.Recorder.RetentionDays = Number(document.getElementById('log-rec-retention').value || 0);
+      cfg.OpticalArchive.Logging.Recorder.EnableCompression = document.getElementById('log-rec-compress').checked;
       return cfg;
     }
 
@@ -241,6 +292,8 @@
         archiveConfigState = payload.config;
         document.getElementById('auth-user').value = payload.config.OpticalArchive.Gateway.ConfigApiUsername || '';
         document.getElementById('auth-pass').value = payload.config.OpticalArchive.Gateway.ConfigApiPassword || '';
+        sessionStorage.setItem('archive_config_user', payload.config.OpticalArchive.Gateway.ConfigApiUsername || 'admin');
+        sessionStorage.setItem('archive_config_pass', payload.config.OpticalArchive.Gateway.ConfigApiPassword || 'admin123');
         showToast('Archive config saved.', 'success');
       } catch (error) {
         showToast('Failed to save archive config: ' + error.message, 'error');

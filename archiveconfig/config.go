@@ -21,12 +21,13 @@ type File struct {
 }
 
 type OpticalArchive struct {
-	Gateway        Gateway        `json:"Gateway"`
-	ReadMountPath  string         `json:"ReadMountPath"`
-	Recorder       Recorder       `json:"Recorder"`
-	Runtime        Runtime        `json:"Runtime"`
-	Redundancy     Redundancy     `json:"Redundancy"`
-	GatewayInterop GatewayInterop `json:"GatewayInterop"`
+	Gateway           Gateway             `json:"Gateway"`
+	ReadMountPath     string              `json:"ReadMountPath"`
+	Recorder          Recorder            `json:"Recorder"`
+	Runtime           Runtime             `json:"Runtime"`
+	Redundancy        Redundancy          `json:"Redundancy"`
+	GatewayInterop    GatewayInterop      `json:"GatewayInterop"`
+	Logging           Logging             `json:"Logging"`
 	DiscBucketBindings []DiscBucketBinding `json:"DiscBucketBindings"`
 }
 
@@ -71,6 +72,28 @@ type GatewayInterop struct {
 	GrpcDialTimeoutSeconds  int    `json:"GrpcDialTimeoutSeconds"`
 	GrpcReadyTimeoutSeconds int    `json:"GrpcReadyTimeoutSeconds"`
 	GrpcPingTimeoutSeconds  int    `json:"GrpcPingTimeoutSeconds"`
+}
+
+type Logging struct {
+	Gateway  GatewayLogging  `json:"Gateway"`
+	Recorder RecorderLogging `json:"Recorder"`
+}
+
+type GatewayLogging struct {
+	AccessLogPath      string `json:"AccessLogPath"`
+	AdminLogPath       string `json:"AdminLogPath"`
+	FileSizeMb         int    `json:"FileSizeMb"`
+	MaxBackups         int    `json:"MaxBackups"`
+	RetentionDays      int    `json:"RetentionDays"`
+	EnableCompression  bool   `json:"EnableCompression"`
+}
+
+type RecorderLogging struct {
+	LogDirectory       string `json:"LogDirectory"`
+	FileSizeMb         int    `json:"FileSizeMb"`
+	RetentionDays      int    `json:"RetentionDays"`
+	EnableCompression  bool   `json:"EnableCompression"`
+	MinLevel           string `json:"MinLevel"`
 }
 
 type DiscBucketBinding struct {
@@ -125,6 +148,23 @@ func DefaultFile(path string) File {
 				GrpcDialTimeoutSeconds:  120,
 				GrpcReadyTimeoutSeconds: 90,
 				GrpcPingTimeoutSeconds:  60,
+			},
+			Logging: Logging{
+				Gateway: GatewayLogging{
+					AccessLogPath:     "D:\\BRS\\versitygw\\logs\\gateway-access.log",
+					AdminLogPath:      "D:\\BRS\\versitygw\\logs\\gateway-admin.log",
+					FileSizeMb:        64,
+					MaxBackups:        16,
+					RetentionDays:     30,
+					EnableCompression: true,
+				},
+				Recorder: RecorderLogging{
+					LogDirectory:      "D:\\BRS\\primoburner-net\\bin\\logs",
+					FileSizeMb:        64,
+					RetentionDays:     30,
+					EnableCompression: true,
+					MinLevel:          "Information",
+				},
 			},
 			DiscBucketBindings: []DiscBucketBinding{},
 		},
@@ -209,6 +249,33 @@ func Load(configPath string) (File, string, error) {
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.GatewayInterop.GrpcAddr) == "" {
 		cfg.OpticalArchive.GatewayInterop.GrpcAddr = defaults.OpticalArchive.GatewayInterop.GrpcAddr
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Logging.Gateway.AccessLogPath) == "" {
+		cfg.OpticalArchive.Logging.Gateway.AccessLogPath = defaults.OpticalArchive.Logging.Gateway.AccessLogPath
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Logging.Gateway.AdminLogPath) == "" {
+		cfg.OpticalArchive.Logging.Gateway.AdminLogPath = defaults.OpticalArchive.Logging.Gateway.AdminLogPath
+	}
+	if cfg.OpticalArchive.Logging.Gateway.FileSizeMb <= 0 {
+		cfg.OpticalArchive.Logging.Gateway.FileSizeMb = defaults.OpticalArchive.Logging.Gateway.FileSizeMb
+	}
+	if cfg.OpticalArchive.Logging.Gateway.MaxBackups <= 0 {
+		cfg.OpticalArchive.Logging.Gateway.MaxBackups = defaults.OpticalArchive.Logging.Gateway.MaxBackups
+	}
+	if cfg.OpticalArchive.Logging.Gateway.RetentionDays <= 0 {
+		cfg.OpticalArchive.Logging.Gateway.RetentionDays = defaults.OpticalArchive.Logging.Gateway.RetentionDays
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Logging.Recorder.LogDirectory) == "" {
+		cfg.OpticalArchive.Logging.Recorder.LogDirectory = defaults.OpticalArchive.Logging.Recorder.LogDirectory
+	}
+	if cfg.OpticalArchive.Logging.Recorder.FileSizeMb <= 0 {
+		cfg.OpticalArchive.Logging.Recorder.FileSizeMb = defaults.OpticalArchive.Logging.Recorder.FileSizeMb
+	}
+	if cfg.OpticalArchive.Logging.Recorder.RetentionDays <= 0 {
+		cfg.OpticalArchive.Logging.Recorder.RetentionDays = defaults.OpticalArchive.Logging.Recorder.RetentionDays
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Logging.Recorder.MinLevel) == "" {
+		cfg.OpticalArchive.Logging.Recorder.MinLevel = defaults.OpticalArchive.Logging.Recorder.MinLevel
 	}
 
 	return cfg, resolved, nil
