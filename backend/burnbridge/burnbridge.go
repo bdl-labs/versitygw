@@ -803,20 +803,6 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 	clen := summary.Size
 	lm := summary.LastModified
 
-	if b.readMount != "" {
-		objPath, pathErr := bbSafeObjectPath(b.readMount, bucket, key)
-		if pathErr != nil {
-			return nil, pathErr
-		}
-		fi, err := os.Stat(objPath)
-		if err == nil && !fi.IsDir() {
-			clen = fi.Size()
-			lm = fi.ModTime().UTC()
-		} else if err != nil && !errors.Is(err, os.ErrNotExist) && !errors.Is(err, syscall.ENOTDIR) {
-			return nil, err
-		}
-	}
-
 	ct := burnbridgeDefaultContentType
 	out := &s3.HeadObjectOutput{
 		ContentType:   &ct,
@@ -1119,14 +1105,6 @@ func (b *BurnBridge) walkObjectMeta(bucket string, byKey map[string]meta.Committ
 			etagCopy = emptyQuotedMD5
 		}
 		sz := sum.Size
-		if b.readMount != "" {
-			if p, err := bbSafeObjectPath(b.readMount, bucket, path); err == nil {
-				if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
-					sz = fi.Size()
-					lm = fi.ModTime().UTC()
-				}
-			}
-		}
 		sc := types.ObjectStorageClassStandard
 		k := path
 		return s3response.Object{
