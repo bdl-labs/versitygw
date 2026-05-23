@@ -181,4 +181,31 @@ func TestHeadAndListUseMetadataOnly(t *testing.T) {
 	}
 }
 
+func TestIsLocalRecorderTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		addr string
+		want bool
+	}{
+		{name: "localhost with port", addr: "localhost:50051", want: true},
+		{name: "ipv4 loopback", addr: "127.0.0.1:50051", want: true},
+		{name: "ipv6 loopback", addr: "[::1]:50051", want: true},
+		{name: "all interfaces ipv4", addr: "0.0.0.0:50051", want: true},
+		{name: "all interfaces ipv6", addr: "[::]:50051", want: true},
+		{name: "hostname remote", addr: "recorder.example.com:50051", want: false},
+		{name: "ipv4 remote", addr: "192.168.1.10:50051", want: false},
+		{name: "ipv6 remote", addr: "[2001:db8::10]:50051", want: false},
+		{name: "missing port localhost", addr: "localhost", want: true},
+		{name: "empty", addr: "", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := isLocalRecorderTarget(tt.addr); got != tt.want {
+				t.Fatalf("isLocalRecorderTarget(%q) = %v, want %v", tt.addr, got, tt.want)
+			}
+		})
+	}
+}
+
 func ptr[T any](v T) *T { return &v }
