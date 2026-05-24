@@ -431,7 +431,7 @@ func New(opts Options) (*BurnBridge, error) {
 		udfLabel = strings.TrimSpace(rawVol)
 	}
 
-	return &BurnBridge{
+	bridge := &BurnBridge{
 		meta:             metaStore,
 		grpc:             client,
 		grpcConn:         conn,
@@ -453,7 +453,14 @@ func New(opts Options) (*BurnBridge, error) {
 		recorderS3PathStyle:       opts.RecorderS3ForcePathStyle,
 		recorderS3PresignedGetURL: strings.TrimSpace(opts.RecorderS3PresignedGetURL),
 		putQueueSem:               make(chan struct{}, defaultPutQueueLimit),
-	}, nil
+	}
+	if strings.TrimSpace(activeBucket) != "" {
+		if err := bridge.syncImportedBucketState(context.Background(), activeBucket); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("burnbridge: startup sync imported bucket state: %w", err)
+		}
+	}
+	return bridge, nil
 }
 
 func sharedReadMountPath() string {
@@ -586,6 +593,22 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 	}
 
 	return nil
+}
+
+func (b *BurnBridge) ensureImportedBucketState(ctx context.Context, bucket string) error {
+	if strings.TrimSpace(bucket) == "" {
+		return nil
+	}
+
+	committed, err := b.meta.ListCommittedObjects(bucket)
+	if err == nil && len(committed) > 0 {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	return b.syncImportedBucketState(ctx, bucket)
 }
 
 func (b *BurnBridge) burnbridgeBucketExists(name string) bool {
@@ -1032,6 +1055,10 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 		}, nil
 	}
 
+	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
+		return nil, err
+	}
+
 	summary, err := b.meta.GetCommittedObjectSummary(bucket, key)
 	if err != nil {
 		if errors.Is(err, meta.ErrNoSuchKey) {
@@ -1230,6 +1257,10 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		return nil, err
 	}
 
+	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
+		return fail(err)
+	}
+
 	summary, err := b.meta.GetCommittedObjectSummary(bucket, key)
 	if err != nil {
 		if errors.Is(err, meta.ErrNoSuchKey) {
@@ -1329,6 +1360,9 @@ func (b *BurnBridge) prepareCommittedListing(ctx context.Context, bucket string)
 		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 	if err := b.requireRecorderReady(ctx); err != nil {
+		return nil, nil, err
+	}
+	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
 		return nil, nil, err
 	}
 	return b.committedMapFSAndSummaries(bucket)
