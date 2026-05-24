@@ -73,6 +73,7 @@ type burnbridgeObjectSegment struct {
 	Bucket       string `gorm:"column:bucket;primaryKey"`
 	ObjectName   string `gorm:"column:object_name;primaryKey;index:idx_bb_seg_bucket_object"`
 	SegmentIndex int    `gorm:"column:segment_index;primaryKey"`
+	MediaID      string `gorm:"column:media_id;size:128;not null;default:''"`
 	ByteOffset   int64  `gorm:"column:byte_offset;not null"`
 	ByteSize     int64  `gorm:"column:byte_size;not null"`
 	ChecksumMD5  string `gorm:"column:checksum_md5;size:32;not null"`
@@ -89,6 +90,7 @@ func (burnbridgeObjectSegment) TableName() string {
 
 // BurnObjectSegment is returned by GetBurnObjectSegment for BurnBridge chunk lookups.
 type BurnObjectSegment struct {
+	MediaID      string
 	ByteOffset  int64
 	ByteSize    int64
 	ChecksumMD5 string
@@ -211,6 +213,7 @@ func (s SqlMeta) GetBurnObjectSegment(bucket, object string, segmentIndex int) (
 			return perr
 		}
 		out = BurnObjectSegment{
+			MediaID:      row.MediaID,
 			ByteOffset:  row.ByteOffset,
 			ByteSize:    row.ByteSize,
 			ChecksumMD5: row.ChecksumMD5,
@@ -230,7 +233,7 @@ func (s SqlMeta) GetBurnObjectSegment(bucket, object string, segmentIndex int) (
 
 // UpsertBurnObjectSegment inserts or replaces per-segment metadata (pending, succeeded, or failed).
 // extents may be nil or empty if the recorder has not reported on-media placement yet; stored as JSON [].
-func (s SqlMeta) UpsertBurnObjectSegment(bucket, object string, segmentIndex int, byteOffset, byteSize int64, checksumMD5 string, state BurnSegmentState, extents []BurnDiscExtent) error {
+func (s SqlMeta) UpsertBurnObjectSegment(bucket, object, mediaID string, segmentIndex int, byteOffset, byteSize int64, checksumMD5 string, state BurnSegmentState, extents []BurnDiscExtent) error {
 	discJSON, err := marshalDiscExtentsJSON(extents)
 	if err != nil {
 		return fmt.Errorf("burn segment disc_extents: %w", err)
@@ -239,6 +242,7 @@ func (s SqlMeta) UpsertBurnObjectSegment(bucket, object string, segmentIndex int
 		Bucket:       bucket,
 		ObjectName:   object,
 		SegmentIndex: segmentIndex,
+		MediaID:      strings.TrimSpace(mediaID),
 		ByteOffset:   byteOffset,
 		ByteSize:     byteSize,
 		ChecksumMD5:  checksumMD5,
@@ -311,6 +315,7 @@ func (s SqlMeta) ListBurnObjectSegments(bucket, object string) ([]BurnObjectSegm
 			result = append(result, BurnObjectSegmentDetail{
 				SegmentIndex: row.SegmentIndex,
 				BurnObjectSegment: BurnObjectSegment{
+					MediaID:      row.MediaID,
 					ByteOffset:  row.ByteOffset,
 					ByteSize:    row.ByteSize,
 					ChecksumMD5: row.ChecksumMD5,
@@ -402,6 +407,20 @@ type BurnbridgeFinalizeLayoutDocument struct {
 	Error           string `json:"error,omitempty"`
 }
 
+// BurnbridgeRuntimeBindingBucket is a reserved internal metadata bucket used for runtime-only optical media bindings.
+const BurnbridgeRuntimeBindingBucket = "__burnbridge_runtime__"
+
+// BurnbridgeDiscBucketBindingAttribute stores the disc probe label -> logical bucket/UDF label mapping.
+const BurnbridgeDiscBucketBindingAttribute = "burnbridge-disc-bucket-binding"
+
+// BurnbridgeDiscBucketBindingDocument is persisted in gateway SQLite metadata and must not be stored in config files.
+type BurnbridgeDiscBucketBindingDocument struct {
+	ProbeVolumeLabel string `json:"probeVolumeLabel"`
+	Bucket           string `json:"bucket"`
+	UdfVolumeLabel   string `json:"udfVolumeLabel"`
+	UpdatedAtUtc     string `json:"updatedAtUtc"`
+}
+
 // StoreBurnbridgeFinalizeLayoutJSON saves the finalize outcome for reserved key BurnbridgeFinalizeLayoutObjectKey.
 func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, payload []byte) error {
 	if strings.TrimSpace(bucket) == "" {
@@ -421,6 +440,60 @@ func (s SqlMeta) GetBurnbridgeFinalizeLayoutJSON(bucket string) ([]byte, error) 
 // DeleteBurnbridgeFinalizeLayoutJSON removes the cached finalize transcript for the reserved FinalizeLayout key.
 func (s SqlMeta) DeleteBurnbridgeFinalizeLayoutJSON(bucket string) error {
 	return s.DeleteAttribute(bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute)
+}
+
+// StoreBurnbridgeDiscBucketBinding persists runtime media naming for restart-safe blank-disc bucket binding.
+func (s SqlMeta) StoreBurnbridgeDiscBucketBinding(doc *BurnbridgeDiscBucketBindingDocument) error {
+	if doc == nil {
+		return nil
+	}
+	probe := strings.TrimSpace(doc.ProbeVolumeLabel)
+	bucket := strings.TrimSpace(doc.Bucket)
+	udf := strings.TrimSpace(doc.UdfVolumeLabel)
+	if probe == "" {
+		return fmt.Errorf("disc bucket binding: empty probe volume label")
+	}
+	if bucket == "" {
+		return fmt.Errorf("disc bucket binding: empty bucket")
+	}
+	if udf == "" {
+		return fmt.Errorf("disc bucket binding: empty udf volume label")
+	}
+
+	normalized := BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: probe,
+		Bucket:           bucket,
+		UdfVolumeLabel:   udf,
+		UpdatedAtUtc:     doc.UpdatedAtUtc,
+	}
+	if strings.TrimSpace(normalized.UpdatedAtUtc) == "" {
+		normalized.UpdatedAtUtc = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	payload, err := json.Marshal(&normalized)
+	if err != nil {
+		return fmt.Errorf("encode disc bucket binding: %w", err)
+	}
+	return s.StoreAttribute(nil, BurnbridgeRuntimeBindingBucket, probe, BurnbridgeDiscBucketBindingAttribute, payload)
+}
+
+// GetBurnbridgeDiscBucketBinding returns a persisted runtime media binding by recorder probe volume label.
+func (s SqlMeta) GetBurnbridgeDiscBucketBinding(probeVolumeLabel string) (*BurnbridgeDiscBucketBindingDocument, error) {
+	probe := strings.TrimSpace(probeVolumeLabel)
+	if probe == "" {
+		return nil, ErrNoSuchKey
+	}
+
+	raw, err := s.RetrieveAttribute(nil, BurnbridgeRuntimeBindingBucket, probe, BurnbridgeDiscBucketBindingAttribute)
+	if err != nil {
+		return nil, err
+	}
+
+	var doc BurnbridgeDiscBucketBindingDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("decode disc bucket binding: %w", err)
+	}
+	return &doc, nil
 }
 
 // BurnbridgeCommittedRecord is JSON-encoded into metadata_entries under BurnbridgeCommittedAttribute.

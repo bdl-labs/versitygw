@@ -44,6 +44,7 @@ import (
 	meta "github.com/versity/versitygw/backend/meta"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
+	"golang.org/x/sync/singleflight"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -156,6 +157,8 @@ type BurnBridge struct {
 	// putQueueSem limits total in-flight+waiting PutObject tasks. Requests above capacity block
 	// until earlier tasks complete, so task issuance pressure stays bounded.
 	putQueueSem chan struct{}
+	// finalizeGroup deduplicates concurrent FinalizeLayout requests for the same bucket/closeDisc tuple.
+	finalizeGroup singleflight.Group
 
 	recorderS3Endpoint        string
 	recorderS3Region          string
@@ -274,21 +277,20 @@ func probeRecorderDiscAtStartup(ctx context.Context, client burnbridgev1.BurnBri
 	return bucket, raw, resp, nil
 }
 
-func loadDiscBucketBinding(rawVolume string) (archiveconfig.DiscBucketBinding, bool) {
-	cfg, _, err := archiveconfig.Load("")
+func loadDiscBucketBinding(metaStore meta.SqlMeta, rawVolume string) (*meta.BurnbridgeDiscBucketBindingDocument, bool) {
+	doc, err := metaStore.GetBurnbridgeDiscBucketBinding(rawVolume)
 	if err != nil {
-		return archiveconfig.DiscBucketBinding{}, false
+		return nil, false
 	}
-	return archiveconfig.FindDiscBucketBinding(cfg, rawVolume)
+	return doc, true
 }
 
-func persistDiscBucketBinding(rawVolume, bucket, udfVolumeLabel string) error {
-	cfg, path, err := archiveconfig.Load("")
-	if err != nil {
-		return err
-	}
-	archiveconfig.UpsertDiscBucketBinding(&cfg, rawVolume, bucket, udfVolumeLabel)
-	return archiveconfig.Save(path, cfg)
+func persistDiscBucketBinding(metaStore meta.SqlMeta, rawVolume, bucket, udfVolumeLabel string) error {
+	return metaStore.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: rawVolume,
+		Bucket:           bucket,
+		UdfVolumeLabel:   udfVolumeLabel,
+	})
 }
 
 func discInfoDocFromProto(s3Bucket string, resp *burnbridgev1.TestUnitReadyResponse) *meta.BurnbridgeDiscInfoDocument {
@@ -382,7 +384,7 @@ func New(opts Options) (*BurnBridge, error) {
 		_ = conn.Close()
 		return nil, err
 	}
-	if binding, ok := loadDiscBucketBinding(rawVol); ok {
+	if binding, ok := loadDiscBucketBinding(metaStore, rawVol); ok {
 		if strings.TrimSpace(binding.Bucket) != "" {
 			activeBucket = strings.TrimSpace(binding.Bucket)
 		}
@@ -482,11 +484,107 @@ func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
 			HTTPStatusCode: http.StatusServiceUnavailable,
 		}
 	}
+	if err := b.syncActiveDiscState(resp); err != nil {
+		return err
+	}
 	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
 		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
 			return fmt.Errorf("burnbridge: persist disc info: %w", err)
 		}
 	}
+	return nil
+}
+
+func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyResponse) error {
+	if resp == nil {
+		return nil
+	}
+
+	rawVolume := strings.TrimSpace(resp.GetVolumeLabel())
+	if rawVolume == "" {
+		return nil
+	}
+
+	if strings.EqualFold(strings.TrimSpace(b.volumeLabelRaw), rawVolume) && strings.TrimSpace(b.activeBucket) != "" {
+		return nil
+	}
+
+	if binding, ok := loadDiscBucketBinding(b.meta, rawVolume); ok && binding != nil {
+		b.activeBucket = strings.TrimSpace(binding.Bucket)
+		if strings.TrimSpace(binding.UdfVolumeLabel) != "" {
+			b.udfLabel = strings.TrimSpace(binding.UdfVolumeLabel)
+		}
+		b.volumeLabelRaw = rawVolume
+		return b.syncImportedBucketState(context.Background(), b.activeBucket)
+	}
+
+	sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
+	if err != nil {
+		b.activeBucket = ""
+		b.volumeLabelRaw = rawVolume
+		b.udfLabel = rawVolume
+		return nil
+	}
+
+	b.activeBucket = sanitizedBucket
+	b.volumeLabelRaw = rawVolume
+	b.udfLabel = rawVolume
+	if err := persistDiscBucketBinding(b.meta, rawVolume, b.activeBucket, b.udfLabel); err != nil {
+		return err
+	}
+	return b.syncImportedBucketState(context.Background(), b.activeBucket)
+}
+
+func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string) error {
+	if strings.TrimSpace(bucket) == "" {
+		return nil
+	}
+
+	resp, err := b.grpc.GetImportedBucketState(ctx, &burnbridgev1.GetImportedBucketStateRequest{Bucket: bucket})
+	if err != nil {
+		if isGRPCUnimplemented(err) {
+			return nil
+		}
+		return fmt.Errorf("burnbridge GetImportedBucketState: %w", err)
+	}
+	if resp == nil || !resp.GetLoaded() {
+		return nil
+	}
+
+	if strings.TrimSpace(resp.GetUdfVolumeLabel()) != "" {
+		b.udfLabel = strings.TrimSpace(resp.GetUdfVolumeLabel())
+	}
+
+	for _, object := range resp.GetObjects() {
+		if object == nil || strings.TrimSpace(object.GetObjectKey()) == "" {
+			continue
+		}
+		userMetadata := make(map[string]string, len(object.GetMetadata()))
+		for _, kv := range object.GetMetadata() {
+			if kv == nil || strings.TrimSpace(kv.GetKey()) == "" {
+				continue
+			}
+			userMetadata[strings.TrimSpace(kv.GetKey())] = kv.GetValue()
+		}
+
+		rec := &meta.BurnbridgeCommittedRecord{
+			Status:             "imported",
+			ETag:               object.GetEtag(),
+			LastModified:       object.GetLastModifiedUtc(),
+			Size:               object.GetSize(),
+			ContentType:        object.GetContentType(),
+			ContentEncoding:    object.GetContentEncoding(),
+			ContentDisposition: object.GetContentDisposition(),
+			ContentLanguage:    object.GetContentLanguage(),
+			CacheControl:       object.GetCacheControl(),
+			Expires:            object.GetExpires(),
+			Metadata:           userMetadata,
+		}
+		if err := b.meta.StoreBurnbridgeCommitted(nil, bucket, object.GetObjectKey(), rec); err != nil {
+			return fmt.Errorf("burnbridge sync imported object %s/%s: %w", bucket, object.GetObjectKey(), err)
+		}
+	}
+
 	return nil
 }
 
@@ -525,7 +623,7 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 	b.volumeLabelRaw = volumeLabel
 	b.udfLabel = volumeLabel
 	if originalProbe != "" {
-		if err := persistDiscBucketBinding(originalProbe, bucket, volumeLabel); err != nil {
+		if err := persistDiscBucketBinding(b.meta, originalProbe, bucket, volumeLabel); err != nil {
 			return err
 		}
 	}
@@ -806,6 +904,10 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 	b.putSerialMu.Lock()
 	defer b.putSerialMu.Unlock()
 
+	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, prev) {
+		return prev, nil
+	}
+
 	recCtx := ctx
 	if recCtx == nil {
 		recCtx = context.Background()
@@ -838,7 +940,7 @@ func shouldReuseFinalizeLayoutTranscript(bucket string, raw []byte) bool {
 	if !strings.EqualFold(strings.TrimSpace(doc.Bucket), strings.TrimSpace(bucket)) {
 		return false
 	}
-	return doc.GrpcOK && strings.EqualFold(strings.TrimSpace(doc.RecorderStatus), "finalized")
+	return doc.GrpcOK
 }
 
 func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
@@ -854,7 +956,26 @@ func (b *BurnBridge) loadOrFinalizeLayoutTranscript(ctx context.Context, bucket 
 	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, prev) {
 		return prev, nil
 	}
-	return b.invokeFinalizeLayoutAgainstRecorder(ctx, bucket, closeDisc)
+
+	groupKey := bucket
+	if closeDisc {
+		groupKey += "|close"
+	}
+
+	value, err, _ := b.finalizeGroup.Do(groupKey, func() (interface{}, error) {
+		if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, prev) {
+			return prev, nil
+		}
+		return b.invokeFinalizeLayoutAgainstRecorder(ctx, bucket, closeDisc)
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload, ok := value.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("burnbridge: unexpected finalize transcript type %T", value)
+	}
+	return payload, nil
 }
 
 func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
@@ -1428,6 +1549,36 @@ func quotedETag(md5Hex string) string {
 	return `"` + h + `"`
 }
 
+func buildCreateJobMetadata(input s3response.PutObjectInput) []*burnbridgev1.ObjectMetadata {
+	items := make([]*burnbridgev1.ObjectMetadata, 0, 16)
+	appendKV := func(key string, value *string) {
+		if value == nil || strings.TrimSpace(*value) == "" {
+			return
+		}
+		items = append(items, &burnbridgev1.ObjectMetadata{Key: key, Value: strings.TrimSpace(*value)})
+	}
+
+	appendKV("content-type", input.ContentType)
+	appendKV("content-encoding", input.ContentEncoding)
+	appendKV("content-disposition", input.ContentDisposition)
+	appendKV("content-language", input.ContentLanguage)
+	appendKV("cache-control", input.CacheControl)
+	appendKV("expires", input.Expires)
+
+	for key, value := range input.Metadata {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		items = append(items, &burnbridgev1.ObjectMetadata{
+			Key:   "x-amz-meta-" + trimmedKey,
+			Value: value,
+		})
+	}
+
+	return items
+}
+
 func (b *BurnBridge) loadBurnSegmentSnapshot(bucket, key string) (map[int]meta.BurnObjectSegment, error) {
 	segments, err := b.meta.ListBurnObjectSegments(bucket, key)
 	if err != nil {
@@ -1435,6 +1586,10 @@ func (b *BurnBridge) loadBurnSegmentSnapshot(bucket, key string) (map[int]meta.B
 	}
 	snapshot := make(map[int]meta.BurnObjectSegment, len(segments))
 	for _, seg := range segments {
+		if strings.TrimSpace(seg.BurnObjectSegment.MediaID) != "" &&
+			!strings.EqualFold(strings.TrimSpace(seg.BurnObjectSegment.MediaID), strings.TrimSpace(b.volumeLabelRaw)) {
+			continue
+		}
 		snapshot[seg.SegmentIndex] = seg.BurnObjectSegment
 	}
 	return snapshot, nil
@@ -1483,10 +1638,11 @@ func (b *BurnBridge) burnShouldSkipSegment(snapshot map[int]meta.BurnObjectSegme
 func (b *BurnBridge) recvSegmentUploadAck(stream grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck],
 	jobID, bucket, key string, segmentIdx int, offset, segLen int64, digest string, allowUploadComplete bool, snapshot map[int]meta.BurnObjectSegment) (bool, error) {
 	persistSegment := func(state meta.BurnSegmentState, extents []meta.BurnDiscExtent) error {
-		if err := b.meta.UpsertBurnObjectSegment(bucket, key, segmentIdx, offset, segLen, digest, state, extents); err != nil {
+		if err := b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, segLen, digest, state, extents); err != nil {
 			return err
 		}
 		snapshot[segmentIdx] = meta.BurnObjectSegment{
+			MediaID:      b.volumeLabelRaw,
 			ByteOffset:  offset,
 			ByteSize:    segLen,
 			ChecksumMD5: digest,
@@ -1611,10 +1767,11 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 			}
 		} else {
 			stats.ReplayedSegments++
-			if err := b.meta.UpsertBurnObjectSegment(bucket, key, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentPending, nil); err != nil {
+			if err := b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentPending, nil); err != nil {
 				return offset, nil, err
 			}
 			segmentSnapshot[segmentIdx] = meta.BurnObjectSegment{
+				MediaID:      b.volumeLabelRaw,
 				ByteOffset:  offset,
 				ByteSize:    int64(len(chunk)),
 				ChecksumMD5: digest,
@@ -1639,8 +1796,9 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 		completed, err := b.recvSegmentUploadAck(stream, jobID, bucket, key, segmentIdx, offset, int64(len(chunk)), digest, isTailSegment, segmentSnapshot)
 		if err != nil {
 			if !skip {
-				_ = b.meta.UpsertBurnObjectSegment(bucket, key, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentFailed, nil)
+				_ = b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentFailed, nil)
 				segmentSnapshot[segmentIdx] = meta.BurnObjectSegment{
+					MediaID:      b.volumeLabelRaw,
 					ByteOffset:  offset,
 					ByteSize:    int64(len(chunk)),
 					ChecksumMD5: digest,
@@ -1794,6 +1952,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		Bucket:        bucket,
 		ObjectKey:     key,
 		ContentLength: contentLen,
+		Metadata:      buildCreateJobMetadata(input),
 	})
 	if err != nil {
 		return s3response.PutObjectOutput{}, err

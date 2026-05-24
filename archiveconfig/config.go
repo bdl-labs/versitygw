@@ -23,16 +23,15 @@ type File struct {
 }
 
 type OpticalArchive struct {
-	Gateway           Gateway             `json:"Gateway"`
-	ReadMountPath     string              `json:"ReadMountPath"`
-	Recorder          Recorder            `json:"Recorder"`
-	Runtime           Runtime             `json:"Runtime"`
-	Redundancy        Redundancy          `json:"Redundancy"`
-	GatewayInterop    GatewayInterop      `json:"GatewayInterop"`
-	Logging           Logging             `json:"Logging"`
-	Upgrade           Upgrade             `json:"Upgrade"`
-	LinuxServices     LinuxServices       `json:"LinuxServices"`
-	DiscBucketBindings []DiscBucketBinding `json:"DiscBucketBindings"`
+	Gateway        Gateway        `json:"Gateway"`
+	ReadMountPath  string         `json:"ReadMountPath"`
+	Recorder       Recorder       `json:"Recorder"`
+	Runtime        Runtime        `json:"Runtime"`
+	Redundancy     Redundancy     `json:"Redundancy"`
+	GatewayInterop GatewayInterop `json:"GatewayInterop"`
+	Logging        Logging        `json:"Logging"`
+	Upgrade        Upgrade        `json:"Upgrade"`
+	LinuxServices  LinuxServices  `json:"LinuxServices"`
 }
 
 type Gateway struct {
@@ -122,12 +121,6 @@ type RecorderLogging struct {
 	MinLevel           string `json:"MinLevel"`
 }
 
-type DiscBucketBinding struct {
-	ProbeVolumeLabel string `json:"ProbeVolumeLabel"`
-	Bucket           string `json:"Bucket"`
-	UdfVolumeLabel   string `json:"UdfVolumeLabel"`
-}
-
 func DefaultFile(path string) File {
 	resolved := strings.TrimSpace(path)
 	if resolved == "" {
@@ -212,7 +205,6 @@ func DefaultFile(path string) File {
 				MountRefreshDevice:           "",
 				MountRefreshCommand:          "",
 			},
-			DiscBucketBindings: []DiscBucketBinding{},
 		},
 	}
 }
@@ -566,47 +558,4 @@ func CheckBasicAuth(headerValue string, cfg File) bool {
 	}
 
 	return parts[0] == expectedUser && parts[1] == expectedPass
-}
-
-func FindDiscBucketBinding(cfg File, probeVolumeLabel string) (DiscBucketBinding, bool) {
-	probe := strings.TrimSpace(probeVolumeLabel)
-	if probe == "" {
-		return DiscBucketBinding{}, false
-	}
-
-	for _, binding := range cfg.OpticalArchive.DiscBucketBindings {
-		if strings.EqualFold(strings.TrimSpace(binding.ProbeVolumeLabel), probe) {
-			return binding, true
-		}
-	}
-
-	return DiscBucketBinding{}, false
-}
-
-func UpsertDiscBucketBinding(cfg *File, probeVolumeLabel, bucket, udfVolumeLabel string) {
-	if cfg == nil {
-		return
-	}
-
-	probe := strings.TrimSpace(probeVolumeLabel)
-	bkt := strings.TrimSpace(bucket)
-	udf := strings.TrimSpace(udfVolumeLabel)
-	if probe == "" || bkt == "" || udf == "" {
-		return
-	}
-
-	for i := range cfg.OpticalArchive.DiscBucketBindings {
-		if strings.EqualFold(strings.TrimSpace(cfg.OpticalArchive.DiscBucketBindings[i].ProbeVolumeLabel), probe) {
-			cfg.OpticalArchive.DiscBucketBindings[i].ProbeVolumeLabel = probe
-			cfg.OpticalArchive.DiscBucketBindings[i].Bucket = bkt
-			cfg.OpticalArchive.DiscBucketBindings[i].UdfVolumeLabel = udf
-			return
-		}
-	}
-
-	cfg.OpticalArchive.DiscBucketBindings = append(cfg.OpticalArchive.DiscBucketBindings, DiscBucketBinding{
-		ProbeVolumeLabel: probe,
-		Bucket:           bkt,
-		UdfVolumeLabel:   udf,
-	})
 }

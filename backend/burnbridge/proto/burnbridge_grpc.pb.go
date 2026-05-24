@@ -29,6 +29,7 @@ const (
 	BurnBridge_RegisterS3ObjectPullSource_FullMethodName = "/burnbridge.v1.BurnBridge/RegisterS3ObjectPullSource"
 	BurnBridge_TestUnitReady_FullMethodName              = "/burnbridge.v1.BurnBridge/TestUnitReady"
 	BurnBridge_GetDiscInfo_FullMethodName                = "/burnbridge.v1.BurnBridge/GetDiscInfo"
+	BurnBridge_GetImportedBucketState_FullMethodName     = "/burnbridge.v1.BurnBridge/GetImportedBucketState"
 	BurnBridge_FinalizeLayout_FullMethodName             = "/burnbridge.v1.BurnBridge/FinalizeLayout"
 	BurnBridge_UpdateLicense_FullMethodName              = "/burnbridge.v1.BurnBridge/UpdateLicense"
 	BurnBridge_UploadUpgradePackage_FullMethodName       = "/burnbridge.v1.BurnBridge/UploadUpgradePackage"
@@ -67,6 +68,8 @@ type BurnBridgeClient interface {
 	TestUnitReady(ctx context.Context, in *TestUnitReadyRequest, opts ...grpc.CallOption) (*TestUnitReadyResponse, error)
 	// Query drive + disc information.
 	GetDiscInfo(ctx context.Context, in *GetDiscInfoRequest, opts ...grpc.CallOption) (*GetDiscInfoResponse, error)
+	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
+	GetImportedBucketState(ctx context.Context, in *GetImportedBucketStateRequest, opts ...grpc.CallOption) (*GetImportedBucketStateResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
 	FinalizeLayout(ctx context.Context, in *FinalizeLayoutRequest, opts ...grpc.CallOption) (*FinalizeLayoutResponse, error)
 	// Replace recorder license.xml content and optionally reload the shared burner host.
@@ -197,6 +200,16 @@ func (c *burnBridgeClient) GetDiscInfo(ctx context.Context, in *GetDiscInfoReque
 	return out, nil
 }
 
+func (c *burnBridgeClient) GetImportedBucketState(ctx context.Context, in *GetImportedBucketStateRequest, opts ...grpc.CallOption) (*GetImportedBucketStateResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetImportedBucketStateResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_GetImportedBucketState_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *burnBridgeClient) FinalizeLayout(ctx context.Context, in *FinalizeLayoutRequest, opts ...grpc.CallOption) (*FinalizeLayoutResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FinalizeLayoutResponse)
@@ -272,6 +285,8 @@ type BurnBridgeServer interface {
 	TestUnitReady(context.Context, *TestUnitReadyRequest) (*TestUnitReadyResponse, error)
 	// Query drive + disc information.
 	GetDiscInfo(context.Context, *GetDiscInfoRequest) (*GetDiscInfoResponse, error)
+	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
+	GetImportedBucketState(context.Context, *GetImportedBucketStateRequest) (*GetImportedBucketStateResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
 	FinalizeLayout(context.Context, *FinalizeLayoutRequest) (*FinalizeLayoutResponse, error)
 	// Replace recorder license.xml content and optionally reload the shared burner host.
@@ -319,6 +334,9 @@ func (UnimplementedBurnBridgeServer) TestUnitReady(context.Context, *TestUnitRea
 }
 func (UnimplementedBurnBridgeServer) GetDiscInfo(context.Context, *GetDiscInfoRequest) (*GetDiscInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDiscInfo not implemented")
+}
+func (UnimplementedBurnBridgeServer) GetImportedBucketState(context.Context, *GetImportedBucketStateRequest) (*GetImportedBucketStateResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetImportedBucketState not implemented")
 }
 func (UnimplementedBurnBridgeServer) FinalizeLayout(context.Context, *FinalizeLayoutRequest) (*FinalizeLayoutResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FinalizeLayout not implemented")
@@ -515,6 +533,24 @@ func _BurnBridge_GetDiscInfo_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BurnBridge_GetImportedBucketState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetImportedBucketStateRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).GetImportedBucketState(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_GetImportedBucketState_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).GetImportedBucketState(ctx, req.(*GetImportedBucketStateRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BurnBridge_FinalizeLayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(FinalizeLayoutRequest)
 	if err := dec(in); err != nil {
@@ -614,6 +650,10 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetDiscInfo",
 			Handler:    _BurnBridge_GetDiscInfo_Handler,
+		},
+		{
+			MethodName: "GetImportedBucketState",
+			Handler:    _BurnBridge_GetImportedBucketState_Handler,
 		},
 		{
 			MethodName: "FinalizeLayout",
