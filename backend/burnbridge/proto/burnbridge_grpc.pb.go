@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v4.25.9
-// source: backend/burnbridge/proto/burnbridge.proto
+// source: burnbridge.proto
 
 package burnbridgev1
 
@@ -686,5 +686,5 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 			ClientStreams: true,
 		},
 	},
-	Metadata: "backend/burnbridge/proto/burnbridge.proto",
+	Metadata: "burnbridge.proto",
 }

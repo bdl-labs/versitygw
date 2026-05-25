@@ -47,6 +47,8 @@ type Recorder struct {
 	LayoutDbPath               string `json:"LayoutDbPath"`
 	MetadataDbFileNameTemplate string `json:"MetadataDbFileNameTemplate"`
 	GrpcChunkSize              int    `json:"GrpcChunkSize"`
+	FinalizeReservePercent     int    `json:"FinalizeReservePercent"`
+	FinalizeReserveBytes       int64  `json:"FinalizeReserveBytes"`
 	DiscSerialStrategy         string `json:"DiscSerialStrategy"`
 	VolumeLabelStrategy        string `json:"VolumeLabelStrategy"`
 	SerialPrefix               string `json:"SerialPrefix"`
@@ -142,6 +144,8 @@ func DefaultFile(path string) File {
 				LayoutDbPath:               "D:\\BRS\\primoburner-net\\samples\\BurnServer\\udf-layout.db",
 				MetadataDbFileNameTemplate: "__archive_{bucket}.sqlite3",
 				GrpcChunkSize:              1048576,
+				FinalizeReservePercent:     3,
+				FinalizeReserveBytes:       67108864,
 				DiscSerialStrategy:         "hash",
 				VolumeLabelStrategy:        "serial",
 				SerialPrefix:               "OA",
@@ -267,6 +271,12 @@ func Load(configPath string) (File, string, error) {
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate) == "" {
 		cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = defaults.OpticalArchive.Recorder.MetadataDbFileNameTemplate
 	}
+	if cfg.OpticalArchive.Recorder.FinalizeReservePercent < 0 {
+		cfg.OpticalArchive.Recorder.FinalizeReservePercent = defaults.OpticalArchive.Recorder.FinalizeReservePercent
+	}
+	if cfg.OpticalArchive.Recorder.FinalizeReserveBytes < 0 {
+		cfg.OpticalArchive.Recorder.FinalizeReserveBytes = defaults.OpticalArchive.Recorder.FinalizeReserveBytes
+	}
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.LicenseFilePath) == "" {
 		cfg.OpticalArchive.Recorder.LicenseFilePath = defaults.OpticalArchive.Recorder.LicenseFilePath
 	}
@@ -358,6 +368,8 @@ func applyEnvOverrides(cfg *File) {
 	applyStringOverride(&cfg.OpticalArchive.Recorder.LayoutDbPath, "OpticalArchive", "Recorder", "LayoutDbPath")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate, "OpticalArchive", "Recorder", "MetadataDbFileNameTemplate")
 	applyIntOverride(&cfg.OpticalArchive.Recorder.GrpcChunkSize, "OpticalArchive", "Recorder", "GrpcChunkSize")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.FinalizeReservePercent, "OpticalArchive", "Recorder", "FinalizeReservePercent")
+	applyInt64Override(&cfg.OpticalArchive.Recorder.FinalizeReserveBytes, "OpticalArchive", "Recorder", "FinalizeReserveBytes")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.DiscSerialStrategy, "OpticalArchive", "Recorder", "DiscSerialStrategy")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.VolumeLabelStrategy, "OpticalArchive", "Recorder", "VolumeLabelStrategy")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.SerialPrefix, "OpticalArchive", "Recorder", "SerialPrefix")

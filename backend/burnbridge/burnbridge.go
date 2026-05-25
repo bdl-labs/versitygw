@@ -298,12 +298,21 @@ func discInfoDocFromProto(s3Bucket string, resp *burnbridgev1.TestUnitReadyRespo
 		return nil
 	}
 	return &meta.BurnbridgeDiscInfoDocument{
-		Bucket:             s3Bucket,
-		VolumeLabel:        strings.TrimSpace(resp.GetVolumeLabel()),
-		UpdatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
-		TotalCapacityBytes: resp.GetTotalCapacityBytes(),
-		FreeCapacityBytes:  resp.GetFreeCapacityBytes(),
-		MediaType:          strings.TrimSpace(resp.GetMediaType()),
+		Bucket:                   s3Bucket,
+		VolumeLabel:              strings.TrimSpace(resp.GetVolumeLabel()),
+		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:      strings.TrimSpace(resp.GetDiscSerialNumberHex()),
+		TotalCapacityBytes:       resp.GetTotalCapacityBytes(),
+		FreeCapacityBytes:        resp.GetFreeCapacityBytes(),
+		UsedCapacityBytes:        resp.GetUsedCapacityBytes(),
+		WritableCapacityBytes:    resp.GetWritableCapacityBytes(),
+		FinalizeReserveBytes:     resp.GetFinalizeReserveBytes(),
+		MediaType:                strings.TrimSpace(resp.GetMediaType()),
+		BlockSizeBytes:           resp.GetBlockSizeBytes(),
+		TotalBlocks:              resp.GetTotalBlocks(),
+		FreeBlocks:               resp.GetFreeBlocks(),
+		RecordableCapacityBlocks: resp.GetRecordableCapacityBlocks(),
+		NextRecordableLba:        resp.GetNextRecordableLba(),
 	}
 }
 
@@ -325,6 +334,22 @@ func parseReadyReason(message string) (reasonCode string, reasonDetail string) {
 		detail = "recorder reports not ready"
 	}
 	return code, detail
+}
+
+func ensureWritableCapacity(doc *meta.BurnbridgeDiscInfoDocument, contentLen int64) error {
+	if doc == nil || contentLen <= 0 {
+		return nil
+	}
+	if doc.WritableCapacityBytes <= 0 && doc.TotalCapacityBytes <= 0 && doc.FreeCapacityBytes <= 0 {
+		return nil
+	}
+	if doc.WritableCapacityBytes <= 0 {
+		return s3err.GetAPIError(s3err.ErrNoSpaceLeftOnDevice)
+	}
+	if contentLen > doc.WritableCapacityBytes {
+		return s3err.GetAPIError(s3err.ErrNoSpaceLeftOnDevice)
+	}
+	return nil
 }
 
 func normalizeOpts(o *Options) {
@@ -666,12 +691,21 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 		}
 	}
 	return b.meta.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
-		Bucket:             bucket,
-		VolumeLabel:        volumeLabel,
-		UpdatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
-		TotalCapacityBytes: 0,
-		FreeCapacityBytes:  0,
-		MediaType:          "uninitialized",
+		Bucket:                   bucket,
+		VolumeLabel:              volumeLabel,
+		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:      "",
+		TotalCapacityBytes:       0,
+		FreeCapacityBytes:        0,
+		UsedCapacityBytes:        0,
+		WritableCapacityBytes:    0,
+		FinalizeReserveBytes:     0,
+		MediaType:                "uninitialized",
+		BlockSizeBytes:           0,
+		TotalBlocks:              0,
+		FreeBlocks:               0,
+		RecordableCapacityBlocks: 0,
+		NextRecordableLba:        0,
 	})
 }
 
@@ -2060,6 +2094,17 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	var contentLen int64
 	if input.ContentLength != nil {
 		contentLen = *input.ContentLength
+	}
+	if contentLen > 0 {
+		raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
+		if err == nil && len(raw) > 0 {
+			var discInfo meta.BurnbridgeDiscInfoDocument
+			if uerr := json.Unmarshal(raw, &discInfo); uerr == nil {
+				if err := ensureWritableCapacity(&discInfo, contentLen); err != nil {
+					return s3response.PutObjectOutput{}, err
+				}
+			}
+		}
 	}
 
 	createResp, err := b.grpc.CreateJob(ctx, &burnbridgev1.CreateJobRequest{

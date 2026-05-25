@@ -85,6 +85,15 @@ message TestUnitReadyResponse {
   int64 total_capacity_bytes = 4;
   int64 free_capacity_bytes = 5;
   string media_type = 6;
+  int64 used_capacity_bytes = 7;
+  int64 writable_capacity_bytes = 8;
+  int64 finalize_reserve_bytes = 9;
+  int32 block_size_bytes = 10;
+  int32 total_blocks = 11;
+  int32 free_blocks = 12;
+  int32 recordable_capacity_blocks = 13;
+  int32 next_recordable_lba = 14;
+  string disc_serial_number_hex = 15;
 }
 
 message GetDiscInfoRequest {
@@ -157,9 +166,12 @@ message OpticalDiscInfo {
   int64 media_free_space = 16;
   // Consumed user-data bytes: bluray-demo Burner.MediaUsedSpace after scaling by block_size (max(0, media_capacity - media_free_space) with BurnServer scaling).
   int64 media_used_space = 17;
+  int32 total_blocks = 18;
+  int32 free_blocks = 19;
+  int32 recordable_capacity_blocks = 20;
 
-  repeated DiscRwSpeedDescriptor rw_speeds = 18;
-  SessionDiscId session_disc_id = 19;
+  repeated DiscRwSpeedDescriptor rw_speeds = 21;
+  SessionDiscId session_disc_id = 22;
 }
 
 message DiscRwSpeedDescriptor {

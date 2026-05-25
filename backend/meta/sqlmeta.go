@@ -360,12 +360,21 @@ const BurnbridgeDiscInfoAttribute = "burnbridge-disc-info"
 
 // BurnbridgeDiscInfoDocument is JSON returned by GetObject/HeadObject for key BurnbridgeDiscInfoObjectKey.
 type BurnbridgeDiscInfoDocument struct {
-	Bucket             string `json:"bucket"`
-	VolumeLabel        string `json:"volumeLabel"`
-	UpdatedAt          string `json:"updatedAt"` // RFC3339Nano
-	TotalCapacityBytes int64  `json:"totalCapacityBytes,omitempty"`
-	FreeCapacityBytes  int64  `json:"freeCapacityBytes,omitempty"`
-	MediaType          string `json:"mediaType,omitempty"`
+	Bucket                   string `json:"bucket"`
+	VolumeLabel              string `json:"volumeLabel"`
+	UpdatedAt                string `json:"updatedAt"` // RFC3339Nano
+	DiscSerialNumberHex      string `json:"discSerialNumberHex,omitempty"`
+	TotalCapacityBytes       int64  `json:"totalCapacityBytes,omitempty"`
+	FreeCapacityBytes        int64  `json:"freeCapacityBytes,omitempty"`
+	UsedCapacityBytes        int64  `json:"usedCapacityBytes,omitempty"`
+	WritableCapacityBytes    int64  `json:"writableCapacityBytes,omitempty"`
+	FinalizeReserveBytes     int64  `json:"finalizeReserveBytes,omitempty"`
+	MediaType                string `json:"mediaType,omitempty"`
+	BlockSizeBytes           int32  `json:"blockSizeBytes,omitempty"`
+	TotalBlocks              int32  `json:"totalBlocks,omitempty"`
+	FreeBlocks               int32  `json:"freeBlocks,omitempty"`
+	RecordableCapacityBlocks int32  `json:"recordableCapacityBlocks,omitempty"`
+	NextRecordableLba        int32  `json:"nextRecordableLba,omitempty"`
 }
 
 // StoreBurnbridgeDiscInfo upserts disc JSON for the reserved DiscInfo key (not visible in ListObjects).
