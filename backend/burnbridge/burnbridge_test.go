@@ -703,6 +703,73 @@ func TestPutObjectSkipsCommitWhenPayloadAlreadyCommitted(t *testing.T) {
 	}
 }
 
+func TestPutObjectComputesChecksumWhenTailAckOmitsFinalChecksum(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket = "disc-a"
+		key    = "small-a.txt"
+	)
+	payload := []byte("overwrite-payload-v2")
+	objectMD5 := bbSegmentMD5Hex(payload)
+
+	stream := &testUploadObjectStream{
+		ackQueue: []*burnbridgev1.UploadObjectAck{
+			{
+				JobId:             "job-new",
+				SegmentIndex:      0,
+				ByteOffset:        0,
+				ByteSize:          int64(len(payload)),
+				UploadComplete:    true,
+				BytesReceived:     int64(len(payload)),
+				SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+			},
+		},
+	}
+
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			createJobFn: func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+				return &burnbridgev1.CreateJobResponse{JobId: "job-new"}, nil
+			},
+			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+				return stream, nil
+			},
+			commitJobFn: func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+				return &burnbridgev1.CommitJobResponse{JobId: "job-new", Status: "layout_persisted"}, nil
+			},
+		},
+		chunkSize:        len(payload) + 1024,
+		cancelJobTimeout: time.Second,
+		putQueueSem:      make(chan struct{}, 4),
+		activeBucket:     bucket,
+		volumeLabelRaw:   "DISC-A",
+		udfLabel:         "DISC-A",
+	}
+
+	out, err := b.PutObject(context.Background(), s3response.PutObjectInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr(key),
+		Body:          bytes.NewReader(payload),
+		ContentLength: ptr(int64(len(payload))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ETag != "\""+objectMD5+"\"" {
+		t.Fatalf("unexpected etag: %q", out.ETag)
+	}
+	if out.ChecksumMD5 == nil || *out.ChecksumMD5 != objectMD5 {
+		t.Fatalf("unexpected checksum_md5: %#v", out.ChecksumMD5)
+	}
+}
+
 func TestIsLocalRecorderTarget(t *testing.T) {
 	tests := []struct {
 		name string

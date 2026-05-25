@@ -1341,10 +1341,7 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 	if length == 0 {
 		body = io.NopCloser(bytes.NewReader(nil))
 	} else {
-		readCtx := ctx
-		if readCtx == nil {
-			readCtx = context.Background()
-		}
+		readCtx, cancel := context.WithCancel(context.Background())
 		stream, err := b.grpc.ReadObject(readCtx, &burnbridgev1.ReadObjectRequest{
 			Bucket:    bucket,
 			ObjectKey: key,
@@ -1352,9 +1349,10 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 			Length:    length,
 		})
 		if err != nil {
+			cancel()
 			return fail(mapReadFallbackError(err))
 		}
-		body = &grpcObjectReadCloser{stream: stream, left: length}
+		body = &grpcObjectReadCloser{stream: stream, cancel: cancel, left: length}
 	}
 
 	clen := length
@@ -1814,6 +1812,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 	}
 	stats := uploadRecoveryStats{}
 	uploadCompletedBySegmentAck := false
+	objectMD5 := md5.New()
 
 	segBuf := make([]byte, b.chunkSize)
 	offset := int64(0)
@@ -1837,6 +1836,9 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 		if !final.GetUploadComplete() {
 			return offset, nil, stats, fmt.Errorf("burnbridge: expected upload_complete on final ack for empty body")
 		}
+		if final.GetChecksumMd5() == "" {
+			final.ChecksumMd5 = hex.EncodeToString(objectMD5.Sum(nil))
+		}
 		return offset, final, stats, nil
 	}
 
@@ -1852,6 +1854,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 			return offset, nil, stats, errRead
 		}
 		chunk := segBuf[:n]
+		_, _ = objectMD5.Write(chunk)
 
 		digest := bbSegmentMD5Hex(chunk)
 		if err := b.burnMaybeInvalidateSegments(bucket, key, segmentSnapshot, segmentIdx, digest); err != nil {
@@ -1955,6 +1958,9 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 			UploadComplete: true,
 			BytesReceived:  offset,
 		}
+	}
+	if final.GetChecksumMd5() == "" {
+		final.ChecksumMd5 = hex.EncodeToString(objectMD5.Sum(nil))
 	}
 	hitRate := 0.0
 	if stats.TotalSegments > 0 {

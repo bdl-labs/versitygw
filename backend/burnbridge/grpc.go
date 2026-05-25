@@ -119,6 +119,7 @@ func grpcConnectivityPing(ctx context.Context, client burnbridgev1.BurnBridgeCli
 // grpcObjectReadCloser streams exactly byteCount bytes from ReadObject (recorder-side byte stream from offset).
 type grpcObjectReadCloser struct {
 	stream grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk]
+	cancel context.CancelFunc
 	left   int64
 	buf    []byte
 	off    int
@@ -172,6 +173,10 @@ func (g *grpcObjectReadCloser) shutdown() {
 	}
 	g.closed = true
 	_ = g.stream.CloseSend()
+	if g.cancel != nil {
+		g.cancel()
+		g.cancel = nil
+	}
 }
 
 func (g *grpcObjectReadCloser) Close() error {
