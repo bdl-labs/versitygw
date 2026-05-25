@@ -1,8 +1,10 @@
 package burnbridge
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net"
 	"path/filepath"
 	"sync"
@@ -11,17 +13,27 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/versity/versitygw/s3response"
 	"github.com/versity/versitygw/backend/meta"
 	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/metadata"
 )
 
 type testBurnBridgeClient struct {
+	createJobFn func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error)
+	uploadObjectFn func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error)
+	commitJobFn func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error)
+	cancelJobFn func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error)
+	registerPullSourceFn func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
 	finalizeFn func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
 	importedBucketStateFn func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error)
 }
 
-func (testBurnBridgeClient) CreateJob(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+func (c testBurnBridgeClient) CreateJob(ctx context.Context, req *burnbridgev1.CreateJobRequest, opts ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+	if c.createJobFn != nil {
+		return c.createJobFn(ctx, req, opts...)
+	}
 	panic("unexpected CreateJob call")
 }
 
@@ -29,11 +41,17 @@ func (testBurnBridgeClient) GetVersion(context.Context, *burnbridgev1.GetVersion
 	return &burnbridgev1.GetVersionResponse{}, nil
 }
 
-func (testBurnBridgeClient) UploadObject(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+func (c testBurnBridgeClient) UploadObject(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+	if c.uploadObjectFn != nil {
+		return c.uploadObjectFn(ctx, opts...)
+	}
 	return nil, nil
 }
 
-func (testBurnBridgeClient) CommitJob(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+func (c testBurnBridgeClient) CommitJob(ctx context.Context, req *burnbridgev1.CommitJobRequest, opts ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+	if c.commitJobFn != nil {
+		return c.commitJobFn(ctx, req, opts...)
+	}
 	panic("unexpected CommitJob call")
 }
 
@@ -41,7 +59,10 @@ func (testBurnBridgeClient) GetJobStatus(context.Context, *burnbridgev1.GetJobSt
 	return &burnbridgev1.GetJobStatusResponse{}, nil
 }
 
-func (testBurnBridgeClient) CancelJob(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error) {
+func (c testBurnBridgeClient) CancelJob(ctx context.Context, req *burnbridgev1.CancelJobRequest, opts ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error) {
+	if c.cancelJobFn != nil {
+		return c.cancelJobFn(ctx, req, opts...)
+	}
 	return &burnbridgev1.CancelJobResponse{}, nil
 }
 
@@ -49,8 +70,11 @@ func (testBurnBridgeClient) ReadObject(context.Context, *burnbridgev1.ReadObject
 	return nil, nil
 }
 
-func (testBurnBridgeClient) RegisterS3ObjectPullSource(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error) {
-	panic("unexpected RegisterS3ObjectPullSource call")
+func (c testBurnBridgeClient) RegisterS3ObjectPullSource(ctx context.Context, req *burnbridgev1.RegisterS3ObjectPullSourceRequest, opts ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error) {
+	if c.registerPullSourceFn != nil {
+		return c.registerPullSourceFn(ctx, req, opts...)
+	}
+	return &burnbridgev1.RegisterS3ObjectPullSourceResponse{}, nil
 }
 
 func (testBurnBridgeClient) TestUnitReady(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
@@ -252,6 +276,51 @@ func TestLoadBurnSegmentSnapshotFiltersDifferentMedia(t *testing.T) {
 	}
 }
 
+func TestLoadBurnSegmentSnapshotAcceptsHistoricalProbeForSameBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.UpsertBurnObjectSegment("bucket1", "file.bin", "JOB-OLD", 0, 0, 8, "aaa", meta.BurnSegmentSucceeded, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: "JOB-OLD",
+		Bucket:           "bucket1",
+		UdfVolumeLabel:   "DISC-NEW",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:      "bucket1",
+		VolumeLabel: "JOB-OLD",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:           store,
+		grpc:           testBurnBridgeClient{},
+		activeBucket:   "bucket1",
+		volumeLabelRaw: "DISC-NEW",
+	}
+
+	snapshot, err := b.loadBurnSegmentSnapshot("bucket1", "file.bin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot) != 1 {
+		t.Fatalf("expected historical same-bucket segment to remain visible, got %d entries", len(snapshot))
+	}
+	if _, ok := snapshot[0]; !ok {
+		t.Fatalf("expected segment 0 in snapshot: %#v", snapshot)
+	}
+}
+
 func TestHeadAndListUseMetadataOnly(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -351,6 +420,53 @@ func TestSyncActiveDiscStateImportsCommittedObjectsFromRecorder(t *testing.T) {
 	}
 	if got := sum.Metadata["owner"]; got != "qa" {
 		t.Fatalf("expected imported metadata owner=qa, got %q", got)
+	}
+}
+
+func TestSyncActiveDiscStatePrefersRecorderImportedBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Bucket:         "disc-imported",
+					UdfVolumeLabel: "DISC-IMPORTED",
+					Loaded:         true,
+				}, nil
+			},
+		},
+		activeBucket:   "job-a73fb713bf9b",
+		volumeLabelRaw: "JOB-A73FB713BF9B",
+		udfLabel:       "JOB-A73FB713BF9B",
+	}
+
+	if err := b.syncActiveDiscState(&burnbridgev1.TestUnitReadyResponse{
+		Ready:       true,
+		VolumeLabel: "JOB-A73FB713BF9B",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if b.activeBucket != "disc-imported" {
+		t.Fatalf("expected imported bucket to win, got %q", b.activeBucket)
+	}
+	if b.udfLabel != "DISC-IMPORTED" {
+		t.Fatalf("expected imported udf label to win, got %q", b.udfLabel)
+	}
+
+	binding, err := store.GetBurnbridgeDiscBucketBinding("JOB-A73FB713BF9B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Bucket != "disc-imported" {
+		t.Fatalf("expected persisted binding bucket disc-imported, got %q", binding.Bucket)
 	}
 }
 
@@ -456,6 +572,134 @@ func TestLoadOrFinalizeLayoutTranscriptSingleflight(t *testing.T) {
 		if len(results[i]) == 0 {
 			t.Fatalf("worker %d returned empty transcript", i)
 		}
+	}
+}
+
+type testUploadObjectStream struct {
+	sendChunks []*burnbridgev1.UploadObjectChunk
+	ackQueue   []*burnbridgev1.UploadObjectAck
+	recvIndex  int
+}
+
+func (s *testUploadObjectStream) Header() (metadata.MD, error) { return nil, nil }
+func (s *testUploadObjectStream) Trailer() metadata.MD          { return nil }
+func (s *testUploadObjectStream) CloseSend() error              { return nil }
+func (s *testUploadObjectStream) Context() context.Context      { return context.Background() }
+func (s *testUploadObjectStream) SendMsg(any) error             { return nil }
+func (s *testUploadObjectStream) RecvMsg(any) error             { return nil }
+
+func (s *testUploadObjectStream) Send(chunk *burnbridgev1.UploadObjectChunk) error {
+	s.sendChunks = append(s.sendChunks, chunk)
+	return nil
+}
+
+func (s *testUploadObjectStream) Recv() (*burnbridgev1.UploadObjectAck, error) {
+	if s.recvIndex >= len(s.ackQueue) {
+		return nil, io.EOF
+	}
+	ack := s.ackQueue[s.recvIndex]
+	s.recvIndex++
+	return ack, nil
+}
+
+func TestPutObjectSkipsCommitWhenPayloadAlreadyCommitted(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket = "disc-a"
+		key    = "big-31-blocks.bin"
+	)
+	payload := bytes.Repeat([]byte("A"), 2048)
+	digest := bbSegmentMD5Hex(payload)
+	now := time.Date(2026, 5, 25, 6, 30, 0, 0, time.UTC)
+
+	if err := store.StoreBurnbridgeCommitted(nil, bucket, key, &meta.BurnbridgeCommittedRecord{
+		JobID:        "job-prev",
+		Status:       "completed",
+		ETag:         "\"" + digest + "\"",
+		LastModified: now.Format(time.RFC3339Nano),
+		Size:         int64(len(payload)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, key, "DISC-A", 0, 0, int64(len(payload)), digest, meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "4288608", FileSize: int64(len(payload))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := &testUploadObjectStream{
+		ackQueue: []*burnbridgev1.UploadObjectAck{
+			{
+				JobId:             "job-new",
+				SegmentIndex:      0,
+				ByteOffset:        0,
+				ByteSize:          int64(len(payload)),
+				UploadComplete:    true,
+				SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+			},
+		},
+	}
+
+	commitCalls := 0
+	cancelCalls := 0
+	b := &BurnBridge{
+		meta:             store,
+		grpc: testBurnBridgeClient{
+			createJobFn: func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+				return &burnbridgev1.CreateJobResponse{JobId: "job-new"}, nil
+			},
+			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+				return stream, nil
+			},
+			commitJobFn: func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+				commitCalls++
+				return &burnbridgev1.CommitJobResponse{JobId: "job-new", Status: "completed"}, nil
+			},
+			cancelJobFn: func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error) {
+				cancelCalls++
+				return &burnbridgev1.CancelJobResponse{}, nil
+			},
+		},
+		chunkSize:        len(payload) + 1024,
+		cancelJobTimeout: time.Second,
+		putQueueSem:      make(chan struct{}, 4),
+		activeBucket:     bucket,
+		volumeLabelRaw:   "DISC-A",
+		udfLabel:         "DISC-A",
+	}
+
+	out, err := b.PutObject(context.Background(), s3response.PutObjectInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr(key),
+		Body:          bytes.NewReader(payload),
+		ContentLength: ptr(int64(len(payload))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commitCalls != 0 {
+		t.Fatalf("expected CommitJob to be skipped, got %d calls", commitCalls)
+	}
+	if cancelCalls != 1 {
+		t.Fatalf("expected CancelJob cleanup once, got %d", cancelCalls)
+	}
+	if out.ETag != "\""+digest+"\"" {
+		t.Fatalf("unexpected etag: %q", out.ETag)
+	}
+	if out.Size == nil || *out.Size != int64(len(payload)) {
+		t.Fatalf("unexpected size: %#v", out.Size)
+	}
+	if len(stream.sendChunks) != 1 {
+		t.Fatalf("expected one reused chunk send, got %d", len(stream.sendChunks))
+	}
+	if stream.sendChunks[0].GetReusedBurnedBytes() != int64(len(payload)) {
+		t.Fatalf("expected reused bytes %d, got %d", len(payload), stream.sendChunks[0].GetReusedBurnedBytes())
 	}
 }
 

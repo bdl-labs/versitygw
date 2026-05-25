@@ -496,6 +496,48 @@ func (s SqlMeta) GetBurnbridgeDiscBucketBinding(probeVolumeLabel string) (*Burnb
 	return &doc, nil
 }
 
+// ListBurnbridgeDiscBucketBindings returns persisted runtime media bindings.
+// When bucket is non-empty, only bindings for that logical bucket are returned.
+func (s SqlMeta) ListBurnbridgeDiscBucketBindings(bucket string) ([]BurnbridgeDiscBucketBindingDocument, error) {
+	var out []BurnbridgeDiscBucketBindingDocument
+	err := s.withDB("list disc bucket bindings", func(db *gorm.DB) error {
+		query := db.
+			Table("metadata_entries").
+			Select("value").
+			Where("bucket = ? AND attribute = ?", BurnbridgeRuntimeBindingBucket, BurnbridgeDiscBucketBindingAttribute)
+		if trimmed := strings.TrimSpace(bucket); trimmed != "" {
+			query = query.Where("json_extract(value, '$.bucket') = ?", trimmed)
+		}
+
+		rows, err := query.Rows()
+		if err != nil {
+			return mapSQLError("list disc bucket bindings", err)
+		}
+		defer rows.Close()
+
+		var docs []BurnbridgeDiscBucketBindingDocument
+		for rows.Next() {
+			var raw []byte
+			if err := rows.Scan(&raw); err != nil {
+				return mapSQLError("scan disc bucket binding", err)
+			}
+
+			var doc BurnbridgeDiscBucketBindingDocument
+			if err := json.Unmarshal(raw, &doc); err != nil {
+				return fmt.Errorf("decode disc bucket binding: %w", err)
+			}
+			docs = append(docs, doc)
+		}
+		if err := rows.Err(); err != nil {
+			return mapSQLError("list disc bucket bindings", err)
+		}
+
+		out = docs
+		return nil
+	})
+	return out, err
+}
+
 // BurnbridgeCommittedRecord is JSON-encoded into metadata_entries under BurnbridgeCommittedAttribute.
 type BurnbridgeCommittedRecord struct {
 	JobID              string            `json:"jobId,omitempty"`

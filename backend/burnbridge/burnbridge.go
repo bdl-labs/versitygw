@@ -513,7 +513,7 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	}
 
 	if strings.EqualFold(strings.TrimSpace(b.volumeLabelRaw), rawVolume) && strings.TrimSpace(b.activeBucket) != "" {
-		return nil
+		return b.syncImportedBucketState(context.Background(), b.activeBucket)
 	}
 
 	if binding, ok := loadDiscBucketBinding(b.meta, rawVolume); ok && binding != nil {
@@ -543,11 +543,9 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 }
 
 func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string) error {
-	if strings.TrimSpace(bucket) == "" {
-		return nil
-	}
+	requestedBucket := strings.TrimSpace(bucket)
 
-	resp, err := b.grpc.GetImportedBucketState(ctx, &burnbridgev1.GetImportedBucketStateRequest{Bucket: bucket})
+	resp, err := b.grpc.GetImportedBucketState(ctx, &burnbridgev1.GetImportedBucketStateRequest{})
 	if err != nil {
 		if isGRPCUnimplemented(err) {
 			return nil
@@ -558,8 +556,25 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 		return nil
 	}
 
+	resolvedBucket := strings.TrimSpace(resp.GetBucket())
+	if resolvedBucket == "" {
+		resolvedBucket = requestedBucket
+	}
+	if resolvedBucket == "" {
+		return nil
+	}
+
+	if resolvedBucket != "" {
+		b.activeBucket = resolvedBucket
+	}
+
 	if strings.TrimSpace(resp.GetUdfVolumeLabel()) != "" {
 		b.udfLabel = strings.TrimSpace(resp.GetUdfVolumeLabel())
+	}
+	if strings.TrimSpace(b.volumeLabelRaw) != "" {
+		if err := persistDiscBucketBinding(b.meta, b.volumeLabelRaw, resolvedBucket, b.udfLabel); err != nil {
+			return err
+		}
 	}
 
 	for _, object := range resp.GetObjects() {
@@ -587,8 +602,8 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 			Expires:            object.GetExpires(),
 			Metadata:           userMetadata,
 		}
-		if err := b.meta.StoreBurnbridgeCommitted(nil, bucket, object.GetObjectKey(), rec); err != nil {
-			return fmt.Errorf("burnbridge sync imported object %s/%s: %w", bucket, object.GetObjectKey(), err)
+		if err := b.meta.StoreBurnbridgeCommitted(nil, resolvedBucket, object.GetObjectKey(), rec); err != nil {
+			return fmt.Errorf("burnbridge sync imported object %s/%s: %w", resolvedBucket, object.GetObjectKey(), err)
 		}
 	}
 
@@ -1548,6 +1563,10 @@ type uploadRecoveryStats struct {
 	TrimmedSegments  int64
 }
 
+func (s uploadRecoveryStats) AllSegmentsSkipped() bool {
+	return s.TotalSegments > 0 && s.SkippedSegments == s.TotalSegments && s.ReplayedSegments == 0
+}
+
 // ------------------------------
 // PutObject streaming helpers
 // ------------------------------
@@ -1619,14 +1638,61 @@ func (b *BurnBridge) loadBurnSegmentSnapshot(bucket, key string) (map[int]meta.B
 		return nil, err
 	}
 	snapshot := make(map[int]meta.BurnObjectSegment, len(segments))
+	acceptedMediaIDs := b.acceptedSegmentMediaIDs(bucket)
 	for _, seg := range segments {
-		if strings.TrimSpace(seg.BurnObjectSegment.MediaID) != "" &&
-			!strings.EqualFold(strings.TrimSpace(seg.BurnObjectSegment.MediaID), strings.TrimSpace(b.volumeLabelRaw)) {
+		if !acceptedMediaIDs.accepts(seg.BurnObjectSegment.MediaID) {
 			continue
 		}
 		snapshot[seg.SegmentIndex] = seg.BurnObjectSegment
 	}
 	return snapshot, nil
+}
+
+type acceptedMediaSet map[string]struct{}
+
+func (s acceptedMediaSet) accepts(mediaID string) bool {
+	if len(s) == 0 {
+		return true
+	}
+	trimmed := strings.TrimSpace(mediaID)
+	if trimmed == "" {
+		return true
+	}
+	_, ok := s[strings.ToUpper(trimmed)]
+	return ok
+}
+
+func (b *BurnBridge) acceptedSegmentMediaIDs(bucket string) acceptedMediaSet {
+	accepted := make(acceptedMediaSet)
+	add := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		accepted[strings.ToUpper(trimmed)] = struct{}{}
+	}
+
+	add(b.volumeLabelRaw)
+
+	if strings.TrimSpace(bucket) == "" {
+		return accepted
+	}
+
+	if bindings, err := b.meta.ListBurnbridgeDiscBucketBindings(bucket); err == nil {
+		for _, binding := range bindings {
+			add(binding.ProbeVolumeLabel)
+		}
+	}
+
+	if raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket); err == nil && len(raw) > 0 {
+		var discInfo meta.BurnbridgeDiscInfoDocument
+		if err := json.Unmarshal(raw, &discInfo); err == nil &&
+			strings.EqualFold(strings.TrimSpace(discInfo.Bucket), strings.TrimSpace(bucket)) {
+			add(discInfo.VolumeLabel)
+		}
+	}
+
+	return accepted
 }
 
 func (b *BurnBridge) burnMaybeInvalidateSegments(bucket, key string, snapshot map[int]meta.BurnObjectSegment, segmentIdx int, digest string) error {
@@ -1648,7 +1714,10 @@ func (b *BurnBridge) burnMaybeInvalidateSegments(bucket, key string, snapshot ma
 	return nil
 }
 
-func (b *BurnBridge) burnShouldSkipSegment(snapshot map[int]meta.BurnObjectSegment, segmentIdx int, digest string, offset, segLen int64) bool {
+func (b *BurnBridge) burnShouldSkipSegment(objectCommitted bool, snapshot map[int]meta.BurnObjectSegment, segmentIdx int, digest string, offset, segLen int64) bool {
+	if !objectCommitted {
+		return false
+	}
 	if segmentIdx > 0 {
 		prev, ok := snapshot[segmentIdx-1]
 		if !ok {
@@ -1728,15 +1797,20 @@ func (b *BurnBridge) recvSegmentUploadAck(stream grpc.BidiStreamingClient[burnbr
 	return ack.GetUploadComplete(), nil
 }
 
-func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, key string, body io.Reader, _ int64) (int64, *burnbridgev1.UploadObjectAck, error) {
+func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, key string, body io.Reader, _ int64) (int64, *burnbridgev1.UploadObjectAck, uploadRecoveryStats, error) {
 	startedAt := time.Now()
 	stream, err := b.grpc.UploadObject(ctx)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, uploadRecoveryStats{}, err
 	}
 	segmentSnapshot, err := b.loadBurnSegmentSnapshot(bucket, key)
 	if err != nil {
-		return 0, nil, err
+		return 0, nil, uploadRecoveryStats{}, err
+	}
+	_, committedRecordErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
+	objectCommitted := committedRecordErr == nil
+	if committedRecordErr != nil && !errors.Is(committedRecordErr, meta.ErrNoSuchKey) {
+		return 0, nil, uploadRecoveryStats{}, committedRecordErr
 	}
 	stats := uploadRecoveryStats{}
 	uploadCompletedBySegmentAck := false
@@ -1751,19 +1825,19 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 
 	if body == nil {
 		if err := sendEOF(); err != nil {
-			return 0, nil, err
+			return 0, nil, stats, err
 		}
 		if err := stream.CloseSend(); err != nil {
-			return 0, nil, err
+			return 0, nil, stats, err
 		}
 		final, err := stream.Recv()
 		if err != nil {
-			return offset, nil, err
+			return offset, nil, stats, err
 		}
 		if !final.GetUploadComplete() {
-			return offset, nil, fmt.Errorf("burnbridge: expected upload_complete on final ack for empty body")
+			return offset, nil, stats, fmt.Errorf("burnbridge: expected upload_complete on final ack for empty body")
 		}
-		return offset, final, nil
+		return offset, final, stats, nil
 	}
 
 	for {
@@ -1772,20 +1846,20 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 			if errRead == io.EOF || errRead == io.ErrUnexpectedEOF {
 				break
 			}
-			return offset, nil, errRead
+			return offset, nil, stats, errRead
 		}
 		if errRead != nil && errRead != io.ErrUnexpectedEOF {
-			return offset, nil, errRead
+			return offset, nil, stats, errRead
 		}
 		chunk := segBuf[:n]
 
 		digest := bbSegmentMD5Hex(chunk)
 		if err := b.burnMaybeInvalidateSegments(bucket, key, segmentSnapshot, segmentIdx, digest); err != nil {
-			return offset, nil, err
+			return offset, nil, stats, err
 		}
 		stats.TotalSegments++
 
-		skip := b.burnShouldSkipSegment(segmentSnapshot, segmentIdx, digest, offset, int64(len(chunk)))
+		skip := b.burnShouldSkipSegment(objectCommitted, segmentSnapshot, segmentIdx, digest, offset, int64(len(chunk)))
 
 		isTailSegment := errRead == io.ErrUnexpectedEOF
 		if skip {
@@ -1797,12 +1871,12 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 				ReusedBurnedBytes: int64(len(chunk)),
 			}
 			if err := stream.Send(ch); err != nil {
-				return offset, nil, err
+				return offset, nil, stats, err
 			}
 		} else {
 			stats.ReplayedSegments++
 			if err := b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentPending, nil); err != nil {
-				return offset, nil, err
+				return offset, nil, stats, err
 			}
 			segmentSnapshot[segmentIdx] = meta.BurnObjectSegment{
 				MediaID:      b.volumeLabelRaw,
@@ -1821,7 +1895,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 				isLastFrameOfSegment := end == len(chunk)
 				frameEOF := isTailSegment && isLastFrameOfSegment
 				if err := stream.Send(&burnbridgev1.UploadObjectChunk{JobId: jobID, Offset: offset + int64(i), Data: part, Eof: frameEOF}); err != nil {
-					return offset, nil, err
+					return offset, nil, stats, err
 				}
 				i = end
 			}
@@ -1840,7 +1914,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 					DiscExtents: nil,
 				}
 			}
-			return offset, nil, err
+			return offset, nil, stats, err
 		}
 		uploadCompletedBySegmentAck = uploadCompletedBySegmentAck || completed
 
@@ -1853,28 +1927,28 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 
 	trimmedRows, err := b.meta.DeleteBurnObjectSegmentsFromWithCount(bucket, key, segmentIdx)
 	if err != nil {
-		return offset, nil, err
+		return offset, nil, stats, err
 	}
 	stats.TrimmedSegments = trimmedRows
 
 	var final *burnbridgev1.UploadObjectAck
 	if !uploadCompletedBySegmentAck {
 		if err := sendEOF(); err != nil {
-			return offset, nil, err
+			return offset, nil, stats, err
 		}
 		if err := stream.CloseSend(); err != nil {
-			return offset, nil, err
+			return offset, nil, stats, err
 		}
 		final, err = stream.Recv()
 		if err != nil {
-			return offset, nil, err
+			return offset, nil, stats, err
 		}
 		if !final.GetUploadComplete() {
-			return offset, nil, fmt.Errorf("burnbridge: expected upload_complete on final ack")
+			return offset, nil, stats, fmt.Errorf("burnbridge: expected upload_complete on final ack")
 		}
 	} else {
 		if err := stream.CloseSend(); err != nil {
-			return offset, nil, err
+			return offset, nil, stats, err
 		}
 		final = &burnbridgev1.UploadObjectAck{
 			JobId:          jobID,
@@ -1898,7 +1972,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 		"segments_trimmed", stats.TrimmedSegments,
 		"skip_hit_rate_pct", hitRate,
 		"elapsed_ms", time.Since(startedAt).Milliseconds())
-	return offset, final, nil
+	return offset, final, stats, nil
 }
 
 func (b *BurnBridge) registerRecorderS3PullSource(ctx context.Context, jobID, bucket, key string, contentLen int64) error {
@@ -2010,9 +2084,30 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		_, _ = b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: jobID})
 	}()
 
-	offset, uploadResp, err := b.grpcUploadObjectStream(ctx, jobID, bucket, key, input.Body, contentLen)
+	offset, uploadResp, stats, err := b.grpcUploadObjectStream(ctx, jobID, bucket, key, input.Body, contentLen)
 	if err != nil {
 		return s3response.PutObjectOutput{}, err
+	}
+
+	if stats.AllSegmentsSkipped() {
+		committedRec, recErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
+		if recErr != nil {
+			return s3response.PutObjectOutput{}, recErr
+		}
+
+		committed = false
+		slog.Info("burnbridge: object already committed on media; skipping CommitJob for idempotent PutObject retry",
+			"bucket", bucket, "key", key, "jobId", jobID, "bytes", offset)
+
+		out := s3response.PutObjectOutput{
+			ETag: committedRec.ETag,
+			Size: &committedRec.Size,
+		}
+		checksumMD5 := strings.Trim(strings.TrimSpace(committedRec.ETag), "\"")
+		if checksumMD5 != "" {
+			out.ChecksumMD5 = &checksumMD5
+		}
+		return out, nil
 	}
 
 	finalizeManifest, err := b.buildFinalizeManifest(bucket, key, offset)
