@@ -812,10 +812,17 @@ class VersityAPI {
 
     // S3 works, now test admin API access.
     try {
-      const users = await this.listUsers();
+      await this.listUsers();
       this.setAdminRole(true);
       return 'admin';
     } catch (adminError) {
+      // In single-root-user mode the admin APIs that enumerate IAM users return
+      // XAdminMethodNotSupported even though the signed root credential is still
+      // the effective administrative identity for WebUI archive management.
+      if (adminError && typeof adminError.message === 'string' && adminError.message.includes('XAdminMethodNotSupported')) {
+        this.setAdminRole(true);
+        return 'admin';
+      }
       return 's3';
     }
   }

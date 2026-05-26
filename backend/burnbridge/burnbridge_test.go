@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -467,6 +469,98 @@ func TestSyncActiveDiscStatePrefersRecorderImportedBucket(t *testing.T) {
 	}
 	if binding.Bucket != "disc-imported" {
 		t.Fatalf("expected persisted binding bucket disc-imported, got %q", binding.Bucket)
+	}
+}
+
+func TestHandleNoDiscStateBacksUpAndClearsActiveBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		activeBucket: "disc-a",
+		volumeLabelRaw: "DISC-A",
+		udfLabel:     "DISC-A",
+		metaDBPath:   dbPath,
+	}
+
+	if err := b.handleNoDiscState(); err != nil {
+		t.Fatal(err)
+	}
+	if b.activeBucket != "" {
+		t.Fatalf("expected active bucket cleared, got %q", b.activeBucket)
+	}
+	if _, err := store.GetCommittedObjectSummary("disc-a", "file.txt"); err == nil {
+		t.Fatal("expected committed object metadata to be cleared after no-disc state")
+	}
+	if strings.TrimSpace(b.lastNoDiscBackupPath) == "" {
+		t.Fatal("expected no-disc backup path to be recorded")
+	}
+	if _, err := os.Stat(b.lastNoDiscBackupPath); err != nil {
+		t.Fatalf("expected no-disc backup file to exist: %v", err)
+	}
+}
+
+func TestMaybeRestoreNoDiscBackupRestoresSameDiscBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		activeBucket: "disc-a",
+		volumeLabelRaw: "DISC-A",
+		udfLabel:     "DISC-A",
+		metaDBPath:   dbPath,
+	}
+
+	if err := b.handleNoDiscState(); err != nil {
+		t.Fatal(err)
+	}
+
+	b.activeBucket = "disc-a"
+	b.volumeLabelRaw = "DISC-A"
+	b.lastDiscSerialHex = "SERIAL-A"
+	b.lastReadyVolumeLabel = "DISC-A"
+	if err := b.maybeRestoreNoDiscBackup(&burnbridgev1.TestUnitReadyResponse{
+		Ready:               true,
+		VolumeLabel:         "DISC-A",
+		DiscSerialNumberHex: "SERIAL-A",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	sum, err := store.GetCommittedObjectSummary("disc-a", "file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Size != 7 {
+		t.Fatalf("expected restored size 7, got %d", sum.Size)
 	}
 }
 

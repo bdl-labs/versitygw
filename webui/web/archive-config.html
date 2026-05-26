@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>VersityGW Admin - Archive Config</title>
+  <title>VersityGW Admin - Archive Admin</title>
   <script src="assets/js/crypto-js.min.js"></script>
   <script src="assets/js/tailwind.js"></script>
   <script src="assets/css/tailwind-config.js"></script>
@@ -29,14 +29,14 @@
         <a href="dashboard.html" class="nav-item flex items-center gap-3 px-6 py-3 text-white/70 hover:text-white"><span class="font-medium">Dashboard</span></a>
         <a href="users.html" class="nav-item flex items-center gap-3 px-6 py-3 text-white/70 hover:text-white"><span class="font-medium">Users</span></a>
         <a href="buckets.html" class="nav-item flex items-center gap-3 px-6 py-3 text-white/70 hover:text-white"><span class="font-medium">Buckets</span></a>
-        <a href="archive-config.html" class="nav-item active flex items-center gap-3 px-6 py-3 text-white"><span class="font-medium">Archive Config</span></a>
+        <a href="archive-config.html" class="nav-item active flex items-center gap-3 px-6 py-3 text-white"><span class="font-medium">Archive Admin</span></a>
       </nav>
     </aside>
 
     <div class="flex-1 flex flex-col overflow-hidden">
       <header class="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 flex-shrink-0">
         <div>
-          <h1 class="text-xl font-semibold text-charcoal">Optical Archive Config</h1>
+          <h1 class="text-xl font-semibold text-charcoal">Optical Archive Admin</h1>
           <p id="archive-config-path" class="text-xs text-charcoal-300"></p>
         </div>
         <div class="flex gap-3">
@@ -47,6 +47,55 @@
 
       <main class="flex-1 overflow-auto p-6">
         <div class="max-w-6xl mx-auto space-y-6">
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <div class="flex items-start justify-between gap-4 flex-col lg:flex-row">
+              <div>
+                <h2 class="text-lg font-semibold text-charcoal mb-2">Archive Admin Overview</h2>
+                <p class="text-sm text-charcoal-300">在这里统一管理光盘归档配置、服务版本、日志下载、许可证更新和升级操作。</p>
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-4 w-full lg:max-w-2xl">
+                <div class="rounded-lg bg-surface p-4">
+                  <div class="text-sm text-charcoal-300 mb-2">Gateway Version</div>
+                  <div id="gateway-version-card" class="text-sm text-charcoal">-</div>
+                </div>
+                <div class="rounded-lg bg-surface p-4">
+                  <div class="text-sm text-charcoal-300 mb-2">Recorder Version</div>
+                  <div id="recorder-version-card" class="text-sm text-charcoal">-</div>
+                </div>
+              </div>
+            </div>
+            <div class="mt-4 flex flex-wrap gap-3">
+              <button id="refresh-archive-version-btn" class="px-4 py-2 rounded-lg border border-gray-200 text-charcoal hover:bg-gray-50 transition-colors">Refresh Versions</button>
+              <button id="refresh-archive-logs-btn" class="px-4 py-2 rounded-lg border border-gray-200 text-charcoal hover:bg-gray-50 transition-colors">Refresh Logs</button>
+              <button id="rotate-archive-logs-btn" class="px-4 py-2 rounded-lg bg-accent text-white font-medium hover:opacity-90 transition-opacity">Rotate Gateway Logs</button>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <div class="flex items-center justify-between mb-4">
+              <h2 class="text-lg font-semibold text-charcoal">Archive Logs</h2>
+              <div class="text-sm text-charcoal-300">Gateway + Recorder</div>
+            </div>
+            <div class="overflow-x-auto">
+              <table class="w-full">
+                <thead>
+                  <tr class="border-b border-gray-100">
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Source</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">File</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Size</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Modified</th>
+                    <th class="text-left py-3 px-4 text-sm font-medium text-charcoal-300">Action</th>
+                  </tr>
+                </thead>
+                <tbody id="archive-logs-table">
+                  <tr>
+                    <td colspan="5" class="py-8 text-center text-charcoal-300">Load logs after authentication</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
           <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
             <h2 class="text-lg font-semibold text-charcoal mb-4">Auth</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -221,8 +270,107 @@
         const payload = await response.json();
         archiveConfigState = payload.config;
         renderArchiveConfig(payload.path, payload);
+        await loadArchiveVersion();
+        await loadArchiveLogs();
       } catch (error) {
         showToast('Failed to load archive config: ' + error.message, 'error');
+      }
+    }
+
+    async function loadArchiveVersion() {
+      try {
+        const payload = await api.getArchiveVersion(buildArchiveAuthHeader());
+        const gw = payload.gateway || {};
+        const rec = payload.recorder || {};
+        document.getElementById('gateway-version-card').innerHTML = `
+          <div><strong>${escapeHtml(gw.serviceVersion || '-')}</strong></div>
+          <div class="text-charcoal-300">Build: ${escapeHtml(gw.build || '-')}</div>
+          <div class="text-charcoal-300">Built: ${escapeHtml(gw.buildTime || '-')}</div>
+          <div class="text-charcoal-300">Runtime: ${escapeHtml(gw.goVersion || '-')} / ${escapeHtml(gw.osArch || '-')}</div>
+        `;
+        if (rec.status === 'error') {
+          document.getElementById('recorder-version-card').innerHTML = `<div class="text-red-500">${escapeHtml(rec.error || 'Recorder unavailable')}</div>`;
+          return;
+        }
+
+        document.getElementById('recorder-version-card').innerHTML = `
+          <div><strong>${escapeHtml(rec.serviceVersion || '-')}</strong></div>
+          <div class="text-charcoal-300">Assembly: ${escapeHtml(rec.assemblyVersion || '-')}</div>
+          <div class="text-charcoal-300">Runtime: ${escapeHtml(rec.runtimeVersion || '-')}</div>
+          <div class="text-charcoal-300">Env: ${escapeHtml(rec.buildConfiguration || '-')}</div>
+          <div class="text-charcoal-300">License: ${escapeHtml(rec.licenseFilePath || '-')}</div>
+        `;
+      } catch (error) {
+        document.getElementById('gateway-version-card').textContent = error.message;
+        document.getElementById('recorder-version-card').textContent = error.message;
+      }
+    }
+
+    async function loadArchiveLogs() {
+      const tbody = document.getElementById('archive-logs-table');
+      tbody.innerHTML = `
+        <tr>
+          <td colspan="5" class="py-8 text-center text-charcoal-300">Loading logs...</td>
+        </tr>
+      `;
+
+      try {
+        const payload = await api.getArchiveLogs(buildArchiveAuthHeader());
+        const items = payload.items || [];
+        if (items.length === 0) {
+          tbody.innerHTML = `
+            <tr>
+              <td colspan="5" class="py-8 text-center text-charcoal-300">No log files found</td>
+            </tr>
+          `;
+          return;
+        }
+
+        tbody.innerHTML = '';
+        items.slice(0, 20).forEach(item => {
+          const row = document.createElement('tr');
+          row.className = 'border-b border-gray-50 hover:bg-gray-50 transition-colors';
+          row.innerHTML = `
+            <td class="py-3 px-4 text-sm text-charcoal">${escapeHtml(item.source)}</td>
+            <td class="py-3 px-4 text-sm text-charcoal font-mono">${escapeHtml(item.relativePath)}</td>
+            <td class="py-3 px-4 text-sm text-charcoal">${Number(item.sizeBytes || 0).toLocaleString()}</td>
+            <td class="py-3 px-4 text-sm text-charcoal">${escapeHtml(item.modifiedUtc || '-')}</td>
+            <td class="py-3 px-4 text-sm">
+              <button class="text-accent hover:text-accent-600 font-medium" data-download-source="${escapeHtml(item.source)}" data-download-path="${escapeHtml(item.relativePath)}">Download</button>
+            </td>
+          `;
+          tbody.appendChild(row);
+        });
+
+        tbody.querySelectorAll('button[data-download-source]').forEach(button => {
+          button.addEventListener('click', async () => {
+            try {
+              const source = button.getAttribute('data-download-source');
+              const path = button.getAttribute('data-download-path');
+              const response = await fetch(api.getArchiveLogDownloadUrl(source, path), {
+                headers: { 'Authorization': buildArchiveAuthHeader() },
+              });
+              if (!response.ok) {
+                throw new Error(await response.text());
+              }
+              const blob = await response.blob();
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement('a');
+              link.href = url;
+              link.download = path.split('/').pop() || 'archive.log';
+              link.click();
+              URL.revokeObjectURL(url);
+            } catch (error) {
+              showToast('Failed to download log: ' + error.message, 'error');
+            }
+          });
+        });
+      } catch (error) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="5" class="py-8 text-center text-red-500">${escapeHtml(error.message)}</td>
+          </tr>
+        `;
       }
     }
 
@@ -387,6 +535,23 @@
 
     document.getElementById('reload-config-btn').addEventListener('click', loadArchiveConfig);
     document.getElementById('save-config-btn').addEventListener('click', saveArchiveConfig);
+    document.getElementById('refresh-archive-version-btn').addEventListener('click', loadArchiveVersion);
+    document.getElementById('refresh-archive-logs-btn').addEventListener('click', loadArchiveLogs);
+    document.getElementById('rotate-archive-logs-btn').addEventListener('click', async () => {
+      try {
+        const response = await fetch(api.getEndpoint(false) + '/__archive/logs/rotate', {
+          method: 'POST',
+          headers: { 'Authorization': buildArchiveAuthHeader() }
+        });
+        if (!response.ok) {
+          throw new Error(await response.text());
+        }
+        showToast('Gateway logs rotated.', 'success');
+        await loadArchiveLogs();
+      } catch (error) {
+        showToast('Failed to rotate logs: ' + error.message, 'error');
+      }
+    });
     document.getElementById('upload-license-btn').addEventListener('click', async () => {
       const file = document.getElementById('license-file-input').files[0];
       if (!file) {

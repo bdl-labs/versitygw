@@ -104,6 +104,32 @@ type BurnObjectSegmentDetail struct {
 	BurnObjectSegment
 }
 
+type BurnbridgeBucketBackup struct {
+	Bucket         string                     `json:"bucket"`
+	BackedUpAtUtc  string                     `json:"backedUpAtUtc"`
+	MetadataRows   []burnbridgeMetadataRow    `json:"metadataRows"`
+	SegmentRows    []burnbridgeSegmentRow     `json:"segmentRows"`
+}
+
+type burnbridgeMetadataRow struct {
+	ObjectName string `json:"objectName"`
+	Attribute  string `json:"attribute"`
+	Value      []byte `json:"value"`
+}
+
+type burnbridgeSegmentRow struct {
+	ObjectName   string    `json:"objectName"`
+	SegmentIndex int       `json:"segmentIndex"`
+	MediaID      string    `json:"mediaId"`
+	ByteOffset   int64     `json:"byteOffset"`
+	ByteSize     int64     `json:"byteSize"`
+	ChecksumMD5  string    `json:"checksumMd5"`
+	BurnState    int       `json:"burnState"`
+	DiscExtents  string    `json:"discExtents"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
+}
+
 // Burned reports whether this segment is known to have been placed successfully on media.
 func (s BurnObjectSegment) Burned() bool { return s.State == BurnSegmentSucceeded }
 
@@ -265,7 +291,11 @@ func (s SqlMeta) UpsertBurnObjectSegment(bucket, object, mediaID string, segment
 // DeleteBurnObjectSegments removes all chunk rows for an object (e.g. content changed at segment 0).
 func (s SqlMeta) DeleteBurnObjectSegments(bucket, object string) error {
 	return s.withDB("delete burn object segments", func(db *gorm.DB) error {
-		if err := db.Where("bucket = ? AND object_name = ?", bucket, object).Delete(&burnbridgeObjectSegment{}).Error; err != nil {
+		query := db.Where("bucket = ?", bucket)
+		if strings.TrimSpace(object) != "" {
+			query = query.Where("object_name = ?", object)
+		}
+		if err := query.Delete(&burnbridgeObjectSegment{}).Error; err != nil {
 			return mapSQLError("delete burn object segments", err)
 		}
 		return nil
@@ -331,6 +361,133 @@ func (s SqlMeta) ListBurnObjectSegments(bucket, object string) ([]BurnObjectSegm
 		return nil, err
 	}
 	return out, nil
+}
+
+func (s SqlMeta) ExportBurnbridgeBucket(bucket string) (*BurnbridgeBucketBackup, error) {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return nil, fmt.Errorf("export burnbridge bucket: empty bucket")
+	}
+
+	backup := &BurnbridgeBucketBackup{
+		Bucket:        trimmedBucket,
+		BackedUpAtUtc: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+
+	err := s.withDB("export burnbridge bucket", func(db *gorm.DB) error {
+		var metadataRows []metadataEntry
+		if err := db.Where("bucket = ?", trimmedBucket).Order("object_name ASC, attribute ASC").Find(&metadataRows).Error; err != nil {
+			return mapSQLError("export burnbridge bucket metadata", err)
+		}
+		backup.MetadataRows = make([]burnbridgeMetadataRow, 0, len(metadataRows))
+		for _, row := range metadataRows {
+			copied := make([]byte, len(row.Value))
+			copy(copied, row.Value)
+			backup.MetadataRows = append(backup.MetadataRows, burnbridgeMetadataRow{
+				ObjectName: row.ObjectName,
+				Attribute:  row.Attribute,
+				Value:      copied,
+			})
+		}
+
+		var segmentRows []burnbridgeObjectSegment
+		if err := db.Where("bucket = ?", trimmedBucket).Order("object_name ASC, segment_index ASC").Find(&segmentRows).Error; err != nil {
+			return mapSQLError("export burnbridge bucket segments", err)
+		}
+		backup.SegmentRows = make([]burnbridgeSegmentRow, 0, len(segmentRows))
+		for _, row := range segmentRows {
+			backup.SegmentRows = append(backup.SegmentRows, burnbridgeSegmentRow{
+				ObjectName:   row.ObjectName,
+				SegmentIndex: row.SegmentIndex,
+				MediaID:      row.MediaID,
+				ByteOffset:   row.ByteOffset,
+				ByteSize:     row.ByteSize,
+				ChecksumMD5:  row.ChecksumMD5,
+				BurnState:    row.BurnState,
+				DiscExtents:  row.DiscExtents,
+				CreatedAt:    row.CreatedAt,
+				UpdatedAt:    row.UpdatedAt,
+			})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return backup, nil
+}
+
+func (s SqlMeta) RestoreBurnbridgeBucket(backup *BurnbridgeBucketBackup) error {
+	if backup == nil {
+		return nil
+	}
+	trimmedBucket := strings.TrimSpace(backup.Bucket)
+	if trimmedBucket == "" {
+		return fmt.Errorf("restore burnbridge bucket: empty bucket")
+	}
+
+	return s.withDB("restore burnbridge bucket", func(db *gorm.DB) error {
+		return db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("bucket = ?", trimmedBucket).Delete(&metadataEntry{}).Error; err != nil {
+				return mapSQLError("restore burnbridge bucket metadata reset", err)
+			}
+			if err := tx.Where("bucket = ?", trimmedBucket).Delete(&burnbridgeObjectSegment{}).Error; err != nil {
+				return mapSQLError("restore burnbridge bucket segment reset", err)
+			}
+
+			if len(backup.MetadataRows) > 0 {
+				rows := make([]metadataEntry, 0, len(backup.MetadataRows))
+				now := time.Now().UTC()
+				for _, row := range backup.MetadataRows {
+					copied := make([]byte, len(row.Value))
+					copy(copied, row.Value)
+					rows = append(rows, metadataEntry{
+						Bucket:     trimmedBucket,
+						ObjectName: row.ObjectName,
+						Attribute:  row.Attribute,
+						Value:      copied,
+						CreatedAt:  now,
+						UpdatedAt:  now,
+					})
+				}
+				if err := tx.Create(&rows).Error; err != nil {
+					return mapSQLError("restore burnbridge bucket metadata insert", err)
+				}
+			}
+
+			if len(backup.SegmentRows) > 0 {
+				rows := make([]burnbridgeObjectSegment, 0, len(backup.SegmentRows))
+				now := time.Now().UTC()
+				for _, row := range backup.SegmentRows {
+					rows = append(rows, burnbridgeObjectSegment{
+						Bucket:       trimmedBucket,
+						ObjectName:   row.ObjectName,
+						SegmentIndex: row.SegmentIndex,
+						MediaID:      row.MediaID,
+						ByteOffset:   row.ByteOffset,
+						ByteSize:     row.ByteSize,
+						ChecksumMD5:  row.ChecksumMD5,
+						BurnState:    row.BurnState,
+						DiscExtents:  row.DiscExtents,
+						CreatedAt:    coalesceTime(row.CreatedAt, now),
+						UpdatedAt:    coalesceTime(row.UpdatedAt, now),
+					})
+				}
+				if err := tx.Create(&rows).Error; err != nil {
+					return mapSQLError("restore burnbridge bucket segments insert", err)
+				}
+			}
+			return nil
+		})
+	})
+}
+
+func coalesceTime(value time.Time, fallback time.Time) time.Time {
+	if value.IsZero() {
+		return fallback
+	}
+	return value
 }
 
 // CommittedObjectSummary is one object row derived from SQLite metadata (burnbridge PutObject completion).

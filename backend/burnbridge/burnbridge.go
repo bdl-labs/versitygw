@@ -169,9 +169,15 @@ type BurnBridge struct {
 	recorderS3PresignedGetURL string
 
 	// activeBucket is the S3 bucket name for this session, derived from the disc volume label at New().
-	activeBucket   string
-	volumeLabelRaw string
-	allowBucketBinding bool
+	activeBucket          string
+	volumeLabelRaw        string
+	allowBucketBinding    bool
+	stateMu               sync.Mutex
+	lastDiscSerialHex     string
+	lastReadyVolumeLabel  string
+	lastNoDiscBackupPath  string
+	lastNoDiscBackupBucket string
+	metaDBPath            string
 }
 
 var _ backend.Backend = &BurnBridge{}
@@ -336,6 +342,17 @@ func parseReadyReason(message string) (reasonCode string, reasonDetail string) {
 	return code, detail
 }
 
+func readyResponseIndicatesNoDisc(resp *burnbridgev1.TestUnitReadyResponse) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.GetReady() {
+		return false
+	}
+	reasonCode, _ := parseReadyReason(resp.GetMessage())
+	return strings.EqualFold(strings.TrimSpace(reasonCode), "NoDisc")
+}
+
 func ensureWritableCapacity(doc *meta.BurnbridgeDiscInfoDocument, contentLen int64) error {
 	if doc == nil || contentLen <= 0 {
 		return nil
@@ -441,8 +458,8 @@ func New(opts Options) (*BurnBridge, error) {
 		pingErr := grpcConnectivityPing(pingCtx, client)
 		pingCancel()
 		if pingErr != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("burnbridge grpc ping: %w", pingErr)
+			slog.Warn("burnbridge: startup grpc ping failed; continuing in degraded mode",
+				"error", pingErr)
 		}
 	}
 
@@ -478,11 +495,13 @@ func New(opts Options) (*BurnBridge, error) {
 		recorderS3PathStyle:       opts.RecorderS3ForcePathStyle,
 		recorderS3PresignedGetURL: strings.TrimSpace(opts.RecorderS3PresignedGetURL),
 		putQueueSem:               make(chan struct{}, defaultPutQueueLimit),
+		metaDBPath:                opts.DBPath,
 	}
 	if strings.TrimSpace(activeBucket) != "" {
 		if err := bridge.syncImportedBucketState(context.Background(), activeBucket); err != nil {
-			_ = conn.Close()
-			return nil, fmt.Errorf("burnbridge: startup sync imported bucket state: %w", err)
+			slog.Warn("burnbridge: startup sync imported bucket state failed; continuing with current runtime state",
+				"bucket", activeBucket,
+				"error", err)
 		}
 	}
 	return bridge, nil
@@ -506,6 +525,11 @@ func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
 		return fmt.Errorf("burnbridge TestUnitReady: %w", err)
 	}
 	if !resp.GetReady() {
+		if readyResponseIndicatesNoDisc(resp) {
+			if syncErr := b.handleNoDiscState(); syncErr != nil {
+				return syncErr
+			}
+		}
 		reasonCode, reasonDetail := parseReadyReason(resp.GetMessage())
 		slog.Warn("burnbridge: recorder not ready",
 			"reason_code", reasonCode,
@@ -531,13 +555,24 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	if resp == nil {
 		return nil
 	}
+	if !resp.GetReady() {
+		if readyResponseIndicatesNoDisc(resp) {
+			return b.handleNoDiscState()
+		}
+		return nil
+	}
 
 	rawVolume := strings.TrimSpace(resp.GetVolumeLabel())
 	if rawVolume == "" {
 		return nil
 	}
 
+	b.captureReadyDiscIdentity(resp)
+
 	if strings.EqualFold(strings.TrimSpace(b.volumeLabelRaw), rawVolume) && strings.TrimSpace(b.activeBucket) != "" {
+		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
+			return err
+		}
 		return b.syncImportedBucketState(context.Background(), b.activeBucket)
 	}
 
@@ -547,6 +582,9 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 			b.udfLabel = strings.TrimSpace(binding.UdfVolumeLabel)
 		}
 		b.volumeLabelRaw = rawVolume
+		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
+			return err
+		}
 		return b.syncImportedBucketState(context.Background(), b.activeBucket)
 	}
 
@@ -562,6 +600,9 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	b.volumeLabelRaw = rawVolume
 	b.udfLabel = rawVolume
 	if err := persistDiscBucketBinding(b.meta, rawVolume, b.activeBucket, b.udfLabel); err != nil {
+		return err
+	}
+	if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 		return err
 	}
 	return b.syncImportedBucketState(context.Background(), b.activeBucket)
@@ -635,6 +676,52 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 	return nil
 }
 
+func (b *BurnBridge) restoreBucketStateFromMetadata(bucket string) bool {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return false
+	}
+
+	bindings, err := b.meta.ListBurnbridgeDiscBucketBindings(trimmedBucket)
+	if err == nil {
+		for _, binding := range bindings {
+			if strings.TrimSpace(binding.Bucket) == "" {
+				continue
+			}
+			b.activeBucket = strings.TrimSpace(binding.Bucket)
+			if strings.TrimSpace(binding.ProbeVolumeLabel) != "" {
+				b.volumeLabelRaw = strings.TrimSpace(binding.ProbeVolumeLabel)
+			}
+			if strings.TrimSpace(binding.UdfVolumeLabel) != "" {
+				b.udfLabel = strings.TrimSpace(binding.UdfVolumeLabel)
+			}
+			return true
+		}
+	}
+
+	raw, err := b.meta.GetBurnbridgeDiscInfoJSON(trimmedBucket)
+	if err != nil || len(raw) == 0 {
+		return false
+	}
+
+	var discInfo meta.BurnbridgeDiscInfoDocument
+	if err := json.Unmarshal(raw, &discInfo); err != nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(discInfo.Bucket), trimmedBucket) {
+		return false
+	}
+
+	b.activeBucket = trimmedBucket
+	if strings.TrimSpace(discInfo.VolumeLabel) != "" {
+		b.volumeLabelRaw = strings.TrimSpace(discInfo.VolumeLabel)
+		if strings.TrimSpace(b.udfLabel) == "" {
+			b.udfLabel = strings.TrimSpace(discInfo.VolumeLabel)
+		}
+	}
+	return true
+}
+
 func (b *BurnBridge) ensureImportedBucketState(ctx context.Context, bucket string) error {
 	if strings.TrimSpace(bucket) == "" {
 		return nil
@@ -651,8 +738,190 @@ func (b *BurnBridge) ensureImportedBucketState(ctx context.Context, bucket strin
 	return b.syncImportedBucketState(ctx, bucket)
 }
 
+func (b *BurnBridge) ensureActiveBucketLoaded(ctx context.Context) error {
+	if strings.TrimSpace(b.activeBucket) != "" {
+		_ = b.restoreBucketStateFromMetadata(b.activeBucket)
+	}
+
+	resp, err := b.grpc.TestUnitReady(ctx, &burnbridgev1.TestUnitReadyRequest{})
+	if err != nil {
+		if isGRPCUnimplemented(err) {
+			return nil
+		}
+		return fmt.Errorf("burnbridge TestUnitReady: %w", err)
+	}
+	if resp == nil || !resp.GetReady() {
+		if readyResponseIndicatesNoDisc(resp) {
+			return b.handleNoDiscState()
+		}
+		return nil
+	}
+
+	if err := b.syncActiveDiscState(resp); err != nil {
+		return err
+	}
+	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
+		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
+			return fmt.Errorf("burnbridge: persist disc info: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (b *BurnBridge) captureReadyDiscIdentity(resp *burnbridgev1.TestUnitReadyResponse) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	b.lastDiscSerialHex = strings.TrimSpace(resp.GetDiscSerialNumberHex())
+	b.lastReadyVolumeLabel = strings.TrimSpace(resp.GetVolumeLabel())
+}
+
+func (b *BurnBridge) handleNoDiscState() error {
+	b.stateMu.Lock()
+	activeBucket := strings.TrimSpace(b.activeBucket)
+	lastBackupBucket := strings.TrimSpace(b.lastNoDiscBackupBucket)
+	b.stateMu.Unlock()
+
+	if activeBucket != "" && !strings.EqualFold(activeBucket, lastBackupBucket) {
+		if err := b.backupAndClearBucketMetadata(activeBucket); err != nil {
+			return err
+		}
+	}
+
+	b.stateMu.Lock()
+	b.activeBucket = ""
+	b.volumeLabelRaw = ""
+	b.udfLabel = ""
+	b.stateMu.Unlock()
+	return nil
+}
+
+func (b *BurnBridge) backupAndClearBucketMetadata(bucket string) error {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return nil
+	}
+
+	backup, err := b.meta.ExportBurnbridgeBucket(trimmedBucket)
+	if err != nil {
+		return fmt.Errorf("burnbridge: export bucket backup for no-disc state: %w", err)
+	}
+
+	backupDir := filepath.Join(filepath.Dir(b.metaDBPathHint()), "disc-backups")
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		return fmt.Errorf("burnbridge: create no-disc backup directory: %w", err)
+	}
+
+	fileName := fmt.Sprintf("%s-%s.json", sanitizeBackupFilePart(trimmedBucket), time.Now().UTC().Format("20060102T150405.000000000Z"))
+	backupPath := filepath.Join(backupDir, fileName)
+	payload, err := json.MarshalIndent(backup, "", "  ")
+	if err != nil {
+		return fmt.Errorf("burnbridge: encode no-disc bucket backup: %w", err)
+	}
+	if err := os.WriteFile(backupPath, payload, 0o644); err != nil {
+		return fmt.Errorf("burnbridge: write no-disc bucket backup: %w", err)
+	}
+
+	if err := b.meta.DeleteAttributes(trimmedBucket, ""); err != nil {
+		return fmt.Errorf("burnbridge: clear metadata for no-disc state: %w", err)
+	}
+	if err := b.meta.DeleteBurnObjectSegments(trimmedBucket, ""); err != nil {
+		return fmt.Errorf("burnbridge: clear segments for no-disc state: %w", err)
+	}
+
+	b.stateMu.Lock()
+	b.lastNoDiscBackupPath = backupPath
+	b.lastNoDiscBackupBucket = trimmedBucket
+	b.stateMu.Unlock()
+
+	slog.Info("burnbridge: no-disc state backed up and cleared",
+		"bucket", trimmedBucket,
+		"backup_path", backupPath)
+	return nil
+}
+
+func (b *BurnBridge) metaDBPathHint() string {
+	if strings.TrimSpace(b.metaDBPath) == "" {
+		return "."
+	}
+	return b.metaDBPath
+}
+
+func sanitizeBackupFilePart(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "bucket"
+	}
+	replacer := strings.NewReplacer("\\", "-", "/", "-", ":", "-", "*", "-", "?", "-", "\"", "-", "<", "-", ">", "-", "|", "-")
+	normalized := replacer.Replace(trimmed)
+	normalized = strings.Trim(normalized, ".- ")
+	if normalized == "" {
+		return "bucket"
+	}
+	return normalized
+}
+
+func (b *BurnBridge) maybeRestoreNoDiscBackup(resp *burnbridgev1.TestUnitReadyResponse) error {
+	if resp == nil || !resp.GetReady() {
+		return nil
+	}
+
+	b.stateMu.Lock()
+	backupPath := strings.TrimSpace(b.lastNoDiscBackupPath)
+	backupBucket := strings.TrimSpace(b.lastNoDiscBackupBucket)
+	lastSerial := strings.TrimSpace(b.lastDiscSerialHex)
+	lastVolume := strings.TrimSpace(b.lastReadyVolumeLabel)
+	currentBucket := strings.TrimSpace(b.activeBucket)
+	b.stateMu.Unlock()
+
+	if backupPath == "" || backupBucket == "" || currentBucket == "" {
+		return nil
+	}
+
+	currentSerial := strings.TrimSpace(resp.GetDiscSerialNumberHex())
+	currentVolume := strings.TrimSpace(resp.GetVolumeLabel())
+	sameDisc := false
+	if currentSerial != "" && lastSerial != "" && strings.EqualFold(currentSerial, lastSerial) {
+		sameDisc = true
+	} else if currentVolume != "" && lastVolume != "" && strings.EqualFold(currentVolume, lastVolume) {
+		sameDisc = true
+	}
+	if !sameDisc || !strings.EqualFold(currentBucket, backupBucket) {
+		return nil
+	}
+
+	raw, err := os.ReadFile(backupPath)
+	if err != nil {
+		return fmt.Errorf("burnbridge: read no-disc backup: %w", err)
+	}
+	var backup meta.BurnbridgeBucketBackup
+	if err := json.Unmarshal(raw, &backup); err != nil {
+		return fmt.Errorf("burnbridge: decode no-disc backup: %w", err)
+	}
+	if err := b.meta.RestoreBurnbridgeBucket(&backup); err != nil {
+		return fmt.Errorf("burnbridge: restore no-disc backup: %w", err)
+	}
+
+	b.stateMu.Lock()
+	b.lastNoDiscBackupPath = ""
+	b.lastNoDiscBackupBucket = ""
+	b.stateMu.Unlock()
+
+	slog.Info("burnbridge: restored no-disc backup after same disc reinserted",
+		"bucket", backupBucket,
+		"backup_path", backupPath)
+	return nil
+}
+
 func (b *BurnBridge) burnbridgeBucketExists(name string) bool {
-	return name != "" && name == b.activeBucket
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		return false
+	}
+	if trimmedName == strings.TrimSpace(b.activeBucket) {
+		return true
+	}
+	return b.restoreBucketStateFromMetadata(trimmedName)
 }
 
 func (b *BurnBridge) createBucketBindingAllowed() bool {
@@ -713,7 +982,8 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 // Bucket APIs
 // ------------------------------
 
-func (b *BurnBridge) ListBuckets(context.Context, s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
+func (b *BurnBridge) ListBuckets(ctx context.Context, _ s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
+	_ = b.ensureActiveBucketLoaded(ctx)
 	name := b.activeBucket
 	if strings.TrimSpace(name) == "" {
 		return s3response.ListAllMyBucketsResult{
@@ -767,6 +1037,9 @@ func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput
 func (b *BurnBridge) HeadBucket(ctx context.Context, input *s3.HeadBucketInput) (*s3.HeadBucketOutput, error) {
 	if input == nil || input.Bucket == nil {
 		return nil, fmt.Errorf("bucket required")
+	}
+	if err := b.ensureActiveBucketLoaded(ctx); err != nil {
+		return nil, err
 	}
 	bucket := *input.Bucket
 	if !b.burnbridgeBucketExists(bucket) {
