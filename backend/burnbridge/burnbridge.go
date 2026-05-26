@@ -95,7 +95,7 @@ type Options struct {
 	RecorderS3ForcePathStyle  bool
 	RecorderS3PresignedGetURL string // optional; if set, recorder may prefer GET to this URL
 
-	AllowCreateBucketBinding bool
+	AllowCreateBucketBinding     bool
 	ManageRecorderProcessLocally bool
 	RecorderServiceName          string
 	RecorderProcessPattern       string
@@ -169,15 +169,15 @@ type BurnBridge struct {
 	recorderS3PresignedGetURL string
 
 	// activeBucket is the S3 bucket name for this session, derived from the disc volume label at New().
-	activeBucket          string
-	volumeLabelRaw        string
-	allowBucketBinding    bool
-	stateMu               sync.Mutex
-	lastDiscSerialHex     string
-	lastReadyVolumeLabel  string
-	lastNoDiscBackupPath  string
+	activeBucket           string
+	volumeLabelRaw         string
+	allowBucketBinding     bool
+	stateMu                sync.Mutex
+	lastDiscSerialHex      string
+	lastReadyVolumeLabel   string
+	lastNoDiscBackupPath   string
 	lastNoDiscBackupBucket string
-	metaDBPath            string
+	metaDBPath             string
 }
 
 var _ backend.Backend = &BurnBridge{}
@@ -199,8 +199,9 @@ const (
 
 	defaultChunkSizeBytes = 1 << 20
 
-	listDefaultMaxKeys   int32 = 1000
-	defaultPutQueueLimit       = 512
+	listDefaultMaxKeys     int32 = 1000
+	defaultPutQueueLimit         = 512
+	burnbridgeACLAttribute       = "acl"
 )
 
 // burnbridgeWORMNoDelete is returned for delete operations on WORM optical media.
@@ -259,6 +260,104 @@ func sanitizeS3BucketFromVolumeLabel(raw string) (string, error) {
 
 func volumeLabelFromBucketName(bucket string) string {
 	return strings.TrimSpace(strings.ToUpper(bucket))
+}
+
+func defaultBucketACL(owner string) auth.ACL {
+	trimmedOwner := strings.TrimSpace(owner)
+	return auth.ACL{
+		Owner: trimmedOwner,
+		Grantees: []auth.Grantee{
+			{
+				Permission: auth.PermissionFullControl,
+				Access:     trimmedOwner,
+				Type:       types.TypeCanonicalUser,
+			},
+		},
+	}
+}
+
+func (b *BurnBridge) storeBucketACL(bucket string, data []byte) error {
+	if strings.TrimSpace(bucket) == "" {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if len(data) == 0 {
+		return fmt.Errorf("bucket acl is empty")
+	}
+	if _, err := auth.ParseACL(data); err != nil {
+		return fmt.Errorf("parse bucket acl: %w", err)
+	}
+	return b.meta.StoreAttribute(nil, bucket, "", burnbridgeACLAttribute, data)
+}
+
+func (b *BurnBridge) loadBucketACL(bucket string) (auth.ACL, []byte, error) {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return auth.ACL{}, nil, s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+
+	raw, err := b.meta.RetrieveAttribute(nil, trimmedBucket, "", burnbridgeACLAttribute)
+	if err == nil {
+		acl, parseErr := auth.ParseACL(raw)
+		if parseErr != nil {
+			return auth.ACL{}, nil, fmt.Errorf("parse bucket acl: %w", parseErr)
+		}
+		return acl, raw, nil
+	}
+	if !errors.Is(err, meta.ErrNoSuchKey) {
+		return auth.ACL{}, nil, err
+	}
+
+	legacy := defaultBucketACL(trimmedBucket)
+	legacyRaw, marshalErr := json.Marshal(legacy)
+	if marshalErr != nil {
+		return auth.ACL{}, nil, fmt.Errorf("marshal legacy bucket acl: %w", marshalErr)
+	}
+	return legacy, legacyRaw, nil
+}
+
+func (b *BurnBridge) ensureBucketACLForOwner(bucket, owner string) (auth.ACL, []byte, error) {
+	acl, raw, err := b.loadBucketACL(bucket)
+	if err != nil {
+		return auth.ACL{}, nil, err
+	}
+
+	trimmedOwner := strings.TrimSpace(owner)
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedOwner == "" || !strings.EqualFold(strings.TrimSpace(acl.Owner), trimmedBucket) {
+		return acl, raw, nil
+	}
+
+	bootstrap := defaultBucketACL(trimmedOwner)
+	bootstrapRaw, marshalErr := json.Marshal(bootstrap)
+	if marshalErr != nil {
+		return auth.ACL{}, nil, fmt.Errorf("marshal bucket acl bootstrap: %w", marshalErr)
+	}
+	if err := b.storeBucketACL(trimmedBucket, bootstrapRaw); err != nil {
+		return auth.ACL{}, nil, err
+	}
+	return bootstrap, bootstrapRaw, nil
+}
+
+func (b *BurnBridge) bootstrapBucketACL(bucket, owner string) error {
+	trimmedBucket := strings.TrimSpace(bucket)
+	trimmedOwner := strings.TrimSpace(owner)
+	if trimmedBucket == "" || trimmedOwner == "" {
+		return nil
+	}
+
+	_, err := b.meta.RetrieveAttribute(nil, trimmedBucket, "", burnbridgeACLAttribute)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, meta.ErrNoSuchKey) {
+		return err
+	}
+
+	raw, marshalErr := json.Marshal(defaultBucketACL(trimmedOwner))
+	if marshalErr != nil {
+		return fmt.Errorf("marshal bucket acl bootstrap: %w", marshalErr)
+	}
+	return b.storeBucketACL(trimmedBucket, raw)
 }
 
 func probeRecorderDiscAtStartup(ctx context.Context, client burnbridgev1.BurnBridgeClient) (bucket string, rawVolume string, readyResp *burnbridgev1.TestUnitReadyResponse, err error) {
@@ -483,8 +582,8 @@ func New(opts Options) (*BurnBridge, error) {
 		cancelJobTimeout: opts.CancelJobTimeout,
 		putObjectTimeout: opts.PutObjectTimeout,
 
-		activeBucket:   activeBucket,
-		volumeLabelRaw: rawVol,
+		activeBucket:       activeBucket,
+		volumeLabelRaw:     rawVol,
 		allowBucketBinding: opts.AllowCreateBucketBinding,
 
 		recorderS3Endpoint:        strings.TrimSpace(opts.RecorderS3Endpoint),
@@ -982,22 +1081,69 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 // Bucket APIs
 // ------------------------------
 
-func (b *BurnBridge) ListBuckets(ctx context.Context, _ s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
+func (b *BurnBridge) ListBuckets(ctx context.Context, input s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
 	_ = b.ensureActiveBucketLoaded(ctx)
-	name := b.activeBucket
-	if strings.TrimSpace(name) == "" {
-		return s3response.ListAllMyBucketsResult{
-			Buckets: s3response.ListAllMyBucketsList{Bucket: []s3response.ListAllMyBucketsEntry{}},
-		}, nil
+	name := strings.TrimSpace(b.activeBucket)
+	result := s3response.ListAllMyBucketsResult{
+		Buckets: s3response.ListAllMyBucketsList{Bucket: []s3response.ListAllMyBucketsEntry{}},
+		Owner:   s3response.CanonicalUser{ID: input.Owner},
+		Prefix:  input.Prefix,
 	}
-	return s3response.ListAllMyBucketsResult{
-		Buckets: s3response.ListAllMyBucketsList{
-			Bucket: []s3response.ListAllMyBucketsEntry{{Name: name, CreationDate: time.Now()}},
-		},
-	}, nil
+	if name == "" {
+		return result, nil
+	}
+	if input.Prefix != "" && !strings.HasPrefix(name, input.Prefix) {
+		return result, nil
+	}
+	if input.ContinuationToken != "" && name <= input.ContinuationToken {
+		return result, nil
+	}
+	if input.MaxBuckets <= 0 {
+		return result, nil
+	}
+	if !input.IsAdmin {
+		if err := b.bootstrapBucketACL(name, input.Owner); err != nil {
+			return s3response.ListAllMyBucketsResult{}, err
+		}
+		acl, _, err := b.ensureBucketACLForOwner(name, input.Owner)
+		if err != nil {
+			return s3response.ListAllMyBucketsResult{}, err
+		}
+		if !strings.EqualFold(strings.TrimSpace(acl.Owner), strings.TrimSpace(input.Owner)) {
+			return result, nil
+		}
+	}
+
+	result.Buckets.Bucket = []s3response.ListAllMyBucketsEntry{{Name: name, CreationDate: time.Now()}}
+	return result, nil
 }
 
-func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput, _ []byte) error {
+func (b *BurnBridge) ListBucketsAndOwners(ctx context.Context) ([]s3response.Bucket, error) {
+	_ = b.ensureActiveBucketLoaded(ctx)
+	name := strings.TrimSpace(b.activeBucket)
+	if name == "" {
+		return []s3response.Bucket{}, nil
+	}
+
+	acl, _, err := b.loadBucketACL(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return []s3response.Bucket{{
+		Name:  name,
+		Owner: acl.Owner,
+	}}, nil
+}
+
+func (b *BurnBridge) ChangeBucketOwner(ctx context.Context, bucket, owner string) error {
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	return auth.UpdateBucketACLOwner(ctx, b, bucket, owner)
+}
+
+func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput, defaultACL []byte) error {
 	if input == nil || input.Bucket == nil {
 		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
@@ -1020,8 +1166,18 @@ func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput
 		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
 
+	if len(defaultACL) == 0 {
+		defaultACL, err = json.Marshal(defaultBucketACL(requestedBucket))
+		if err != nil {
+			return fmt.Errorf("marshal default bucket acl: %w", err)
+		}
+	}
+
 	if strings.TrimSpace(b.activeBucket) == "" {
-		return b.bindActiveBucket(requestedBucket, targetVolumeLabel)
+		if err := b.bindActiveBucket(requestedBucket, targetVolumeLabel); err != nil {
+			return err
+		}
+		return b.storeBucketACL(requestedBucket, defaultACL)
 	}
 	if strings.EqualFold(b.activeBucket, requestedBucket) {
 		return s3err.GetAPIError(s3err.ErrBucketAlreadyOwnedByYou)
@@ -1030,7 +1186,10 @@ func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput
 		return s3err.GetAPIError(s3err.ErrBucketAlreadyExists)
 	}
 
-	return b.bindActiveBucket(requestedBucket, targetVolumeLabel)
+	if err := b.bindActiveBucket(requestedBucket, targetVolumeLabel); err != nil {
+		return err
+	}
+	return b.storeBucketACL(requestedBucket, defaultACL)
 }
 
 // HeadBucket confirms the bucket exists and the recorder reports the optical unit ready for this bucket.
@@ -1080,17 +1239,15 @@ func (b *BurnBridge) GetBucketAcl(_ context.Context, input *s3.GetBucketAclInput
 	if input == nil || input.Bucket == nil || !b.burnbridgeBucketExists(*input.Bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	acl := auth.ACL{
-		Owner: b.activeBucket,
-		Grantees: []auth.Grantee{
-			{
-				Permission: auth.PermissionFullControl,
-				Access:     b.activeBucket,
-				Type:       types.TypeCanonicalUser,
-			},
-		},
+	_, raw, err := b.loadBucketACL(*input.Bucket)
+	return raw, err
+}
+
+func (b *BurnBridge) PutBucketAcl(_ context.Context, bucket string, data []byte) error {
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	return json.Marshal(acl)
+	return b.storeBucketACL(bucket, data)
 }
 
 // GetBucketTagging returns an empty tag set for compatibility (no backend tag persistence).
@@ -1107,6 +1264,13 @@ func (b *BurnBridge) GetBucketPolicy(_ context.Context, bucket string) ([]byte, 
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 	return nil, s3err.GetAPIError(s3err.ErrNoSuchBucketPolicy)
+}
+
+func (b *BurnBridge) DeleteBucketPolicy(_ context.Context, bucket string) error {
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	return nil
 }
 
 // GetBucketCors returns no per-bucket CORS config so gateway fallback can apply.
@@ -2050,7 +2214,7 @@ func (b *BurnBridge) recvSegmentUploadAck(stream grpc.BidiStreamingClient[burnbr
 			return err
 		}
 		snapshot[segmentIdx] = meta.BurnObjectSegment{
-			MediaID:      b.volumeLabelRaw,
+			MediaID:     b.volumeLabelRaw,
 			ByteOffset:  offset,
 			ByteSize:    segLen,
 			ChecksumMD5: digest,
@@ -2189,7 +2353,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 				return offset, nil, stats, err
 			}
 			segmentSnapshot[segmentIdx] = meta.BurnObjectSegment{
-				MediaID:      b.volumeLabelRaw,
+				MediaID:     b.volumeLabelRaw,
 				ByteOffset:  offset,
 				ByteSize:    int64(len(chunk)),
 				ChecksumMD5: digest,
@@ -2216,7 +2380,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 			if !skip {
 				_ = b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentFailed, nil)
 				segmentSnapshot[segmentIdx] = meta.BurnObjectSegment{
-					MediaID:      b.volumeLabelRaw,
+					MediaID:     b.volumeLabelRaw,
 					ByteOffset:  offset,
 					ByteSize:    int64(len(chunk)),
 					ChecksumMD5: digest,

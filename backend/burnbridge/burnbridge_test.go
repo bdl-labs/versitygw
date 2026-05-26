@@ -15,20 +15,22 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/versity/versitygw/s3response"
-	"github.com/versity/versitygw/backend/meta"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/versity/versitygw/auth"
 	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
+	"github.com/versity/versitygw/backend/meta"
+	"github.com/versity/versitygw/s3response"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 )
 
 type testBurnBridgeClient struct {
-	createJobFn func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error)
-	uploadObjectFn func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error)
-	commitJobFn func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error)
-	cancelJobFn func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error)
-	registerPullSourceFn func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
-	finalizeFn func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
+	createJobFn           func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error)
+	uploadObjectFn        func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error)
+	commitJobFn           func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error)
+	cancelJobFn           func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error)
+	registerPullSourceFn  func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
+	finalizeFn            func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
 	importedBucketStateFn func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error)
 }
 
@@ -141,6 +143,163 @@ func TestCreateBucketAllowsBlankDiscBinding(t *testing.T) {
 	}
 	if b.udfLabel != "ARCHIVE-20260523" {
 		t.Fatalf("udf label mismatch: %q", b.udfLabel)
+	}
+}
+
+func TestCreateBucketPersistsProvidedACLAndFiltersListBuckets(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	aclRaw, err := json.Marshal(auth.ACL{
+		Owner: "drive",
+		Grantees: []auth.Grantee{{
+			Permission: auth.PermissionFullControl,
+			Access:     "drive",
+			Type:       types.TypeCanonicalUser,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:               store,
+		grpc:               testBurnBridgeClient{},
+		allowBucketBinding: true,
+		activeBucket:       "DISC0001",
+		volumeLabelRaw:     "DISC0001",
+		udfLabel:           "DISC0001",
+	}
+
+	err = b.CreateBucket(context.Background(), &s3.CreateBucketInput{
+		Bucket: ptr("archive-20260523"),
+	}, aclRaw)
+	if err != nil {
+		t.Fatalf("CreateBucket returned error: %v", err)
+	}
+
+	gotACLRaw, err := b.GetBucketAcl(context.Background(), &s3.GetBucketAclInput{Bucket: ptr("archive-20260523")})
+	if err != nil {
+		t.Fatalf("GetBucketAcl returned error: %v", err)
+	}
+	gotACL, err := auth.ParseACL(gotACLRaw)
+	if err != nil {
+		t.Fatalf("ParseACL returned error: %v", err)
+	}
+	if gotACL.Owner != "drive" {
+		t.Fatalf("expected owner drive, got %q", gotACL.Owner)
+	}
+
+	userList, err := b.ListBuckets(context.Background(), s3response.ListBucketsInput{
+		Owner:      "drive",
+		MaxBuckets: 1000,
+	})
+	if err != nil {
+		t.Fatalf("ListBuckets user returned error: %v", err)
+	}
+	if len(userList.Buckets.Bucket) != 1 || userList.Buckets.Bucket[0].Name != "archive-20260523" {
+		t.Fatalf("expected user bucket list to contain archive-20260523, got %+v", userList.Buckets.Bucket)
+	}
+
+	otherList, err := b.ListBuckets(context.Background(), s3response.ListBucketsInput{
+		Owner:      "other",
+		MaxBuckets: 1000,
+	})
+	if err != nil {
+		t.Fatalf("ListBuckets other returned error: %v", err)
+	}
+	if len(otherList.Buckets.Bucket) != 0 {
+		t.Fatalf("expected other user to see no buckets, got %+v", otherList.Buckets.Bucket)
+	}
+
+	adminBuckets, err := b.ListBucketsAndOwners(context.Background())
+	if err != nil {
+		t.Fatalf("ListBucketsAndOwners returned error: %v", err)
+	}
+	if len(adminBuckets) != 1 || adminBuckets[0].Owner != "drive" {
+		t.Fatalf("expected admin list owner drive, got %+v", adminBuckets)
+	}
+}
+
+func TestChangeBucketOwnerUpdatesACL(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		activeBucket: "archive-20260523",
+	}
+
+	initialACL, err := json.Marshal(defaultBucketACL("drive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.storeBucketACL("archive-20260523", initialACL); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := b.ChangeBucketOwner(context.Background(), "archive-20260523", "admin"); err != nil {
+		t.Fatalf("ChangeBucketOwner returned error: %v", err)
+	}
+
+	gotACLRaw, err := b.GetBucketAcl(context.Background(), &s3.GetBucketAclInput{Bucket: ptr("archive-20260523")})
+	if err != nil {
+		t.Fatalf("GetBucketAcl returned error: %v", err)
+	}
+	gotACL, err := auth.ParseACL(gotACLRaw)
+	if err != nil {
+		t.Fatalf("ParseACL returned error: %v", err)
+	}
+	if gotACL.Owner != "admin" {
+		t.Fatalf("expected owner admin, got %q", gotACL.Owner)
+	}
+}
+
+func TestListBucketsBootstrapsACLForAutoMappedDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		activeBucket: "e60302480000000025891a00",
+		udfLabel:     "E60302480000000025891A00",
+	}
+
+	res, err := b.ListBuckets(context.Background(), s3response.ListBucketsInput{
+		Owner:      "drive",
+		MaxBuckets: 1000,
+	})
+	if err != nil {
+		t.Fatalf("ListBuckets returned error: %v", err)
+	}
+	if len(res.Buckets.Bucket) != 1 || res.Buckets.Bucket[0].Name != "e60302480000000025891a00" {
+		t.Fatalf("expected auto-mapped bucket in result, got %+v", res.Buckets.Bucket)
+	}
+
+	raw, err := b.GetBucketAcl(context.Background(), &s3.GetBucketAclInput{Bucket: ptr("e60302480000000025891a00")})
+	if err != nil {
+		t.Fatalf("GetBucketAcl returned error: %v", err)
+	}
+	acl, err := auth.ParseACL(raw)
+	if err != nil {
+		t.Fatalf("ParseACL returned error: %v", err)
+	}
+	if acl.Owner != "drive" {
+		t.Fatalf("expected bootstrapped owner drive, got %q", acl.Owner)
 	}
 }
 
@@ -260,9 +419,9 @@ func TestLoadBurnSegmentSnapshotFiltersDifferentMedia(t *testing.T) {
 	}
 
 	b := &BurnBridge{
-		meta:         store,
-		grpc:         testBurnBridgeClient{},
-		activeBucket: "bucket1",
+		meta:           store,
+		grpc:           testBurnBridgeClient{},
+		activeBucket:   "bucket1",
 		volumeLabelRaw: "DISC-A",
 	}
 
@@ -342,9 +501,9 @@ func TestHeadAndListUseMetadataOnly(t *testing.T) {
 	}
 
 	b := &BurnBridge{
-		meta:        store,
-		grpc:        testBurnBridgeClient{},
-		readMount:   t.TempDir(),
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		readMount:    t.TempDir(),
 		activeBucket: "bucket1",
 	}
 
@@ -489,12 +648,12 @@ func TestHandleNoDiscStateBacksUpAndClearsActiveBucket(t *testing.T) {
 	}
 
 	b := &BurnBridge{
-		meta:         store,
-		grpc:         testBurnBridgeClient{},
-		activeBucket: "disc-a",
+		meta:           store,
+		grpc:           testBurnBridgeClient{},
+		activeBucket:   "disc-a",
 		volumeLabelRaw: "DISC-A",
-		udfLabel:     "DISC-A",
-		metaDBPath:   dbPath,
+		udfLabel:       "DISC-A",
+		metaDBPath:     dbPath,
 	}
 
 	if err := b.handleNoDiscState(); err != nil {
@@ -531,12 +690,12 @@ func TestMaybeRestoreNoDiscBackupRestoresSameDiscBucket(t *testing.T) {
 	}
 
 	b := &BurnBridge{
-		meta:         store,
-		grpc:         testBurnBridgeClient{},
-		activeBucket: "disc-a",
+		meta:           store,
+		grpc:           testBurnBridgeClient{},
+		activeBucket:   "disc-a",
 		volumeLabelRaw: "DISC-A",
-		udfLabel:     "DISC-A",
-		metaDBPath:   dbPath,
+		udfLabel:       "DISC-A",
+		metaDBPath:     dbPath,
 	}
 
 	if err := b.handleNoDiscState(); err != nil {
@@ -676,11 +835,11 @@ type testUploadObjectStream struct {
 }
 
 func (s *testUploadObjectStream) Header() (metadata.MD, error) { return nil, nil }
-func (s *testUploadObjectStream) Trailer() metadata.MD          { return nil }
-func (s *testUploadObjectStream) CloseSend() error              { return nil }
-func (s *testUploadObjectStream) Context() context.Context      { return context.Background() }
-func (s *testUploadObjectStream) SendMsg(any) error             { return nil }
-func (s *testUploadObjectStream) RecvMsg(any) error             { return nil }
+func (s *testUploadObjectStream) Trailer() metadata.MD         { return nil }
+func (s *testUploadObjectStream) CloseSend() error             { return nil }
+func (s *testUploadObjectStream) Context() context.Context     { return context.Background() }
+func (s *testUploadObjectStream) SendMsg(any) error            { return nil }
+func (s *testUploadObjectStream) RecvMsg(any) error            { return nil }
 
 func (s *testUploadObjectStream) Send(chunk *burnbridgev1.UploadObjectChunk) error {
 	s.sendChunks = append(s.sendChunks, chunk)
@@ -743,7 +902,7 @@ func TestPutObjectSkipsCommitWhenPayloadAlreadyCommitted(t *testing.T) {
 	commitCalls := 0
 	cancelCalls := 0
 	b := &BurnBridge{
-		meta:             store,
+		meta: store,
 		grpc: testBurnBridgeClient{
 			createJobFn: func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
 				return &burnbridgev1.CreateJobResponse{JobId: "job-new"}, nil
