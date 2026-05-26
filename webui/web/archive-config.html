@@ -251,7 +251,7 @@
 
     function buildArchiveAuthHeader() {
       const user = document.getElementById('auth-user').value || 'admin';
-      const pass = document.getElementById('auth-pass').value || 'admin123';
+      const pass = document.getElementById('auth-pass').value || 'admin123456';
       sessionStorage.setItem('archive_config_user', user);
       sessionStorage.setItem('archive_config_pass', pass);
       return 'Basic ' + btoa(user + ':' + pass);
@@ -380,7 +380,7 @@
       document.getElementById('auth-user').value = cfg.OpticalArchive.Gateway.ConfigApiUsername || '';
       document.getElementById('auth-pass').value = cfg.OpticalArchive.Gateway.ConfigApiPassword || '';
       sessionStorage.setItem('archive_config_user', cfg.OpticalArchive.Gateway.ConfigApiUsername || 'admin');
-      sessionStorage.setItem('archive_config_pass', cfg.OpticalArchive.Gateway.ConfigApiPassword || 'admin123');
+      sessionStorage.setItem('archive_config_pass', cfg.OpticalArchive.Gateway.ConfigApiPassword || 'admin123456');
 
       const gateway = archiveGroup(payload, 'Gateway');
       const recorder = archiveGroup(payload, 'Recorder');
@@ -526,7 +526,7 @@
         document.getElementById('auth-user').value = payload.config.OpticalArchive.Gateway.ConfigApiUsername || '';
         document.getElementById('auth-pass').value = payload.config.OpticalArchive.Gateway.ConfigApiPassword || '';
         sessionStorage.setItem('archive_config_user', payload.config.OpticalArchive.Gateway.ConfigApiUsername || 'admin');
-        sessionStorage.setItem('archive_config_pass', payload.config.OpticalArchive.Gateway.ConfigApiPassword || 'admin123');
+        sessionStorage.setItem('archive_config_pass', payload.config.OpticalArchive.Gateway.ConfigApiPassword || 'admin123456');
         showToast('Archive config saved.', 'success');
       } catch (error) {
         showToast('Failed to save archive config: ' + error.message, 'error');

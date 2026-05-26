@@ -15,7 +15,7 @@ import (
 const (
 	DefaultConfigPath     = "D:\\BRS\\optical-archive.config.json"
 	DefaultConfigUsername = "admin"
-	DefaultConfigPassword = "admin123"
+	DefaultConfigPassword = "admin123456"
 )
 
 type File struct {

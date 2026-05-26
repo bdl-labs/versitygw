@@ -46,7 +46,7 @@ func TestArchiveLogsListAndDownload(t *testing.T) {
 		t.Fatalf("write access log: %v", err)
 	}
 
-	authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:admin123"))
+	authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:admin123456"))
 
 	req := httptest.NewRequest(http.MethodGet, "/__archive/logs", nil)
 	req.Header.Set("Authorization", authHeader)
