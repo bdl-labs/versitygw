@@ -2563,13 +2563,19 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	}
 
 	var committed bool
-	defer func() {
-		if committed || jobID == "" {
+	cancelJobNow := func(job string) {
+		if strings.TrimSpace(job) == "" {
 			return
 		}
 		cctx, cancel := context.WithTimeout(context.Background(), b.cancelJobTimeout)
 		defer cancel()
-		_, _ = b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: jobID})
+		_, _ = b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: job})
+	}
+	defer func() {
+		if committed || jobID == "" {
+			return
+		}
+		cancelJobNow(jobID)
 	}()
 
 	offset, uploadResp, stats, err := b.grpcUploadObjectStream(ctx, jobID, bucket, key, input.Body, contentLen)
@@ -2583,7 +2589,9 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 			return s3response.PutObjectOutput{}, recErr
 		}
 
-		committed = false
+		cancelJobNow(jobID)
+		jobID = ""
+		committed = true
 		slog.Info("burnbridge: object already committed on media; skipping CommitJob for idempotent PutObject retry",
 			"bucket", bucket, "key", key, "jobId", jobID, "bytes", offset)
 
