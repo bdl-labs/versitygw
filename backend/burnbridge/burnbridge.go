@@ -2117,6 +2117,76 @@ func (b *BurnBridge) loadBurnSegmentSnapshot(bucket, key string) (map[int]meta.B
 	return snapshot, nil
 }
 
+func (b *BurnBridge) recorderImportedStateContainsObject(ctx context.Context, bucket, key string) (bool, error) {
+	resp, err := b.grpc.GetImportedBucketState(ctx, &burnbridgev1.GetImportedBucketStateRequest{})
+	if err != nil {
+		if isGRPCUnimplemented(err) {
+			return true, nil
+		}
+		return false, fmt.Errorf("burnbridge GetImportedBucketState: %w", err)
+	}
+	if resp == nil || !resp.GetLoaded() {
+		return false, nil
+	}
+
+	resolvedBucket := strings.TrimSpace(resp.GetBucket())
+	if resolvedBucket != "" && !strings.EqualFold(resolvedBucket, strings.TrimSpace(bucket)) {
+		return false, nil
+	}
+
+	for _, object := range resp.GetObjects() {
+		if object == nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(object.GetObjectKey()), strings.TrimSpace(key)) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (b *BurnBridge) clearStaleLocalObjectState(bucket, key string) error {
+	if err := b.meta.DeleteBurnObjectSegments(bucket, key); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return err
+	}
+	if err := b.meta.DeleteAttribute(bucket, key, meta.BurnbridgeCommittedAttribute); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return err
+	}
+	return nil
+}
+
+func (b *BurnBridge) invalidateStaleResumeStateIfRecorderMissing(ctx context.Context, bucket, key string) error {
+	_, committedErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
+	hasCommitted := committedErr == nil
+	if committedErr != nil && !errors.Is(committedErr, meta.ErrNoSuchKey) {
+		return committedErr
+	}
+
+	segments, segmentsErr := b.meta.ListBurnObjectSegments(bucket, key)
+	if segmentsErr != nil {
+		return segmentsErr
+	}
+	if !hasCommitted && len(segments) == 0 {
+		return nil
+	}
+
+	present, err := b.recorderImportedStateContainsObject(ctx, bucket, key)
+	if err != nil {
+		return err
+	}
+	if present {
+		return nil
+	}
+
+	slog.Warn("burnbridge: clearing stale local resume/committed state because recorder imported layout does not contain object",
+		"bucket", bucket,
+		"key", key,
+		"had_committed", hasCommitted,
+		"segment_count", len(segments))
+	return b.clearStaleLocalObjectState(bucket, key)
+}
+
 type acceptedMediaSet map[string]struct{}
 
 func (s acceptedMediaSet) accepts(mediaID string) bool {
@@ -2527,6 +2597,10 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	idx := objectLockIndex(bucket, key)
 	b.objectLocks[idx].Lock()
 	defer b.objectLocks[idx].Unlock()
+
+	if err := b.invalidateStaleResumeStateIfRecorderMissing(ctx, bucket, key); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
 
 	var contentLen int64
 	if input.ContentLength != nil {
