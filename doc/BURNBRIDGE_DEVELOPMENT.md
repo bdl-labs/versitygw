@@ -46,7 +46,7 @@ protoc -I=backend/burnbridge/proto \
   --read-mount /path/to/mounted/disc/root
 ```
 
-**启动顺序（刻录端契约）**：TCP/gRPC 连通后，网关**立刻**调用 **`TestUnitReady`（无请求体字段）**，用于探测当前装载的光盘；刻录端应返回 **`ready=true`** 与 **`volume_label`**（如 UDF 卷标）。网关将卷标**净化**为符合 S3 命名规则的**单一桶名**，本会话内所有 `ListBuckets` / `HeadBucket` / 对象 API 均使用该桶名（**不再固定为 `burn-jobs`**）。若未就绪、无卷标或 RPC 为 `Unimplemented`，**`burnbridge.New` 直接报错**，网关不会完成启动。卷标探测成功后，仍会按配置执行 **`GetJobStatus` ping**（除非 `--grpc-skip-ping`）。
+**启动顺序（刻录端契约）**：TCP/gRPC 连通后，网关会**立刻**调用 **`TestUnitReady`（无请求体字段）**，用于探测当前装载的光盘；刻录端正常返回 **`ready=true`** 与 **`volume_label`**（如 UDF 卷标）时，网关会将卷标**净化**为符合 S3 命名规则的**单一桶名**，本会话内所有 `ListBuckets` / `HeadBucket` / 对象 API 均使用该桶名（**不再固定为 `burn-jobs`**）。如果 recorder 还在启动恢复、暂时未就绪或尚未导入 metadata，网关允许**降级启动**为空桶视图，并在后续 `ListBuckets` / `HeadBucket` / 对象入口按需重新同步 active bucket。卷标探测成功后，仍会按配置执行 **`GetJobStatus` ping**（除非 `--grpc-skip-ping`）。启动阶段若 RPC 为 `Unimplemented`，仍视为刻录端契约不完整。
 
 常用标志与环境变量（节选，以 `--help` 为准）：
 
@@ -56,7 +56,7 @@ protoc -I=backend/burnbridge/proto \
 | `--grpc-addr` | `VGW_BURNBRIDGE_GRPC_ADDR` | 刻录服务地址。 |
 | `--read-mount` | `VGW_BURNBRIDGE_READ_MOUNT` | 已挂载读盘路径；对象路径为 `{mount}/{bucket}/{key}`。 |
 | `--grpc-tls` / `--grpc-ca` / `--grpc-insecure-skip-verify` | 对应 `VGW_BURNBRIDGE_*` | gRPC TLS。 |
-| `--grpc-chunk-size` | `VGW_BURNBRIDGE_GRPC_CHUNK_SIZE` | 每段逻辑读取缓冲 / 上传帧大小相关，默认约 1MiB。 |
+| `--grpc-chunk-size` | `VGW_BURNBRIDGE_GRPC_CHUNK_SIZE` | 每段逻辑读取缓冲 / 上传帧大小相关；当前优先跟随共享配置 `OpticalArchive.Recorder.GrpcChunkSize`，默认发布值为 `256KiB`。 |
 | `--put-object-timeout` | `VGW_BURNBRIDGE_PUT_OBJECT_TIMEOUT` | 慢速刻录时可加大 Put 整链路超时；`0` 表示主要跟请求上下文。 |
 
 ## 代码布局（换分支后快速定位）
@@ -78,7 +78,7 @@ protoc -I=backend/burnbridge/proto \
 4. **读对象**：优先读 `--read-mount` 下文件；若元数据已提交但文件尚未出现，则对已提交的桶键走 gRPC **`ReadObject`**（按 `bucket` + `object_key` + `offset` + `length` 流式取字节，不依赖 `job_id`）。刻录端需实现 `ReadObject`。
 5. **S3 错误**：例如媒体未就绪且 `ReadObject` 未实现时可能返回 `503` / `BurnbridgeMediaNotVisible`（见 `burnbridge.go` 中 `mapReadFallbackError`）。
 6. **Put 串行（全局）**：任意两个对象的 `PutObject` 不能重叠（`putSerialMu`），适合单机单刻录流道。同一对象的 `GetObject` 仍用分片锁与 `Put`/`Get` 互斥；`Get` 与**其他 key** 的 `Put` 仍可并发（若业务要求连这也禁止，可再为 `GetObject` 加同一全局锁）。
-7. **刻录单元就绪与桶名**：启动时通过空 **`TestUnitReady`** 请求获取 **`volume_label`** 并映射为 S3 **唯一桶名**。运行中网关在每个 **`PutObject` / `GetObject` / `HeadObject` / `ListObjects` / `ListObjectsV2`** 前会再次调用 **`TestUnitReady`**；未就绪返回 **503**、`BurnbridgeUnitNotReady`。**`HeadBucket`** 使用同一检查。运行若遇 **`TestUnitReady` `Unimplemented`**（旧刻录端），会打日志并**放行**该次检查（启动阶段则**不允许** `Unimplemented`，必须实现本 RPC）。
+7. **刻录单元就绪与桶名**：启动时通过空 **`TestUnitReady`** 请求获取 **`volume_label`** 并映射为 S3 **唯一桶名**；若 recorder 仍在启动恢复，网关允许暂时以空桶视图启动，并在后续请求中懒同步恢复。运行中网关在每个 **`PutObject` / `GetObject` / `HeadObject` / `ListObjects` / `ListObjectsV2`** 前会再次调用 **`TestUnitReady`**；未就绪返回 **503**、`BurnbridgeUnitNotReady`。**`HeadBucket`** 使用同一检查，并对短暂启动窗口增加小范围重试。运行若遇 **`TestUnitReady` `Unimplemented`**（旧刻录端），会打日志并**放行**该次检查（启动阶段则**不允许** `Unimplemented`，必须实现本 RPC）。
 8. **SQLite**：元数据按 **桶名** 分区；若此前使用固定桶名 **`burn-jobs`**，切换到「卷标即桶名」后，旧库中的行不会自动出现在新桶名下，需自行迁移或沿用新库。
 
 ## 换机检查清单
