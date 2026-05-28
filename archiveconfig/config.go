@@ -47,6 +47,10 @@ type Recorder struct {
 	LayoutDbPath               string `json:"LayoutDbPath"`
 	MetadataDbFileNameTemplate string `json:"MetadataDbFileNameTemplate"`
 	GrpcChunkSize              int    `json:"GrpcChunkSize"`
+	MaxReceiveMessageSize      int    `json:"MaxReceiveMessageSize"`
+	MaxSendMessageSize         int    `json:"MaxSendMessageSize"`
+	Http2InitialConnectionWindowSize int `json:"Http2InitialConnectionWindowSize"`
+	Http2InitialStreamWindowSize     int `json:"Http2InitialStreamWindowSize"`
 	FinalizeReservePercent     int    `json:"FinalizeReservePercent"`
 	FinalizeReserveBytes       int64  `json:"FinalizeReserveBytes"`
 	DiscSerialStrategy         string `json:"DiscSerialStrategy"`
@@ -64,6 +68,11 @@ type Runtime struct {
 	BlocksPerTransfer         int   `json:"BlocksPerTransfer"`
 	SessionCacheCapacityBytes int64 `json:"SessionCacheCapacityBytes"`
 	WriteBufferBytes          int   `json:"WriteBufferBytes"`
+	WriteBufferSlotCount      int   `json:"WriteBufferSlotCount"`
+	GlobalWriteQueueCapacity  int   `json:"GlobalWriteQueueCapacity"`
+	ReadQueueCapacity         int   `json:"ReadQueueCapacity"`
+	RedundancyReadWindowBlocks int  `json:"RedundancyReadWindowBlocks"`
+	PlainReadWindowBlocks      int  `json:"PlainReadWindowBlocks"`
 }
 
 type Redundancy struct {
@@ -143,7 +152,11 @@ func DefaultFile(path string) File {
 				DriveIndex:                 0,
 				LayoutDbPath:               "D:\\BRS\\primoburner-net\\samples\\BurnServer\\udf-layout.db",
 				MetadataDbFileNameTemplate: "__archive_{bucket}.sqlite3",
-				GrpcChunkSize:              1048576,
+				GrpcChunkSize:              262144,
+				MaxReceiveMessageSize:      262144,
+				MaxSendMessageSize:         262144,
+				Http2InitialConnectionWindowSize: 1048576,
+				Http2InitialStreamWindowSize:     524288,
 				FinalizeReservePercent:     3,
 				FinalizeReserveBytes:       67108864,
 				DiscSerialStrategy:         "hash",
@@ -157,9 +170,14 @@ func DefaultFile(path string) File {
 			},
 			Runtime: Runtime{
 				SectorSizeBytes:           2048,
-				BlocksPerTransfer:         16,
-				SessionCacheCapacityBytes: 536870912,
-				WriteBufferBytes:          327680,
+				BlocksPerTransfer:         32,
+				SessionCacheCapacityBytes: 67108864,
+				WriteBufferBytes:          33554432,
+				WriteBufferSlotCount:      2,
+				GlobalWriteQueueCapacity:  4,
+				ReadQueueCapacity:         1,
+				RedundancyReadWindowBlocks: 320,
+				PlainReadWindowBlocks:      320,
 			},
 			Redundancy: Redundancy{
 				Enabled:          true,
@@ -271,6 +289,18 @@ func Load(configPath string) (File, string, error) {
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate) == "" {
 		cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = defaults.OpticalArchive.Recorder.MetadataDbFileNameTemplate
 	}
+	if cfg.OpticalArchive.Recorder.MaxReceiveMessageSize <= 0 {
+		cfg.OpticalArchive.Recorder.MaxReceiveMessageSize = defaults.OpticalArchive.Recorder.MaxReceiveMessageSize
+	}
+	if cfg.OpticalArchive.Recorder.MaxSendMessageSize <= 0 {
+		cfg.OpticalArchive.Recorder.MaxSendMessageSize = defaults.OpticalArchive.Recorder.MaxSendMessageSize
+	}
+	if cfg.OpticalArchive.Recorder.Http2InitialConnectionWindowSize <= 0 {
+		cfg.OpticalArchive.Recorder.Http2InitialConnectionWindowSize = defaults.OpticalArchive.Recorder.Http2InitialConnectionWindowSize
+	}
+	if cfg.OpticalArchive.Recorder.Http2InitialStreamWindowSize <= 0 {
+		cfg.OpticalArchive.Recorder.Http2InitialStreamWindowSize = defaults.OpticalArchive.Recorder.Http2InitialStreamWindowSize
+	}
 	if cfg.OpticalArchive.Recorder.FinalizeReservePercent < 0 {
 		cfg.OpticalArchive.Recorder.FinalizeReservePercent = defaults.OpticalArchive.Recorder.FinalizeReservePercent
 	}
@@ -368,6 +398,10 @@ func applyEnvOverrides(cfg *File) {
 	applyStringOverride(&cfg.OpticalArchive.Recorder.LayoutDbPath, "OpticalArchive", "Recorder", "LayoutDbPath")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate, "OpticalArchive", "Recorder", "MetadataDbFileNameTemplate")
 	applyIntOverride(&cfg.OpticalArchive.Recorder.GrpcChunkSize, "OpticalArchive", "Recorder", "GrpcChunkSize")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.MaxReceiveMessageSize, "OpticalArchive", "Recorder", "MaxReceiveMessageSize")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.MaxSendMessageSize, "OpticalArchive", "Recorder", "MaxSendMessageSize")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.Http2InitialConnectionWindowSize, "OpticalArchive", "Recorder", "Http2InitialConnectionWindowSize")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.Http2InitialStreamWindowSize, "OpticalArchive", "Recorder", "Http2InitialStreamWindowSize")
 	applyIntOverride(&cfg.OpticalArchive.Recorder.FinalizeReservePercent, "OpticalArchive", "Recorder", "FinalizeReservePercent")
 	applyInt64Override(&cfg.OpticalArchive.Recorder.FinalizeReserveBytes, "OpticalArchive", "Recorder", "FinalizeReserveBytes")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.DiscSerialStrategy, "OpticalArchive", "Recorder", "DiscSerialStrategy")
@@ -383,6 +417,11 @@ func applyEnvOverrides(cfg *File) {
 	applyIntOverride(&cfg.OpticalArchive.Runtime.BlocksPerTransfer, "OpticalArchive", "Runtime", "BlocksPerTransfer")
 	applyInt64Override(&cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes, "OpticalArchive", "Runtime", "SessionCacheCapacityBytes")
 	applyIntOverride(&cfg.OpticalArchive.Runtime.WriteBufferBytes, "OpticalArchive", "Runtime", "WriteBufferBytes")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.WriteBufferSlotCount, "OpticalArchive", "Runtime", "WriteBufferSlotCount")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.GlobalWriteQueueCapacity, "OpticalArchive", "Runtime", "GlobalWriteQueueCapacity")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.ReadQueueCapacity, "OpticalArchive", "Runtime", "ReadQueueCapacity")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.RedundancyReadWindowBlocks, "OpticalArchive", "Runtime", "RedundancyReadWindowBlocks")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.PlainReadWindowBlocks, "OpticalArchive", "Runtime", "PlainReadWindowBlocks")
 
 	applyBoolOverride(&cfg.OpticalArchive.Redundancy.Enabled, "OpticalArchive", "Redundancy", "Enabled")
 	applyIntOverride(&cfg.OpticalArchive.Redundancy.DataBlockCount, "OpticalArchive", "Redundancy", "DataBlockCount")

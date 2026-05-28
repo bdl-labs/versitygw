@@ -202,6 +202,8 @@ const (
 	listDefaultMaxKeys     int32 = 1000
 	defaultPutQueueLimit         = 512
 	burnbridgeACLAttribute       = "acl"
+	headBucketReadyRetryAttempts = 5
+	headBucketReadyRetryDelay    = 750 * time.Millisecond
 )
 
 // burnbridgeWORMNoDelete is returned for delete operations on WORM optical media.
@@ -1204,10 +1206,54 @@ func (b *BurnBridge) HeadBucket(ctx context.Context, input *s3.HeadBucketInput) 
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	if err := b.requireRecorderReady(ctx); err != nil {
+	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
 		return nil, err
 	}
 	return &s3.HeadBucketOutput{}, nil
+}
+
+func (b *BurnBridge) requireRecorderReadyWithRetry(ctx context.Context) error {
+	var lastErr error
+	for attempt := 1; attempt <= headBucketReadyRetryAttempts; attempt++ {
+		err := b.requireRecorderReady(ctx)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !shouldRetryRecorderReady(err) || attempt == headBucketReadyRetryAttempts {
+			return err
+		}
+
+		slog.Warn("burnbridge: HeadBucket recorder readiness retry",
+			"attempt", attempt,
+			"max_attempts", headBucketReadyRetryAttempts,
+			"error", err)
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(headBucketReadyRetryDelay):
+		}
+	}
+
+	return lastErr
+}
+
+func shouldRetryRecorderReady(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	var apiErr s3err.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == "BurnbridgeUnitNotReady" && apiErr.HTTPStatusCode == http.StatusServiceUnavailable
+	}
+
+	if strings.Contains(strings.ToLower(err.Error()), "service unavailable") {
+		return true
+	}
+
+	return false
 }
 
 // DeleteBucket is rejected: the active bucket is tied to loaded optical media (WORM session).

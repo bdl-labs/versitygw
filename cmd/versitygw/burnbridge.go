@@ -231,6 +231,9 @@ func runBurnbridge(ctx *cli.Context) error {
 	}
 	applyBurnBridgeEnvOverrides(&opts)
 	if cfg, _, err := archiveconfig.Load(""); err == nil {
+		if cfg.OpticalArchive.Recorder.GrpcChunkSize > 0 {
+			opts.ChunkSize = cfg.OpticalArchive.Recorder.GrpcChunkSize
+		}
 		opts.AllowCreateBucketBinding = cfg.OpticalArchive.Recorder.AllowCreateBucketBinding
 		opts.ManageRecorderProcessLocally = cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally
 		opts.RecorderServiceName = cfg.OpticalArchive.LinuxServices.RecorderServiceName
