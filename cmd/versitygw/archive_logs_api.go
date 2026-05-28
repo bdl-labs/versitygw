@@ -29,30 +29,30 @@ type archiveLogEntry struct {
 }
 
 func archiveLogRouteOptions() []s3api.Option {
-	return []s3api.Option{
-		s3api.WithRoute(http.MethodGet, "/__archive/logs", archiveLogsListHandler()),
-		s3api.WithRoute(http.MethodGet, "/__archive/logs/download", archiveLogsDownloadHandler()),
-		s3api.WithRoute(http.MethodPost, "/__archive/logs/rotate", archiveLogsRotateHandler()),
-	}
+	var options []s3api.Option
+	options = append(options, archiveRoute(http.MethodGet, "/__archive/logs", archiveLogsListHandler())...)
+	options = append(options, archiveRoute(http.MethodGet, "/__archive/logs/download", archiveLogsDownloadHandler())...)
+	options = append(options, archiveRoute(http.MethodPost, "/__archive/logs/rotate", archiveLogsRotateHandler())...)
+	return options
 }
 
 func archiveLogsListHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
 		}
 
 		if err := archiveGatewayLogs(cfg); err != nil {
-			return fiber.NewError(http.StatusInternalServerError, err.Error())
+			return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 		}
 
 		entries, err := collectArchiveLogEntries(cfg)
 		if err != nil {
-			return fiber.NewError(http.StatusInternalServerError, err.Error())
+			return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 		}
 
 		return c.JSON(map[string]any{
@@ -65,7 +65,7 @@ func archiveLogsDownloadHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
@@ -74,17 +74,17 @@ func archiveLogsDownloadHandler() fiber.Handler {
 		source := strings.TrimSpace(c.Query("source"))
 		relativePath := strings.TrimSpace(c.Query("path"))
 		if source == "" || relativePath == "" {
-			return fiber.NewError(http.StatusBadRequest, "source and path are required")
+			return writeArchiveError(c, http.StatusBadRequest, "source and path are required")
 		}
 
 		fullPath, err := resolveArchiveLogPath(cfg, source, relativePath)
 		if err != nil {
-			return fiber.NewError(http.StatusBadRequest, err.Error())
+			return writeArchiveError(c, http.StatusBadRequest, err.Error())
 		}
 
 		data, err := os.ReadFile(fullPath)
 		if err != nil {
-			return fiber.NewError(http.StatusInternalServerError, err.Error())
+			return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 		}
 
 		c.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filepath.Base(fullPath)))
@@ -96,14 +96,14 @@ func archiveLogsRotateHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
 		}
 
 		if err := archiveGatewayLogs(cfg); err != nil {
-			return fiber.NewError(http.StatusInternalServerError, err.Error())
+			return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 		}
 
 		return c.JSON(map[string]any{

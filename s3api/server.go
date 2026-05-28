@@ -409,6 +409,10 @@ func globalErrorHandler(ctx *fiber.Ctx, er error) error {
 				ctx.Status(err.HTTPStatusCode)
 				return ctx.Send(s3err.GetAPIErrorResponse(err, "", "", ""))
 			}
+
+			debuglogger.InternalError(er)
+			ctx.Status(fiberErr.Code)
+			return ctx.SendString(fiberErr.Message)
 		}
 
 		// additionally log the internal error

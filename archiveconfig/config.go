@@ -1,6 +1,7 @@
 package archiveconfig
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -259,6 +260,7 @@ func Load(configPath string) (File, string, error) {
 	if err != nil {
 		return File{}, resolved, fmt.Errorf("read archive config: %w", err)
 	}
+	raw = bytes.TrimPrefix(raw, []byte{0xEF, 0xBB, 0xBF})
 
 	cfg := DefaultFile(resolved)
 	if err := json.Unmarshal(raw, &cfg); err != nil {

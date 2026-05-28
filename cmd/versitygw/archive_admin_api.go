@@ -29,19 +29,19 @@ type archiveVersionResponse struct {
 }
 
 func archiveAdminRouteOptions() []s3api.Option {
-	return []s3api.Option{
-		s3api.WithRoute(http.MethodGet, "/__archive/version", archiveVersionHandler()),
-		s3api.WithRoute(http.MethodPost, "/__archive/license", archiveLicenseUploadHandler()),
-		s3api.WithRoute(http.MethodPost, "/__archive/upgrade/upload", archiveUpgradeUploadHandler()),
-		s3api.WithRoute(http.MethodPost, "/__archive/upgrade/apply", archiveUpgradeApplyHandler()),
-	}
+	var options []s3api.Option
+	options = append(options, archiveRoute(http.MethodGet, "/__archive/version", archiveVersionHandler())...)
+	options = append(options, archiveRoute(http.MethodPost, "/__archive/license", archiveLicenseUploadHandler())...)
+	options = append(options, archiveRoute(http.MethodPost, "/__archive/upgrade/upload", archiveUpgradeUploadHandler())...)
+	options = append(options, archiveRoute(http.MethodPost, "/__archive/upgrade/apply", archiveUpgradeApplyHandler())...)
+	return options
 }
 
 func archiveVersionHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
@@ -75,7 +75,7 @@ func archiveLicenseUploadHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, path, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
@@ -83,18 +83,18 @@ func archiveLicenseUploadHandler() fiber.Handler {
 
 		uploaded, err := c.FormFile("file")
 		if err != nil {
-			return fiber.NewError(http.StatusBadRequest, "license file is required")
+			return writeArchiveError(c, http.StatusBadRequest, "license file is required")
 		}
 
 		content, err := readUploadedFile(uploaded)
 		if err != nil {
-			return fiber.NewError(http.StatusBadRequest, err.Error())
+			return writeArchiveError(c, http.StatusBadRequest, err.Error())
 		}
 		reloadNow := strings.EqualFold(strings.TrimSpace(c.FormValue("reloadNow")), "true")
 
 		result, err := pushRecorderLicense(cfg, uploaded.Filename, content, reloadNow)
 		if err != nil {
-			return fiber.NewError(http.StatusBadGateway, err.Error())
+			return writeArchiveError(c, http.StatusBadGateway, err.Error())
 		}
 
 		licenseFilePath, _ := result["licenseFilePath"].(string)
@@ -102,7 +102,7 @@ func archiveLicenseUploadHandler() fiber.Handler {
 			!strings.EqualFold(cfg.OpticalArchive.Recorder.LicenseFilePath, licenseFilePath) {
 			cfg.OpticalArchive.Recorder.LicenseFilePath = licenseFilePath
 			if saveErr := archiveconfig.Save(path, cfg); saveErr != nil {
-				return fiber.NewError(http.StatusInternalServerError, saveErr.Error())
+				return writeArchiveError(c, http.StatusInternalServerError, saveErr.Error())
 			}
 		}
 
@@ -114,7 +114,7 @@ func archiveUpgradeUploadHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
@@ -126,28 +126,28 @@ func archiveUpgradeUploadHandler() fiber.Handler {
 		}
 		uploaded, err := c.FormFile("file")
 		if err != nil {
-			return fiber.NewError(http.StatusBadRequest, "upgrade file is required")
+			return writeArchiveError(c, http.StatusBadRequest, "upgrade file is required")
 		}
 		content, err := readUploadedFile(uploaded)
 		if err != nil {
-			return fiber.NewError(http.StatusBadRequest, err.Error())
+			return writeArchiveError(c, http.StatusBadRequest, err.Error())
 		}
 
 		switch target {
 		case "gateway":
 			payload, err := stageGatewayUpgrade(cfg, uploaded.Filename, content)
 			if err != nil {
-				return fiber.NewError(http.StatusInternalServerError, err.Error())
+				return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 			}
 			return c.JSON(payload)
 		case "recorder":
 			payload, err := stageRecorderUpgrade(cfg, uploaded.Filename, content)
 			if err != nil {
-				return fiber.NewError(http.StatusBadGateway, err.Error())
+				return writeArchiveError(c, http.StatusBadGateway, err.Error())
 			}
 			return c.JSON(payload)
 		default:
-			return fiber.NewError(http.StatusBadRequest, "target must be gateway or recorder")
+			return writeArchiveError(c, http.StatusBadRequest, "target must be gateway or recorder")
 		}
 	}
 }
@@ -156,7 +156,7 @@ func archiveUpgradeApplyHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
@@ -168,24 +168,24 @@ func archiveUpgradeApplyHandler() fiber.Handler {
 		}
 		fileName := strings.TrimSpace(c.FormValue("fileName"))
 		if fileName == "" {
-			return fiber.NewError(http.StatusBadRequest, "fileName is required")
+			return writeArchiveError(c, http.StatusBadRequest, "fileName is required")
 		}
 
 		switch target {
 		case "gateway":
 			payload, err := applyGatewayUpgrade(cfg, fileName)
 			if err != nil {
-				return fiber.NewError(http.StatusInternalServerError, err.Error())
+				return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 			}
 			return c.JSON(payload)
 		case "recorder":
 			payload, err := applyRecorderUpgrade(cfg, fileName)
 			if err != nil {
-				return fiber.NewError(http.StatusBadGateway, err.Error())
+				return writeArchiveError(c, http.StatusBadGateway, err.Error())
 			}
 			return c.JSON(payload)
 		default:
-			return fiber.NewError(http.StatusBadRequest, "target must be gateway or recorder")
+			return writeArchiveError(c, http.StatusBadRequest, "target must be gateway or recorder")
 		}
 	}
 }

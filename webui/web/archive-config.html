@@ -249,7 +249,21 @@
   <script>
     let archiveConfigState = null;
 
+    function hydrateArchiveAuthInputs() {
+      const savedUser = sessionStorage.getItem('archive_config_user');
+      const savedPass = sessionStorage.getItem('archive_config_pass');
+      const userInput = document.getElementById('auth-user');
+      const passInput = document.getElementById('auth-pass');
+      if (userInput && !userInput.value && savedUser) {
+        userInput.value = savedUser;
+      }
+      if (passInput && !passInput.value && savedPass) {
+        passInput.value = savedPass;
+      }
+    }
+
     function buildArchiveAuthHeader() {
+      hydrateArchiveAuthInputs();
       const user = document.getElementById('auth-user').value || 'admin';
       const pass = document.getElementById('auth-pass').value || 'admin123456';
       sessionStorage.setItem('archive_config_user', user);
@@ -596,6 +610,7 @@
         showToast('Failed to apply upgrade: ' + error.message, 'error');
       }
     });
+    hydrateArchiveAuthInputs();
     loadArchiveConfig();
   </script>
 </body>

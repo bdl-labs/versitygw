@@ -11,17 +11,17 @@ import (
 )
 
 func archiveConfigRouteOptions() []s3api.Option {
-	return []s3api.Option{
-		s3api.WithRoute(http.MethodGet, "/__archive/config", archiveConfigGetHandler()),
-		s3api.WithRoute(http.MethodPut, "/__archive/config", archiveConfigPutHandler()),
-	}
+	var options []s3api.Option
+	options = append(options, archiveRoute(http.MethodGet, "/__archive/config", archiveConfigGetHandler())...)
+	options = append(options, archiveRoute(http.MethodPut, "/__archive/config", archiveConfigPutHandler())...)
+	return options
 }
 
 func archiveConfigGetHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		cfg, path, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
@@ -40,7 +40,7 @@ func archiveConfigPutHandler() fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		current, path, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
-			return err
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
 		}
 		if !ok {
 			return writeArchiveConfigUnauthorized(c)
@@ -48,12 +48,12 @@ func archiveConfigPutHandler() fiber.Handler {
 
 		var next archiveconfig.File
 		if err := json.Unmarshal(c.Body(), &next); err != nil {
-			return fiber.NewError(http.StatusBadRequest, "invalid archive config payload")
+			return writeArchiveError(c, http.StatusBadRequest, "invalid archive config payload")
 		}
 
 		mergeArchiveConfigDefaults(&next, current, path)
 		if err := archiveconfig.Save(path, next); err != nil {
-			return fiber.NewError(http.StatusInternalServerError, err.Error())
+			return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 		}
 
 		return c.JSON(map[string]any{
@@ -77,7 +77,7 @@ func authorizeArchiveConfigRequest(c *fiber.Ctx) (archiveconfig.File, string, bo
 
 func writeArchiveConfigUnauthorized(c *fiber.Ctx) error {
 	c.Set("WWW-Authenticate", `Basic realm="optical-archive-config"`)
-	return fiber.NewError(http.StatusUnauthorized, "archive config authentication required")
+	return writeArchiveError(c, http.StatusUnauthorized, "archive config authentication required")
 }
 
 func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.File, path string) {

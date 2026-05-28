@@ -135,6 +135,56 @@ func TestArchiveLogsRotateCreatesArchive(t *testing.T) {
 	}
 }
 
+func TestArchiveRouteAddsCORSAndPreflight(t *testing.T) {
+	tempDir := mustTempDir(t)
+	defer removeTempDir(t, tempDir)
+	configPath := filepath.Join(tempDir, "optical-archive.config.json")
+	t.Setenv("OPTICAL_ARCHIVE_CONFIG_PATH", configPath)
+
+	previousOrigin := corsAllowOrigin
+	corsAllowOrigin = "*"
+	defer func() {
+		corsAllowOrigin = previousOrigin
+	}()
+
+	app := fiber.New()
+	defer func() { _ = app.Shutdown() }()
+	app.Options("/__archive/config", archiveRoutePreflightHandler(), archiveRouteCORSHandler())
+	app.Get("/__archive/config", archiveRouteCORSHandler(), archiveConfigGetHandler())
+
+	authHeader := "Basic " + base64.StdEncoding.EncodeToString([]byte("admin:admin123456"))
+
+	optionsReq := httptest.NewRequest(http.MethodOptions, "/__archive/config", nil)
+	optionsReq.Header.Set("Origin", "http://127.0.0.1:7071")
+	optionsReq.Header.Set("Access-Control-Request-Method", http.MethodGet)
+	optionsReq.Header.Set("Access-Control-Request-Headers", "authorization")
+	optionsResp, err := app.Test(optionsReq)
+	if err != nil {
+		t.Fatalf("preflight request: %v", err)
+	}
+	defer optionsResp.Body.Close()
+	if optionsResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("preflight status=%d", optionsResp.StatusCode)
+	}
+	if got := optionsResp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("unexpected preflight allow origin: %q", got)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/__archive/config", nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getResp, err := app.Test(getReq)
+	if err != nil {
+		t.Fatalf("config get request: %v", err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("config get status=%d", getResp.StatusCode)
+	}
+	if got := getResp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Fatalf("unexpected get allow origin: %q", got)
+	}
+}
+
 func authorizeArchiveConfigRequestForTest(configPath string) (cfg archiveconfig.File, path string, err error) {
 	return archiveconfig.Load(configPath)
 }
