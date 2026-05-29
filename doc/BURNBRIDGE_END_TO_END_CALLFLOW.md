@@ -45,8 +45,9 @@
 1. 参数与桶校验
    - 校验 bucket/key
    - 校验 bucket 是否等于当前活动光盘映射桶
-2. 设备就绪检查
-   - `requireRecorderReady` -> `TestUnitReady`
+2. 设备状态检查
+   - `PutObject` 入口需要时调用 `requireRecorderReady`
+   - metadata 热路径优先使用网关内存态与 SQLite，不再对每次 `List/Head` 都主动 `TestUnitReady`
 3. 并发控制
    - 全局串行锁 `putSerialMu`（不同对象 Put 不重叠）
    - 对象级锁分片（同 key 的 Put/Get 互斥）
@@ -75,7 +76,7 @@
 
 在 `grpcUploadObjectStream` 中：
 
-1. 逻辑分片大小：`b.chunkSize`（默认 1 MiB，来源 `--grpc-chunk-size`）
+1. 逻辑分片大小：`b.chunkSize`（当前发布默认 `64 KiB`，来源 `--grpc-chunk-size` 或共享配置 `OpticalArchive.Recorder.GrpcChunkSize`）
 2. 物理 gRPC 帧大小上限：`burnbridgeUploadMaxDataPerFrame = 3 MiB`
    - 单个逻辑分片如果大于 3 MiB，会拆成多个 gRPC frame
 3. 尾分片判定：
@@ -266,7 +267,8 @@ block-device 写入机制：
    - `SectorSizeBytes / BlocksPerTransfer / SessionCacheCapacityBytes`
    - 通过 BurnServer 启动注入环境变量统一
 4. read mount
-   - 网关与 BurnServer 统一读取 `OpticalArchive:ReadMountPath`（若启用 ReadObject 挂载读）
+   - 网关与 BurnServer 统一读取 `OpticalArchive:ReadMountPath`
+   - 但正常 `GetObject` 优先走 recorder 的 metadata 驱动直读链路；挂载路径只是回退路径，不是主链路
 
 ---
 
@@ -299,7 +301,7 @@ block-device 写入机制：
 
 ## 7. 排障优先顺序（推荐）
 
-1. 看 BurnServer 启动日志参数摘要（Chunk + BlockDeviceRuntime + GatewayInterop）
+1. 看 BurnServer 启动日志参数摘要（Chunk + BlockDeviceRuntime + GatewayInterop + read window）
 2. 看网关 `upload recovery stats`（是否全 replay / 有无 skip）
 3. 看 `CommitJob` 是否使用 manifest 还是 fallback
 4. 看 BurnServer `JobMessages` 与 `GetJobStatus`

@@ -56,7 +56,7 @@ protoc -I=backend/burnbridge/proto \
 | `--grpc-addr` | `VGW_BURNBRIDGE_GRPC_ADDR` | 刻录服务地址。 |
 | `--read-mount` | `VGW_BURNBRIDGE_READ_MOUNT` | 已挂载读盘路径；对象路径为 `{mount}/{bucket}/{key}`。 |
 | `--grpc-tls` / `--grpc-ca` / `--grpc-insecure-skip-verify` | 对应 `VGW_BURNBRIDGE_*` | gRPC TLS。 |
-| `--grpc-chunk-size` | `VGW_BURNBRIDGE_GRPC_CHUNK_SIZE` | 每段逻辑读取缓冲 / 上传帧大小相关；当前优先跟随共享配置 `OpticalArchive.Recorder.GrpcChunkSize`，默认发布值为 `256KiB`。 |
+| `--grpc-chunk-size` | `VGW_BURNBRIDGE_GRPC_CHUNK_SIZE` | 每段逻辑读取缓冲 / 上传帧大小相关；当前优先跟随共享配置 `OpticalArchive.Recorder.GrpcChunkSize`，默认发布值为 `64KiB`。 |
 | `--put-object-timeout` | `VGW_BURNBRIDGE_PUT_OBJECT_TIMEOUT` | 慢速刻录时可加大 Put 整链路超时；`0` 表示主要跟请求上下文。 |
 
 ## 代码布局（换分支后快速定位）
@@ -78,7 +78,7 @@ protoc -I=backend/burnbridge/proto \
 4. **读对象**：优先读 `--read-mount` 下文件；若元数据已提交但文件尚未出现，则对已提交的桶键走 gRPC **`ReadObject`**（按 `bucket` + `object_key` + `offset` + `length` 流式取字节，不依赖 `job_id`）。刻录端需实现 `ReadObject`。
 5. **S3 错误**：例如媒体未就绪且 `ReadObject` 未实现时可能返回 `503` / `BurnbridgeMediaNotVisible`（见 `burnbridge.go` 中 `mapReadFallbackError`）。
 6. **Put 串行（全局）**：任意两个对象的 `PutObject` 不能重叠（`putSerialMu`），适合单机单刻录流道。同一对象的 `GetObject` 仍用分片锁与 `Put`/`Get` 互斥；`Get` 与**其他 key** 的 `Put` 仍可并发（若业务要求连这也禁止，可再为 `GetObject` 加同一全局锁）。
-7. **刻录单元就绪与桶名**：启动时通过空 **`TestUnitReady`** 请求获取 **`volume_label`** 并映射为 S3 **唯一桶名**；若 recorder 仍在启动恢复，网关允许暂时以空桶视图启动，并在后续请求中懒同步恢复。运行中网关在每个 **`PutObject` / `GetObject` / `HeadObject` / `ListObjects` / `ListObjectsV2`** 前会再次调用 **`TestUnitReady`**；未就绪返回 **503**、`BurnbridgeUnitNotReady`。**`HeadBucket`** 使用同一检查，并对短暂启动窗口增加小范围重试。运行若遇 **`TestUnitReady` `Unimplemented`**（旧刻录端），会打日志并**放行**该次检查（启动阶段则**不允许** `Unimplemented`，必须实现本 RPC）。
+7. **刻录单元就绪与桶名**：启动时通过空 **`TestUnitReady`** 请求获取 **`volume_label`** 并映射为 S3 **唯一桶名**；若 recorder 仍在启动恢复，网关允许暂时以空桶视图启动，并在后续请求中懒同步恢复。当前运行时优先依赖 recorder 的 **`WatchUnitStatus`** 推送快照维护内存态 bucket / disc state；`ListBuckets`、`HeadBucket`、`ListObjects`、`ListObjectsV2`、`HeadObject` 这些 metadata 热路径不再每次主动探测 recorder。`TestUnitReady` 主要保留给启动探测、状态流缺失时的回退探测，以及需要确认设备即时可写状态的入口（如 `PutObject`）。未就绪返回 **503**、`BurnbridgeUnitNotReady`。**`HeadBucket`** 对短暂启动窗口保留小范围重试。运行若遇 **`TestUnitReady` `Unimplemented`**（旧刻录端），会打日志并在非启动阶段降级放行；启动阶段则**不允许** `Unimplemented`，必须实现本 RPC。
 8. **SQLite**：元数据按 **桶名** 分区；若此前使用固定桶名 **`burn-jobs`**，切换到「卷标即桶名」后，旧库中的行不会自动出现在新桶名下，需自行迁移或沿用新库。
 
 ## 换机检查清单
