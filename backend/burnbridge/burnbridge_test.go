@@ -719,6 +719,82 @@ func TestEnsureActiveBucketLoadedSingleflight(t *testing.T) {
 	}
 }
 
+func TestEnsureActiveBucketLoadedSkipsProbeDuringRecentNoDiscWindow(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var readyCalls int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				atomic.AddInt32(&readyCalls, 1)
+				return &burnbridgev1.TestUnitReadyResponse{
+					Ready:       true,
+					VolumeLabel: "DISC-A",
+				}, nil
+			},
+		},
+		lastNoDiscObservedAt: time.Now().UTC(),
+		importedBucketState:  map[string]bool{},
+	}
+
+	if err := b.ensureActiveBucketLoaded(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&readyCalls); got != 0 {
+		t.Fatalf("expected no TestUnitReady call during no-disc cooldown, got %d", got)
+	}
+	if strings.TrimSpace(b.activeBucket) != "" {
+		t.Fatalf("expected active bucket to remain empty during no-disc cooldown, got %q", b.activeBucket)
+	}
+}
+
+func TestEnsureActiveBucketLoadedReprobesAfterNoDiscCooldown(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var readyCalls int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				atomic.AddInt32(&readyCalls, 1)
+				return &burnbridgev1.TestUnitReadyResponse{
+					Ready:       true,
+					VolumeLabel: "DISC-A",
+				}, nil
+			},
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "disc-a",
+				}, nil
+			},
+		},
+		lastNoDiscObservedAt: time.Now().UTC().Add(-(noDiscProbeCooldown + time.Second)),
+		importedBucketState:  map[string]bool{},
+	}
+
+	if err := b.ensureActiveBucketLoaded(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt32(&readyCalls); got != 1 {
+		t.Fatalf("expected one TestUnitReady reprobe after no-disc cooldown, got %d", got)
+	}
+	if got := strings.TrimSpace(b.activeBucket); got != "disc-a" {
+		t.Fatalf("expected reprobe to restore active bucket disc-a, got %q", got)
+	}
+}
+
 func TestEnsureImportedBucketStateSingleflightForEmptyBucket(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)

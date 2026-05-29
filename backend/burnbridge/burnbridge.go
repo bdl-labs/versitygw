@@ -182,6 +182,7 @@ type BurnBridge struct {
 	lastReadyVolumeLabel   string
 	lastNoDiscBackupPath   string
 	lastNoDiscBackupBucket string
+	lastNoDiscObservedAt   time.Time
 	importedBucketState    map[string]bool
 	statusWatchCancel      context.CancelFunc
 	statusWatchEnabled     atomic.Bool
@@ -210,6 +211,7 @@ const (
 	listDefaultMaxKeys     int32 = 1000
 	defaultPutQueueLimit         = 512
 	burnbridgeACLAttribute       = "acl"
+	noDiscProbeCooldown          = 3 * time.Second
 	recorderReadyRetryAttempts   = 5
 	recorderReadyRetryDelay      = 750 * time.Millisecond
 )
@@ -994,7 +996,20 @@ func (b *BurnBridge) ensureActiveBucketLoaded(ctx context.Context) error {
 		}
 	}
 
+	if b.noDiscRecentlyObserved() {
+		return nil
+	}
+
 	return b.runRecorderStateProbe(ctx)
+}
+
+func (b *BurnBridge) noDiscRecentlyObserved() bool {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	if !b.lastNoDiscObservedAt.IsZero() && time.Since(b.lastNoDiscObservedAt) < noDiscProbeCooldown {
+		return true
+	}
+	return false
 }
 
 func (b *BurnBridge) captureReadyDiscIdentity(resp *burnbridgev1.TestUnitReadyResponse) {
@@ -1020,6 +1035,7 @@ func (b *BurnBridge) handleNoDiscState() error {
 	b.activeBucket = ""
 	b.volumeLabelRaw = ""
 	b.udfLabel = ""
+	b.lastNoDiscObservedAt = time.Now().UTC()
 	b.importedBucketState = make(map[string]bool)
 	b.stateMu.Unlock()
 	return nil
@@ -1134,6 +1150,7 @@ func (b *BurnBridge) maybeRestoreNoDiscBackup(resp *burnbridgev1.TestUnitReadyRe
 	b.stateMu.Lock()
 	b.lastNoDiscBackupPath = ""
 	b.lastNoDiscBackupBucket = ""
+	b.lastNoDiscObservedAt = time.Time{}
 	b.stateMu.Unlock()
 
 	slog.Info("burnbridge: restored no-disc backup after same disc reinserted",
