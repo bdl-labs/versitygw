@@ -959,6 +959,54 @@ func TestSyncActiveDiscStateImportsCommittedObjectsFromRecorder(t *testing.T) {
 	}
 }
 
+func TestSyncActiveDiscStateSkipsImportedStateProbeWhenMetadataAlreadyPresent(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "dir/file.txt", &meta.BurnbridgeCommittedRecord{
+		Status:       "imported",
+		ETag:         "\"abc\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+		Size:         42,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var importedCalls int32
+	b := &BurnBridge{
+		meta:           store,
+		activeBucket:   "disc-a",
+		volumeLabelRaw: "DISC-A",
+		udfLabel:       "DISC-A",
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				atomic.AddInt32(&importedCalls, 1)
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Bucket:         "disc-a",
+					UdfVolumeLabel: "DISC-A",
+					Loaded:         true,
+				}, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	if err := b.syncActiveDiscState(&burnbridgev1.TestUnitReadyResponse{
+		Ready:       true,
+		VolumeLabel: "DISC-A",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := atomic.LoadInt32(&importedCalls); got != 0 {
+		t.Fatalf("expected no GetImportedBucketState call when metadata already present, got %d", got)
+	}
+}
+
 func TestSyncActiveDiscStatePrefersRecorderImportedBucket(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)

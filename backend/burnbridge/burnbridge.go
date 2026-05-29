@@ -815,7 +815,7 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 			return err
 		}
-		return b.syncImportedBucketState(context.Background(), b.activeBucket)
+		return b.ensureImportedBucketState(context.Background(), b.activeBucket)
 	}
 
 	if binding, ok := loadDiscBucketBinding(b.meta, rawVolume); ok && binding != nil {
@@ -827,7 +827,7 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 			return err
 		}
-		return b.syncImportedBucketState(context.Background(), b.activeBucket)
+		return b.ensureImportedBucketState(context.Background(), b.activeBucket)
 	}
 
 	sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
@@ -847,7 +847,7 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 		return err
 	}
-	return b.syncImportedBucketState(context.Background(), b.activeBucket)
+	return b.ensureImportedBucketState(context.Background(), b.activeBucket)
 }
 
 func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string) error {
