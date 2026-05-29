@@ -202,8 +202,8 @@ const (
 	listDefaultMaxKeys     int32 = 1000
 	defaultPutQueueLimit         = 512
 	burnbridgeACLAttribute       = "acl"
-	headBucketReadyRetryAttempts = 5
-	headBucketReadyRetryDelay    = 750 * time.Millisecond
+	recorderReadyRetryAttempts   = 5
+	recorderReadyRetryDelay      = 750 * time.Millisecond
 )
 
 // burnbridgeWORMNoDelete is returned for delete operations on WORM optical media.
@@ -1218,25 +1218,25 @@ func (b *BurnBridge) HeadBucket(ctx context.Context, input *s3.HeadBucketInput) 
 
 func (b *BurnBridge) requireRecorderReadyWithRetry(ctx context.Context) error {
 	var lastErr error
-	for attempt := 1; attempt <= headBucketReadyRetryAttempts; attempt++ {
+	for attempt := 1; attempt <= recorderReadyRetryAttempts; attempt++ {
 		err := b.requireRecorderReady(ctx)
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		if !shouldRetryRecorderReady(err) || attempt == headBucketReadyRetryAttempts {
+		if !shouldRetryRecorderReady(err) || attempt == recorderReadyRetryAttempts {
 			return err
 		}
 
-		slog.Warn("burnbridge: HeadBucket recorder readiness retry",
+		slog.Warn("burnbridge: recorder readiness retry",
 			"attempt", attempt,
-			"max_attempts", headBucketReadyRetryAttempts,
+			"max_attempts", recorderReadyRetryAttempts,
 			"error", err)
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(headBucketReadyRetryDelay):
+		case <-time.After(recorderReadyRetryDelay):
 		}
 	}
 
@@ -1547,7 +1547,7 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
-	if err := b.requireRecorderReady(ctx); err != nil {
+	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
 		return nil, err
 	}
 
@@ -1721,7 +1721,7 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		return nil, s3err.GetAPIError(s3err.ErrInvalidPartNumber)
 	}
 
-	if err := b.requireRecorderReady(ctx); err != nil {
+	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
 		return nil, err
 	}
 
@@ -1893,7 +1893,7 @@ func (b *BurnBridge) prepareCommittedListing(ctx context.Context, bucket string)
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	if err := b.requireRecorderReady(ctx); err != nil {
+	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
 		return nil, nil, err
 	}
 	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
@@ -2629,7 +2629,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
-	if err := b.requireRecorderReady(ctx); err != nil {
+	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
 
