@@ -21,7 +21,9 @@ import (
 	"github.com/versity/versitygw/backend/meta"
 	"github.com/versity/versitygw/s3response"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type testBurnBridgeClient struct {
@@ -32,6 +34,9 @@ type testBurnBridgeClient struct {
 	registerPullSourceFn  func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
 	finalizeFn            func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
 	importedBucketStateFn func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error)
+	testUnitReadyFn       func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error)
+	readObjectFn          func(context.Context, *burnbridgev1.ReadObjectRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error)
+	watchUnitStatusFn     func(context.Context, *burnbridgev1.WatchUnitStatusRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.UnitStatusEvent], error)
 }
 
 func (c testBurnBridgeClient) CreateJob(ctx context.Context, req *burnbridgev1.CreateJobRequest, opts ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
@@ -70,7 +75,10 @@ func (c testBurnBridgeClient) CancelJob(ctx context.Context, req *burnbridgev1.C
 	return &burnbridgev1.CancelJobResponse{}, nil
 }
 
-func (testBurnBridgeClient) ReadObject(context.Context, *burnbridgev1.ReadObjectRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error) {
+func (c testBurnBridgeClient) ReadObject(ctx context.Context, req *burnbridgev1.ReadObjectRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error) {
+	if c.readObjectFn != nil {
+		return c.readObjectFn(ctx, req, opts...)
+	}
 	return nil, nil
 }
 
@@ -81,8 +89,18 @@ func (c testBurnBridgeClient) RegisterS3ObjectPullSource(ctx context.Context, re
 	return &burnbridgev1.RegisterS3ObjectPullSourceResponse{}, nil
 }
 
-func (testBurnBridgeClient) TestUnitReady(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+func (c testBurnBridgeClient) TestUnitReady(ctx context.Context, req *burnbridgev1.TestUnitReadyRequest, opts ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+	if c.testUnitReadyFn != nil {
+		return c.testUnitReadyFn(ctx, req, opts...)
+	}
 	return &burnbridgev1.TestUnitReadyResponse{Ready: true}, nil
+}
+
+func (c testBurnBridgeClient) WatchUnitStatus(ctx context.Context, req *burnbridgev1.WatchUnitStatusRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.UnitStatusEvent], error) {
+	if c.watchUnitStatusFn != nil {
+		return c.watchUnitStatusFn(ctx, req, opts...)
+	}
+	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
 func (testBurnBridgeClient) GetDiscInfo(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
@@ -300,6 +318,52 @@ func TestListBucketsBootstrapsACLForAutoMappedDisc(t *testing.T) {
 	}
 	if acl.Owner != "drive" {
 		t.Fatalf("expected bootstrapped owner drive, got %q", acl.Owner)
+	}
+}
+
+func TestGetBucketAclBootstrapsACLForAuthenticatedUser(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		activeBucket: "e60302480000000025891a00",
+		udfLabel:     "E60302480000000025891A00",
+	}
+
+	ctx := context.WithValue(context.Background(), "account", auth.Account{
+		Access: "drive",
+		Role:   auth.RoleUser,
+	})
+
+	raw, err := b.GetBucketAcl(ctx, &s3.GetBucketAclInput{Bucket: ptr("e60302480000000025891a00")})
+	if err != nil {
+		t.Fatalf("GetBucketAcl returned error: %v", err)
+	}
+
+	acl, err := auth.ParseACL(raw)
+	if err != nil {
+		t.Fatalf("ParseACL returned error: %v", err)
+	}
+	if acl.Owner != "drive" {
+		t.Fatalf("expected bootstrapped owner drive, got %q", acl.Owner)
+	}
+
+	persistedRaw, err := store.RetrieveAttribute(nil, "e60302480000000025891a00", "", burnbridgeACLAttribute)
+	if err != nil {
+		t.Fatalf("RetrieveAttribute returned error: %v", err)
+	}
+	persistedACL, err := auth.ParseACL(persistedRaw)
+	if err != nil {
+		t.Fatalf("ParseACL persisted returned error: %v", err)
+	}
+	if persistedACL.Owner != "drive" {
+		t.Fatalf("expected persisted owner drive, got %q", persistedACL.Owner)
 	}
 }
 
@@ -526,6 +590,241 @@ func TestHeadAndListUseMetadataOnly(t *testing.T) {
 	}
 	if len(list.Contents) != 1 || list.Contents[0].Size == nil || *list.Contents[0].Size != 1234 {
 		t.Fatalf("unexpected list output: %#v", list.Contents)
+	}
+}
+
+func TestMetadataHotPathsDoNotProbeRecorder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Date(2026, 5, 29, 9, 10, 11, 0, time.UTC)
+	rec := &meta.BurnbridgeCommittedRecord{
+		Size:         4096,
+		ETag:         "\"etag-hot\"",
+		LastModified: now.Format(time.RFC3339Nano),
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "bucket1", "file.bin", rec); err != nil {
+		t.Fatal(err)
+	}
+
+	var readyCalls int32
+	var importedCalls int32
+	var readCalls int32
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "bucket1",
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				atomic.AddInt32(&readyCalls, 1)
+				return &burnbridgev1.TestUnitReadyResponse{Ready: true, VolumeLabel: "DISC-1"}, nil
+			},
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				atomic.AddInt32(&importedCalls, 1)
+				return &burnbridgev1.GetImportedBucketStateResponse{Loaded: true, Bucket: "bucket1"}, nil
+			},
+			readObjectFn: func(context.Context, *burnbridgev1.ReadObjectRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error) {
+				atomic.AddInt32(&readCalls, 1)
+				return nil, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	if _, err := b.HeadBucket(context.Background(), &s3.HeadBucketInput{Bucket: ptr("bucket1")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: ptr("bucket1"),
+		Key:    ptr("file.bin"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.ListObjects(context.Background(), &s3.ListObjectsInput{
+		Bucket: ptr("bucket1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if atomic.LoadInt32(&readyCalls) != 0 {
+		t.Fatalf("expected no TestUnitReady calls on metadata hot paths, got %d", readyCalls)
+	}
+	if atomic.LoadInt32(&importedCalls) != 0 {
+		t.Fatalf("expected no GetImportedBucketState calls on metadata hot paths, got %d", importedCalls)
+	}
+	if atomic.LoadInt32(&readCalls) != 0 {
+		t.Fatalf("expected no ReadObject fallback on metadata hot paths, got %d", readCalls)
+	}
+}
+
+func TestEnsureActiveBucketLoadedSingleflight(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var readyCalls int32
+	start := make(chan struct{})
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				atomic.AddInt32(&readyCalls, 1)
+				<-start
+				return &burnbridgev1.TestUnitReadyResponse{
+					Ready:       true,
+					VolumeLabel: "DISC-A",
+				}, nil
+			},
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "disc-a",
+				}, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	const workers = 4
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = b.ensureActiveBucketLoaded(context.Background())
+		}(i)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&readyCalls); got != 1 {
+		t.Fatalf("expected one TestUnitReady call, got %d", got)
+	}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d returned error: %v", i, err)
+		}
+	}
+	if got := strings.TrimSpace(b.activeBucket); got != "disc-a" {
+		t.Fatalf("expected active bucket disc-a, got %q", got)
+	}
+}
+
+func TestEnsureImportedBucketStateSingleflightForEmptyBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var importedCalls int32
+	start := make(chan struct{})
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "bucket1",
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				atomic.AddInt32(&importedCalls, 1)
+				<-start
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "bucket1",
+					Objects: []*burnbridgev1.ImportedObjectState{
+						{
+							ObjectKey:       "dir/file.txt",
+							Size:            42,
+							Etag:            "\"abc\"",
+							LastModifiedUtc: time.Date(2026, 5, 29, 12, 0, 0, 0, time.UTC).Format(time.RFC3339Nano),
+						},
+					},
+				}, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	const workers = 4
+	errs := make([]error, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			errs[idx] = b.ensureImportedBucketState(context.Background(), "bucket1")
+		}(i)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&importedCalls); got != 1 {
+		t.Fatalf("expected one GetImportedBucketState call, got %d", got)
+	}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("worker %d returned error: %v", i, err)
+		}
+	}
+	sum, err := store.GetCommittedObjectSummary("bucket1", "dir/file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Size != 42 {
+		t.Fatalf("expected imported size 42, got %d", sum.Size)
+	}
+}
+
+func TestApplyRecorderStatusEventClearsBucketOnNoDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:           store,
+		activeBucket:   "disc-a",
+		volumeLabelRaw: "DISC-A",
+		udfLabel:       "DISC-A",
+		metaDBPath:     dbPath,
+		importedBucketState: map[string]bool{
+			"disc-a": true,
+		},
+	}
+
+	err = b.applyRecorderStatusEvent(&burnbridgev1.UnitStatusEvent{
+		Snapshot: &burnbridgev1.TestUnitReadyResponse{
+			Ready:   false,
+			Message: "NoDisc: no disc inserted in optical drive",
+		},
+		Sequence: 1,
+		Source:   "watch:test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(b.activeBucket) != "" {
+		t.Fatalf("expected active bucket to be cleared, got %q", b.activeBucket)
 	}
 }
 

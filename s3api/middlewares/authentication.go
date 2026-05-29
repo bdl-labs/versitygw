@@ -98,6 +98,7 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 		}
 
 		utils.ContextKeyAccount.Set(ctx, account)
+		ctx.Context().SetUserValue("account", account)
 
 		var contentLength int64
 		contentLengthStr := ctx.Get("Content-Length")

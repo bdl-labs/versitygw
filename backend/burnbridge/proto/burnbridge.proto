@@ -43,6 +43,9 @@ service BurnBridge {
   // Probe whether current unit/session is ready for I/O.
   rpc TestUnitReady(TestUnitReadyRequest) returns (TestUnitReadyResponse);
 
+  // Subscribe to recorder unit/media readiness updates.
+  rpc WatchUnitStatus(WatchUnitStatusRequest) returns (stream UnitStatusEvent);
+
   // Query drive + disc information.
   rpc GetDiscInfo(GetDiscInfoRequest) returns (GetDiscInfoResponse);
 
@@ -78,6 +81,10 @@ message GetVersionResponse {
 
 message TestUnitReadyRequest {}
 
+message WatchUnitStatusRequest {
+  bool include_initial_snapshot = 1;
+}
+
 message TestUnitReadyResponse {
   bool ready = 1;
   string message = 2;
@@ -96,6 +103,12 @@ message TestUnitReadyResponse {
   bool track_next_writable_address_valid = 16;
   string disc_serial_number_hex = 15;
   string writable_state = 17;
+}
+
+message UnitStatusEvent {
+  TestUnitReadyResponse snapshot = 1;
+  int64 sequence = 2;
+  string source = 3;
 }
 
 message GetDiscInfoRequest {

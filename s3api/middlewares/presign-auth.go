@@ -60,6 +60,7 @@ func VerifyPresignedV4Signature(root RootUserConfig, iam auth.IAMService, region
 			return err
 		}
 		utils.ContextKeyAccount.Set(ctx, account)
+		ctx.Context().SetUserValue("account", account)
 
 		var contentLength int64
 		contentLengthStr := ctx.Get("Content-Length")

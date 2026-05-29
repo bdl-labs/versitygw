@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing/fstest"
 	"time"
@@ -159,6 +160,10 @@ type BurnBridge struct {
 	putQueueSem chan struct{}
 	// finalizeGroup deduplicates concurrent FinalizeLayout requests for the same bucket/closeDisc tuple.
 	finalizeGroup singleflight.Group
+	// recorderStateGroup deduplicates concurrent TestUnitReady probes.
+	recorderStateGroup singleflight.Group
+	// importedStateGroup deduplicates concurrent imported-state refreshes for the same bucket.
+	importedStateGroup singleflight.Group
 
 	recorderS3Endpoint        string
 	recorderS3Region          string
@@ -177,6 +182,9 @@ type BurnBridge struct {
 	lastReadyVolumeLabel   string
 	lastNoDiscBackupPath   string
 	lastNoDiscBackupBucket string
+	importedBucketState    map[string]bool
+	statusWatchCancel      context.CancelFunc
+	statusWatchEnabled     atomic.Bool
 	metaDBPath             string
 }
 
@@ -598,6 +606,7 @@ func New(opts Options) (*BurnBridge, error) {
 		recorderS3PathStyle:       opts.RecorderS3ForcePathStyle,
 		recorderS3PresignedGetURL: strings.TrimSpace(opts.RecorderS3PresignedGetURL),
 		putQueueSem:               make(chan struct{}, defaultPutQueueLimit),
+		importedBucketState:       make(map[string]bool),
 		metaDBPath:                opts.DBPath,
 	}
 	if strings.TrimSpace(activeBucket) != "" {
@@ -607,6 +616,7 @@ func New(opts Options) (*BurnBridge, error) {
 				"error", err)
 		}
 	}
+	bridge.startRecorderStatusWatcher()
 	return bridge, nil
 }
 
@@ -616,6 +626,133 @@ func sharedReadMountPath() string {
 		return ""
 	}
 	return strings.TrimSpace(cfg.OpticalArchive.ReadMountPath)
+}
+
+func normalizeRuntimeBucket(bucket string) string {
+	return strings.ToLower(strings.TrimSpace(bucket))
+}
+
+func (b *BurnBridge) markImportedBucketSynced(bucket string) {
+	normalized := normalizeRuntimeBucket(bucket)
+	if normalized == "" {
+		return
+	}
+
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	if b.importedBucketState == nil {
+		b.importedBucketState = make(map[string]bool)
+	}
+	b.importedBucketState[normalized] = true
+}
+
+func (b *BurnBridge) importedBucketSynced(bucket string) bool {
+	normalized := normalizeRuntimeBucket(bucket)
+	if normalized == "" {
+		return false
+	}
+
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	return b.importedBucketState[normalized]
+}
+
+func (b *BurnBridge) resetImportedBucketSyncState() {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	b.importedBucketState = make(map[string]bool)
+}
+
+func (b *BurnBridge) runRecorderStateProbe(ctx context.Context) error {
+	_, err, _ := b.recorderStateGroup.Do("test-unit-ready", func() (interface{}, error) {
+		return nil, b.requireRecorderReady(ctx)
+	})
+	return err
+}
+
+func (b *BurnBridge) startRecorderStatusWatcher() {
+	if b.grpc == nil || b.statusWatchEnabled.Load() {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	b.statusWatchCancel = cancel
+	b.statusWatchEnabled.Store(true)
+
+	go b.runRecorderStatusWatcher(ctx)
+}
+
+func (b *BurnBridge) runRecorderStatusWatcher(ctx context.Context) {
+	defer b.statusWatchEnabled.Store(false)
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		err := b.watchRecorderStatusStream(ctx)
+		if err == nil || ctx.Err() != nil {
+			return
+		}
+		if isGRPCUnimplemented(err) {
+			slog.Info("burnbridge: recorder WatchUnitStatus unavailable; continuing with pull-based readiness fallback")
+			return
+		}
+
+		slog.Warn("burnbridge: recorder status stream ended; retrying",
+			"error", err)
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func (b *BurnBridge) watchRecorderStatusStream(ctx context.Context) error {
+	stream, err := b.grpc.WatchUnitStatus(ctx, &burnbridgev1.WatchUnitStatusRequest{
+		IncludeInitialSnapshot: true,
+	})
+	if err != nil {
+		return err
+	}
+
+	slog.Info("burnbridge: recorder status stream connected")
+	for {
+		event, err := stream.Recv()
+		if err != nil {
+			return err
+		}
+		if err := b.applyRecorderStatusEvent(event); err != nil {
+			slog.Warn("burnbridge: failed to apply recorder status event",
+				"error", err)
+		}
+	}
+}
+
+func (b *BurnBridge) applyRecorderStatusEvent(event *burnbridgev1.UnitStatusEvent) error {
+	if event == nil || event.GetSnapshot() == nil {
+		return nil
+	}
+
+	resp := event.GetSnapshot()
+	if !resp.GetReady() {
+		if readyResponseIndicatesNoDisc(resp) {
+			return b.handleNoDiscState()
+		}
+		return nil
+	}
+
+	if err := b.syncActiveDiscState(resp); err != nil {
+		return err
+	}
+	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
+		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
+			return fmt.Errorf("burnbridge: persist streamed disc info: %w", err)
+		}
+	}
+	return nil
 }
 
 func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
@@ -776,6 +913,7 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 		}
 	}
 
+	b.markImportedBucketSynced(resolvedBucket)
 	return nil
 }
 
@@ -838,38 +976,25 @@ func (b *BurnBridge) ensureImportedBucketState(ctx context.Context, bucket strin
 		return err
 	}
 
-	return b.syncImportedBucketState(ctx, bucket)
+	if b.importedBucketSynced(bucket) {
+		return nil
+	}
+
+	_, err, _ = b.importedStateGroup.Do(normalizeRuntimeBucket(bucket), func() (interface{}, error) {
+		return nil, b.syncImportedBucketState(ctx, bucket)
+	})
+	return err
 }
 
 func (b *BurnBridge) ensureActiveBucketLoaded(ctx context.Context) error {
 	if strings.TrimSpace(b.activeBucket) != "" {
 		_ = b.restoreBucketStateFromMetadata(b.activeBucket)
-	}
-
-	resp, err := b.grpc.TestUnitReady(ctx, &burnbridgev1.TestUnitReadyRequest{})
-	if err != nil {
-		if isGRPCUnimplemented(err) {
+		if strings.TrimSpace(b.activeBucket) != "" {
 			return nil
 		}
-		return fmt.Errorf("burnbridge TestUnitReady: %w", err)
-	}
-	if resp == nil || !resp.GetReady() {
-		if readyResponseIndicatesNoDisc(resp) {
-			return b.handleNoDiscState()
-		}
-		return nil
 	}
 
-	if err := b.syncActiveDiscState(resp); err != nil {
-		return err
-	}
-	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
-		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
-			return fmt.Errorf("burnbridge: persist disc info: %w", err)
-		}
-	}
-
-	return nil
+	return b.runRecorderStateProbe(ctx)
 }
 
 func (b *BurnBridge) captureReadyDiscIdentity(resp *burnbridgev1.TestUnitReadyResponse) {
@@ -895,6 +1020,7 @@ func (b *BurnBridge) handleNoDiscState() error {
 	b.activeBucket = ""
 	b.volumeLabelRaw = ""
 	b.udfLabel = ""
+	b.importedBucketState = make(map[string]bool)
 	b.stateMu.Unlock()
 	return nil
 }
@@ -1057,6 +1183,7 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 	b.activeBucket = bucket
 	b.volumeLabelRaw = volumeLabel
 	b.udfLabel = volumeLabel
+	b.resetImportedBucketSyncState()
 	if originalProbe != "" {
 		if err := persistDiscBucketBinding(b.meta, originalProbe, bucket, volumeLabel); err != nil {
 			return err
@@ -1210,16 +1337,13 @@ func (b *BurnBridge) HeadBucket(ctx context.Context, input *s3.HeadBucketInput) 
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
-		return nil, err
-	}
 	return &s3.HeadBucketOutput{}, nil
 }
 
 func (b *BurnBridge) requireRecorderReadyWithRetry(ctx context.Context) error {
 	var lastErr error
 	for attempt := 1; attempt <= recorderReadyRetryAttempts; attempt++ {
-		err := b.requireRecorderReady(ctx)
+		err := b.runRecorderStateProbe(ctx)
 		if err == nil {
 			return nil
 		}
@@ -1285,9 +1409,15 @@ func (b *BurnBridge) GetBucketVersioning(_ context.Context, bucket string) (s3re
 }
 
 // GetBucketAcl provides a minimal ACL view for auth middleware compatibility.
-func (b *BurnBridge) GetBucketAcl(_ context.Context, input *s3.GetBucketAclInput) ([]byte, error) {
+func (b *BurnBridge) GetBucketAcl(ctx context.Context, input *s3.GetBucketAclInput) ([]byte, error) {
 	if input == nil || input.Bucket == nil || !b.burnbridgeBucketExists(*input.Bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if acct, ok := ctx.Value("account").(auth.Account); ok {
+		if strings.TrimSpace(acct.Access) != "" && acct.Role != auth.RoleAdmin {
+			_, raw, err := b.ensureBucketACLForOwner(*input.Bucket, acct.Access)
+			return raw, err
+		}
 	}
 	_, raw, err := b.loadBucketACL(*input.Bucket)
 	return raw, err
@@ -1377,6 +1507,10 @@ func (b *BurnBridge) String() string { return "BurnBridge" }
 
 // Close releases gRPC resources.
 func (b *BurnBridge) Close() error {
+	if b.statusWatchCancel != nil {
+		b.statusWatchCancel()
+		b.statusWatchCancel = nil
+	}
 	if b.grpcConn == nil {
 		return nil
 	}
@@ -1547,10 +1681,6 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
-	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
-		return nil, err
-	}
-
 	if key == meta.BurnbridgeFinalizeLayoutObjectKey {
 		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, false)
 		if err != nil {
@@ -1591,16 +1721,20 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 		}, nil
 	}
 
-	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
-		return nil, err
-	}
-
 	summary, err := b.meta.GetCommittedObjectSummary(bucket, key)
 	if err != nil {
 		if errors.Is(err, meta.ErrNoSuchKey) {
-			return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+			if syncErr := b.ensureImportedBucketState(ctx, bucket); syncErr != nil {
+				return nil, syncErr
+			}
+			summary, err = b.meta.GetCommittedObjectSummary(bucket, key)
 		}
-		return nil, err
+		if err != nil {
+			if errors.Is(err, meta.ErrNoSuchKey) {
+				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+			}
+			return nil, err
+		}
 	}
 
 	etagCopy := summary.ETag
@@ -1721,10 +1855,6 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		return nil, s3err.GetAPIError(s3err.ErrInvalidPartNumber)
 	}
 
-	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
-		return nil, err
-	}
-
 	if key == meta.BurnbridgeFinalizeLayoutObjectKey {
 		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, false)
 		if err != nil {
@@ -1793,16 +1923,20 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		return nil, err
 	}
 
-	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
-		return fail(err)
-	}
-
 	summary, err := b.meta.GetCommittedObjectSummary(bucket, key)
 	if err != nil {
 		if errors.Is(err, meta.ErrNoSuchKey) {
-			return fail(s3err.GetAPIError(s3err.ErrNoSuchKey))
+			if syncErr := b.ensureImportedBucketState(ctx, bucket); syncErr != nil {
+				return fail(syncErr)
+			}
+			summary, err = b.meta.GetCommittedObjectSummary(bucket, key)
 		}
-		return fail(err)
+		if err != nil {
+			if errors.Is(err, meta.ErrNoSuchKey) {
+				return fail(s3err.GetAPIError(s3err.ErrNoSuchKey))
+			}
+			return fail(err)
+		}
 	}
 
 	etagCopy := summary.ETag
@@ -1893,9 +2027,14 @@ func (b *BurnBridge) prepareCommittedListing(ctx context.Context, bucket string)
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
+	fsys, byKey, err := b.committedMapFSAndSummaries(bucket)
+	if err != nil {
 		return nil, nil, err
 	}
+	if len(byKey) > 0 {
+		return fsys, byKey, nil
+	}
+
 	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
 		return nil, nil, err
 	}
@@ -2176,7 +2315,9 @@ func (b *BurnBridge) recorderImportedStateContainsObject(ctx context.Context, bu
 		return false, fmt.Errorf("burnbridge GetImportedBucketState: %w", err)
 	}
 	if resp == nil || !resp.GetLoaded() {
-		return false, nil
+		// Recorder has not positively loaded/imported its current layout view yet.
+		// Preserve local resume/committed state rather than incorrectly discarding it.
+		return true, nil
 	}
 
 	resolvedBucket := strings.TrimSpace(resp.GetBucket())

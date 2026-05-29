@@ -28,6 +28,7 @@ const (
 	BurnBridge_ReadObject_FullMethodName                 = "/burnbridge.v1.BurnBridge/ReadObject"
 	BurnBridge_RegisterS3ObjectPullSource_FullMethodName = "/burnbridge.v1.BurnBridge/RegisterS3ObjectPullSource"
 	BurnBridge_TestUnitReady_FullMethodName              = "/burnbridge.v1.BurnBridge/TestUnitReady"
+	BurnBridge_WatchUnitStatus_FullMethodName            = "/burnbridge.v1.BurnBridge/WatchUnitStatus"
 	BurnBridge_GetDiscInfo_FullMethodName                = "/burnbridge.v1.BurnBridge/GetDiscInfo"
 	BurnBridge_GetImportedBucketState_FullMethodName     = "/burnbridge.v1.BurnBridge/GetImportedBucketState"
 	BurnBridge_FinalizeLayout_FullMethodName             = "/burnbridge.v1.BurnBridge/FinalizeLayout"
@@ -66,6 +67,8 @@ type BurnBridgeClient interface {
 	RegisterS3ObjectPullSource(ctx context.Context, in *RegisterS3ObjectPullSourceRequest, opts ...grpc.CallOption) (*RegisterS3ObjectPullSourceResponse, error)
 	// Probe whether current unit/session is ready for I/O.
 	TestUnitReady(ctx context.Context, in *TestUnitReadyRequest, opts ...grpc.CallOption) (*TestUnitReadyResponse, error)
+	// Subscribe to recorder unit/media readiness updates.
+	WatchUnitStatus(ctx context.Context, in *WatchUnitStatusRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UnitStatusEvent], error)
 	// Query drive + disc information.
 	GetDiscInfo(ctx context.Context, in *GetDiscInfoRequest, opts ...grpc.CallOption) (*GetDiscInfoResponse, error)
 	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
@@ -190,6 +193,25 @@ func (c *burnBridgeClient) TestUnitReady(ctx context.Context, in *TestUnitReadyR
 	return out, nil
 }
 
+func (c *burnBridgeClient) WatchUnitStatus(ctx context.Context, in *WatchUnitStatusRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UnitStatusEvent], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &BurnBridge_ServiceDesc.Streams[2], BurnBridge_WatchUnitStatus_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchUnitStatusRequest, UnitStatusEvent]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BurnBridge_WatchUnitStatusClient = grpc.ServerStreamingClient[UnitStatusEvent]
+
 func (c *burnBridgeClient) GetDiscInfo(ctx context.Context, in *GetDiscInfoRequest, opts ...grpc.CallOption) (*GetDiscInfoResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetDiscInfoResponse)
@@ -232,7 +254,7 @@ func (c *burnBridgeClient) UpdateLicense(ctx context.Context, in *UpdateLicenseR
 
 func (c *burnBridgeClient) UploadUpgradePackage(ctx context.Context, opts ...grpc.CallOption) (grpc.ClientStreamingClient[UploadUpgradePackageChunk, UploadUpgradePackageResponse], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &BurnBridge_ServiceDesc.Streams[2], BurnBridge_UploadUpgradePackage_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &BurnBridge_ServiceDesc.Streams[3], BurnBridge_UploadUpgradePackage_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +305,8 @@ type BurnBridgeServer interface {
 	RegisterS3ObjectPullSource(context.Context, *RegisterS3ObjectPullSourceRequest) (*RegisterS3ObjectPullSourceResponse, error)
 	// Probe whether current unit/session is ready for I/O.
 	TestUnitReady(context.Context, *TestUnitReadyRequest) (*TestUnitReadyResponse, error)
+	// Subscribe to recorder unit/media readiness updates.
+	WatchUnitStatus(*WatchUnitStatusRequest, grpc.ServerStreamingServer[UnitStatusEvent]) error
 	// Query drive + disc information.
 	GetDiscInfo(context.Context, *GetDiscInfoRequest) (*GetDiscInfoResponse, error)
 	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
@@ -331,6 +355,9 @@ func (UnimplementedBurnBridgeServer) RegisterS3ObjectPullSource(context.Context,
 }
 func (UnimplementedBurnBridgeServer) TestUnitReady(context.Context, *TestUnitReadyRequest) (*TestUnitReadyResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method TestUnitReady not implemented")
+}
+func (UnimplementedBurnBridgeServer) WatchUnitStatus(*WatchUnitStatusRequest, grpc.ServerStreamingServer[UnitStatusEvent]) error {
+	return status.Error(codes.Unimplemented, "method WatchUnitStatus not implemented")
 }
 func (UnimplementedBurnBridgeServer) GetDiscInfo(context.Context, *GetDiscInfoRequest) (*GetDiscInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDiscInfo not implemented")
@@ -515,6 +542,17 @@ func _BurnBridge_TestUnitReady_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BurnBridge_WatchUnitStatus_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchUnitStatusRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(BurnBridgeServer).WatchUnitStatus(m, &grpc.GenericServerStream[WatchUnitStatusRequest, UnitStatusEvent]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type BurnBridge_WatchUnitStatusServer = grpc.ServerStreamingServer[UnitStatusEvent]
+
 func _BurnBridge_GetDiscInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetDiscInfoRequest)
 	if err := dec(in); err != nil {
@@ -678,6 +716,11 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "ReadObject",
 			Handler:       _BurnBridge_ReadObject_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchUnitStatus",
+			Handler:       _BurnBridge_WatchUnitStatus_Handler,
 			ServerStreams: true,
 		},
 		{
