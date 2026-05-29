@@ -174,19 +174,22 @@ type BurnBridge struct {
 	recorderS3PresignedGetURL string
 
 	// activeBucket is the S3 bucket name for this session, derived from the disc volume label at New().
-	activeBucket           string
-	volumeLabelRaw         string
-	allowBucketBinding     bool
-	stateMu                sync.Mutex
-	lastDiscSerialHex      string
-	lastReadyVolumeLabel   string
-	lastNoDiscBackupPath   string
-	lastNoDiscBackupBucket string
-	lastNoDiscObservedAt   time.Time
-	importedBucketState    map[string]bool
-	statusWatchCancel      context.CancelFunc
-	statusWatchEnabled     atomic.Bool
-	metaDBPath             string
+	activeBucket                string
+	volumeLabelRaw              string
+	allowBucketBinding          bool
+	stateMu                     sync.Mutex
+	lastDiscSerialHex           string
+	lastReadyVolumeLabel        string
+	lastNoDiscBackupPath        string
+	lastNoDiscBackupBucket      string
+	lastNoDiscObservedAt        time.Time
+	lastRecorderReadyBucket     string
+	lastRecorderWritableState   string
+	lastRecorderReadyObservedAt time.Time
+	importedBucketState         map[string]bool
+	statusWatchCancel           context.CancelFunc
+	statusWatchEnabled          atomic.Bool
+	metaDBPath                  string
 }
 
 var _ backend.Backend = &BurnBridge{}
@@ -208,12 +211,12 @@ const (
 
 	defaultChunkSizeBytes = 1 << 20
 
-	listDefaultMaxKeys     int32 = 1000
-	defaultPutQueueLimit         = 512
-	burnbridgeACLAttribute       = "acl"
-	noDiscProbeCooldown          = 3 * time.Second
-	recorderReadyRetryAttempts   = 5
-	recorderReadyRetryDelay      = 750 * time.Millisecond
+	listDefaultMaxKeys         int32 = 1000
+	defaultPutQueueLimit             = 512
+	burnbridgeACLAttribute           = "acl"
+	noDiscProbeCooldown              = 3 * time.Second
+	recorderReadyRetryAttempts       = 5
+	recorderReadyRetryDelay          = 750 * time.Millisecond
 )
 
 // burnbridgeWORMNoDelete is returned for delete operations on WORM optical media.
@@ -415,23 +418,23 @@ func discInfoDocFromProto(s3Bucket string, resp *burnbridgev1.TestUnitReadyRespo
 		return nil
 	}
 	return &meta.BurnbridgeDiscInfoDocument{
-		Bucket:                   s3Bucket,
-		VolumeLabel:              strings.TrimSpace(resp.GetVolumeLabel()),
-		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
-		DiscSerialNumberHex:      strings.TrimSpace(resp.GetDiscSerialNumberHex()),
-		TotalCapacityBytes:       resp.GetTotalCapacityBytes(),
-		FreeCapacityBytes:        resp.GetFreeCapacityBytes(),
-		UsedCapacityBytes:        resp.GetUsedCapacityBytes(),
-		WritableCapacityBytes:    resp.GetWritableCapacityBytes(),
-		FinalizeReserveBytes:     resp.GetFinalizeReserveBytes(),
-		MediaType:                strings.TrimSpace(resp.GetMediaType()),
-		BlockSizeBytes:           resp.GetBlockSizeBytes(),
-		TotalBlocks:              resp.GetTotalBlocks(),
-		FreeBlocks:               resp.GetFreeBlocks(),
-		RecordableCapacityBlocks: resp.GetRecordableCapacityBlocks(),
-		TrackNextWritableAddress: resp.GetTrackNextWritableAddress(),
+		Bucket:                        s3Bucket,
+		VolumeLabel:                   strings.TrimSpace(resp.GetVolumeLabel()),
+		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:           strings.TrimSpace(resp.GetDiscSerialNumberHex()),
+		TotalCapacityBytes:            resp.GetTotalCapacityBytes(),
+		FreeCapacityBytes:             resp.GetFreeCapacityBytes(),
+		UsedCapacityBytes:             resp.GetUsedCapacityBytes(),
+		WritableCapacityBytes:         resp.GetWritableCapacityBytes(),
+		FinalizeReserveBytes:          resp.GetFinalizeReserveBytes(),
+		MediaType:                     strings.TrimSpace(resp.GetMediaType()),
+		BlockSizeBytes:                resp.GetBlockSizeBytes(),
+		TotalBlocks:                   resp.GetTotalBlocks(),
+		FreeBlocks:                    resp.GetFreeBlocks(),
+		RecordableCapacityBlocks:      resp.GetRecordableCapacityBlocks(),
+		TrackNextWritableAddress:      resp.GetTrackNextWritableAddress(),
 		TrackNextWritableAddressValid: resp.GetTrackNextWritableAddressValid(),
-		WritableState:            strings.TrimSpace(resp.GetWritableState()),
+		WritableState:                 strings.TrimSpace(resp.GetWritableState()),
 	}
 }
 
@@ -749,6 +752,7 @@ func (b *BurnBridge) applyRecorderStatusEvent(event *burnbridgev1.UnitStatusEven
 	if err := b.syncActiveDiscState(resp); err != nil {
 		return err
 	}
+	b.recordRecorderReadyState(resp)
 	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
 		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
 			return fmt.Errorf("burnbridge: persist streamed disc info: %w", err)
@@ -785,6 +789,7 @@ func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
 	if err := b.syncActiveDiscState(resp); err != nil {
 		return err
 	}
+	b.recordRecorderReadyState(resp)
 	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
 		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
 			return fmt.Errorf("burnbridge: persist disc info: %w", err)
@@ -1019,6 +1024,68 @@ func (b *BurnBridge) captureReadyDiscIdentity(resp *burnbridgev1.TestUnitReadyRe
 	b.lastReadyVolumeLabel = strings.TrimSpace(resp.GetVolumeLabel())
 }
 
+func writableStateAllowsWrite(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "blank", "appendable":
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *BurnBridge) recordRecorderReadyState(resp *burnbridgev1.TestUnitReadyResponse) {
+	if resp == nil || !resp.GetReady() {
+		return
+	}
+
+	bucket := strings.TrimSpace(b.activeBucket)
+	if bucket == "" {
+		rawVolume := strings.TrimSpace(resp.GetVolumeLabel())
+		if rawVolume != "" {
+			sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
+			if err == nil {
+				bucket = sanitizedBucket
+			}
+		}
+	}
+
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	b.lastRecorderReadyBucket = bucket
+	b.lastRecorderWritableState = strings.TrimSpace(resp.GetWritableState())
+	b.lastRecorderReadyObservedAt = time.Now().UTC()
+}
+
+func (b *BurnBridge) clearRecorderReadyStateLocked() {
+	b.lastRecorderReadyBucket = ""
+	b.lastRecorderWritableState = ""
+	b.lastRecorderReadyObservedAt = time.Time{}
+}
+
+func (b *BurnBridge) cachedRecorderReadyAllowsWrite(bucket string) (string, time.Duration, bool) {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return "", 0, false
+	}
+	if !b.statusWatchEnabled.Load() {
+		return "", 0, false
+	}
+
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+
+	if !strings.EqualFold(trimmedBucket, strings.TrimSpace(b.lastRecorderReadyBucket)) {
+		return "", 0, false
+	}
+
+	writableState := strings.TrimSpace(b.lastRecorderWritableState)
+	if !writableStateAllowsWrite(writableState) {
+		return "", 0, false
+	}
+
+	return writableState, time.Since(b.lastRecorderReadyObservedAt), true
+}
+
 func (b *BurnBridge) handleNoDiscState() error {
 	b.stateMu.Lock()
 	activeBucket := strings.TrimSpace(b.activeBucket)
@@ -1037,6 +1104,7 @@ func (b *BurnBridge) handleNoDiscState() error {
 	b.udfLabel = ""
 	b.lastNoDiscObservedAt = time.Now().UTC()
 	b.importedBucketState = make(map[string]bool)
+	b.clearRecorderReadyStateLocked()
 	b.stateMu.Unlock()
 	return nil
 }
@@ -1207,23 +1275,23 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 		}
 	}
 	return b.meta.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
-		Bucket:                   bucket,
-		VolumeLabel:              volumeLabel,
-		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
-		DiscSerialNumberHex:      "",
-		TotalCapacityBytes:       0,
-		FreeCapacityBytes:        0,
-		UsedCapacityBytes:        0,
-		WritableCapacityBytes:    0,
-		FinalizeReserveBytes:     0,
-		MediaType:                "uninitialized",
-		BlockSizeBytes:           0,
-		TotalBlocks:              0,
-		FreeBlocks:               0,
-		RecordableCapacityBlocks: 0,
-		TrackNextWritableAddress: 0,
+		Bucket:                        bucket,
+		VolumeLabel:                   volumeLabel,
+		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:           "",
+		TotalCapacityBytes:            0,
+		FreeCapacityBytes:             0,
+		UsedCapacityBytes:             0,
+		WritableCapacityBytes:         0,
+		FinalizeReserveBytes:          0,
+		MediaType:                     "uninitialized",
+		BlockSizeBytes:                0,
+		TotalBlocks:                   0,
+		FreeBlocks:                    0,
+		RecordableCapacityBlocks:      0,
+		TrackNextWritableAddress:      0,
 		TrackNextWritableAddressValid: false,
-		WritableState:            "Unknown",
+		WritableState:                 "Unknown",
 	})
 }
 
@@ -1357,7 +1425,15 @@ func (b *BurnBridge) HeadBucket(ctx context.Context, input *s3.HeadBucketInput) 
 	return &s3.HeadBucketOutput{}, nil
 }
 
-func (b *BurnBridge) requireRecorderReadyWithRetry(ctx context.Context) error {
+func (b *BurnBridge) requireRecorderReadyWithRetry(ctx context.Context, bucket string) error {
+	if writableState, age, ok := b.cachedRecorderReadyAllowsWrite(bucket); ok {
+		slog.Info("burnbridge: skipping active TestUnitReady probe for PutObject; using cached recorder writable state",
+			"bucket", strings.TrimSpace(bucket),
+			"writable_state", writableState,
+			"cached_age_ms", age.Milliseconds())
+		return nil
+	}
+
 	var lastErr error
 	for attempt := 1; attempt <= recorderReadyRetryAttempts; attempt++ {
 		err := b.runRecorderStateProbe(ctx)
@@ -2787,7 +2863,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
-	if err := b.requireRecorderReadyWithRetry(ctx); err != nil {
+	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
 
