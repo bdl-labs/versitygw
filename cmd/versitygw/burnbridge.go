@@ -100,7 +100,7 @@ func burnbridgeCommand() *cli.Command {
 				Usage:       "max size in bytes per UploadObjectChunk message",
 				EnvVars:     []string{"VGW_BURNBRIDGE_GRPC_CHUNK_SIZE"},
 				Destination: &burnbridgeGRPCChunkSize,
-				Value:       1 << 20,
+				Value:       64 * 1024,
 			},
 			&cli.DurationFlag{
 				Name:        "grpc-dial-timeout",

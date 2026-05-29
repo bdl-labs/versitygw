@@ -92,8 +92,10 @@ message TestUnitReadyResponse {
   int32 total_blocks = 11;
   int32 free_blocks = 12;
   int32 recordable_capacity_blocks = 13;
-  int32 next_recordable_lba = 14;
+  int32 track_next_writable_address = 14;
+  bool track_next_writable_address_valid = 16;
   string disc_serial_number_hex = 15;
+  string writable_state = 17;
 }
 
 message GetDiscInfoRequest {
@@ -160,7 +162,9 @@ message OpticalDiscInfo {
   string disc_serial_number_hex = 12;
 
   int32 block_size_bytes = 13;
-  int32 next_recordable_lba = 14;
+  int32 track_next_writable_address = 14;
+  bool track_next_writable_address_valid = 23;
+  string writable_state = 24;
   // User-data byte totals from Primo block counters times block_size_bytes (bluray-demo: scaled capacity / free space).
   int64 media_capacity = 15;
   int64 media_free_space = 16;

@@ -416,7 +416,7 @@
       document.getElementById('rec-layout-db').value = recorder.LayoutDbPath || '';
       document.getElementById('rec-meta-template').value = recorder.MetadataDbFileNameTemplate || '';
       document.getElementById('rec-license-path').value = recorder.LicenseFilePath || '';
-      document.getElementById('rec-grpc-chunk').value = recorder.GrpcChunkSize ?? 1048576;
+      document.getElementById('rec-grpc-chunk').value = recorder.GrpcChunkSize ?? 65536;
       document.getElementById('rec-disc-serial-strategy').value = recorder.DiscSerialStrategy || '';
       document.getElementById('rec-volume-label-strategy').value = recorder.VolumeLabelStrategy || '';
       document.getElementById('rec-serial-prefix').value = recorder.SerialPrefix || '';

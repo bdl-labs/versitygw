@@ -251,24 +251,26 @@ func (*TestUnitReadyRequest) Descriptor() ([]byte, []int) {
 }
 
 type TestUnitReadyResponse struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	Ready                    bool                   `protobuf:"varint,1,opt,name=ready,proto3" json:"ready,omitempty"`
-	Message                  string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
-	VolumeLabel              string                 `protobuf:"bytes,3,opt,name=volume_label,json=volumeLabel,proto3" json:"volume_label,omitempty"`
-	TotalCapacityBytes       int64                  `protobuf:"varint,4,opt,name=total_capacity_bytes,json=totalCapacityBytes,proto3" json:"total_capacity_bytes,omitempty"`
-	FreeCapacityBytes        int64                  `protobuf:"varint,5,opt,name=free_capacity_bytes,json=freeCapacityBytes,proto3" json:"free_capacity_bytes,omitempty"`
-	MediaType                string                 `protobuf:"bytes,6,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
-	UsedCapacityBytes        int64                  `protobuf:"varint,7,opt,name=used_capacity_bytes,json=usedCapacityBytes,proto3" json:"used_capacity_bytes,omitempty"`
-	WritableCapacityBytes    int64                  `protobuf:"varint,8,opt,name=writable_capacity_bytes,json=writableCapacityBytes,proto3" json:"writable_capacity_bytes,omitempty"`
-	FinalizeReserveBytes     int64                  `protobuf:"varint,9,opt,name=finalize_reserve_bytes,json=finalizeReserveBytes,proto3" json:"finalize_reserve_bytes,omitempty"`
-	BlockSizeBytes           int32                  `protobuf:"varint,10,opt,name=block_size_bytes,json=blockSizeBytes,proto3" json:"block_size_bytes,omitempty"`
-	TotalBlocks              int32                  `protobuf:"varint,11,opt,name=total_blocks,json=totalBlocks,proto3" json:"total_blocks,omitempty"`
-	FreeBlocks               int32                  `protobuf:"varint,12,opt,name=free_blocks,json=freeBlocks,proto3" json:"free_blocks,omitempty"`
-	RecordableCapacityBlocks int32                  `protobuf:"varint,13,opt,name=recordable_capacity_blocks,json=recordableCapacityBlocks,proto3" json:"recordable_capacity_blocks,omitempty"`
-	NextRecordableLba        int32                  `protobuf:"varint,14,opt,name=next_recordable_lba,json=nextRecordableLba,proto3" json:"next_recordable_lba,omitempty"`
-	DiscSerialNumberHex      string                 `protobuf:"bytes,15,opt,name=disc_serial_number_hex,json=discSerialNumberHex,proto3" json:"disc_serial_number_hex,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	state                         protoimpl.MessageState `protogen:"open.v1"`
+	Ready                         bool                   `protobuf:"varint,1,opt,name=ready,proto3" json:"ready,omitempty"`
+	Message                       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	VolumeLabel                   string                 `protobuf:"bytes,3,opt,name=volume_label,json=volumeLabel,proto3" json:"volume_label,omitempty"`
+	TotalCapacityBytes            int64                  `protobuf:"varint,4,opt,name=total_capacity_bytes,json=totalCapacityBytes,proto3" json:"total_capacity_bytes,omitempty"`
+	FreeCapacityBytes             int64                  `protobuf:"varint,5,opt,name=free_capacity_bytes,json=freeCapacityBytes,proto3" json:"free_capacity_bytes,omitempty"`
+	MediaType                     string                 `protobuf:"bytes,6,opt,name=media_type,json=mediaType,proto3" json:"media_type,omitempty"`
+	UsedCapacityBytes             int64                  `protobuf:"varint,7,opt,name=used_capacity_bytes,json=usedCapacityBytes,proto3" json:"used_capacity_bytes,omitempty"`
+	WritableCapacityBytes         int64                  `protobuf:"varint,8,opt,name=writable_capacity_bytes,json=writableCapacityBytes,proto3" json:"writable_capacity_bytes,omitempty"`
+	FinalizeReserveBytes          int64                  `protobuf:"varint,9,opt,name=finalize_reserve_bytes,json=finalizeReserveBytes,proto3" json:"finalize_reserve_bytes,omitempty"`
+	BlockSizeBytes                int32                  `protobuf:"varint,10,opt,name=block_size_bytes,json=blockSizeBytes,proto3" json:"block_size_bytes,omitempty"`
+	TotalBlocks                   int32                  `protobuf:"varint,11,opt,name=total_blocks,json=totalBlocks,proto3" json:"total_blocks,omitempty"`
+	FreeBlocks                    int32                  `protobuf:"varint,12,opt,name=free_blocks,json=freeBlocks,proto3" json:"free_blocks,omitempty"`
+	RecordableCapacityBlocks      int32                  `protobuf:"varint,13,opt,name=recordable_capacity_blocks,json=recordableCapacityBlocks,proto3" json:"recordable_capacity_blocks,omitempty"`
+	TrackNextWritableAddress      int32                  `protobuf:"varint,14,opt,name=track_next_writable_address,json=trackNextWritableAddress,proto3" json:"track_next_writable_address,omitempty"`
+	TrackNextWritableAddressValid bool                   `protobuf:"varint,16,opt,name=track_next_writable_address_valid,json=trackNextWritableAddressValid,proto3" json:"track_next_writable_address_valid,omitempty"`
+	DiscSerialNumberHex           string                 `protobuf:"bytes,15,opt,name=disc_serial_number_hex,json=discSerialNumberHex,proto3" json:"disc_serial_number_hex,omitempty"`
+	WritableState                 string                 `protobuf:"bytes,17,opt,name=writable_state,json=writableState,proto3" json:"writable_state,omitempty"`
+	unknownFields                 protoimpl.UnknownFields
+	sizeCache                     protoimpl.SizeCache
 }
 
 func (x *TestUnitReadyResponse) Reset() {
@@ -392,16 +394,30 @@ func (x *TestUnitReadyResponse) GetRecordableCapacityBlocks() int32 {
 	return 0
 }
 
-func (x *TestUnitReadyResponse) GetNextRecordableLba() int32 {
+func (x *TestUnitReadyResponse) GetTrackNextWritableAddress() int32 {
 	if x != nil {
-		return x.NextRecordableLba
+		return x.TrackNextWritableAddress
 	}
 	return 0
+}
+
+func (x *TestUnitReadyResponse) GetTrackNextWritableAddressValid() bool {
+	if x != nil {
+		return x.TrackNextWritableAddressValid
+	}
+	return false
 }
 
 func (x *TestUnitReadyResponse) GetDiscSerialNumberHex() string {
 	if x != nil {
 		return x.DiscSerialNumberHex
+	}
+	return ""
+}
+
+func (x *TestUnitReadyResponse) GetWritableState() string {
+	if x != nil {
+		return x.WritableState
 	}
 	return ""
 }
@@ -839,21 +855,23 @@ func (x *OpticalDriveIdentity) GetIsMmcUnit() bool {
 }
 
 type OpticalDiscInfo struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	MediaProfile        int32                  `protobuf:"varint,1,opt,name=media_profile,json=mediaProfile,proto3" json:"media_profile,omitempty"`
-	MediaIsBlank        bool                   `protobuf:"varint,2,opt,name=media_is_blank,json=mediaIsBlank,proto3" json:"media_is_blank,omitempty"`
-	MediaIsCd           bool                   `protobuf:"varint,3,opt,name=media_is_cd,json=mediaIsCd,proto3" json:"media_is_cd,omitempty"`
-	MediaIsDvd          bool                   `protobuf:"varint,4,opt,name=media_is_dvd,json=mediaIsDvd,proto3" json:"media_is_dvd,omitempty"`
-	MediaIsBd           bool                   `protobuf:"varint,5,opt,name=media_is_bd,json=mediaIsBd,proto3" json:"media_is_bd,omitempty"`
-	ProfileCode         int32                  `protobuf:"varint,6,opt,name=profile_code,json=profileCode,proto3" json:"profile_code,omitempty"`
-	ProfileName         string                 `protobuf:"bytes,7,opt,name=profile_name,json=profileName,proto3" json:"profile_name,omitempty"`
-	DiscStatusCode      int32                  `protobuf:"varint,8,opt,name=disc_status_code,json=discStatusCode,proto3" json:"disc_status_code,omitempty"`
-	DiscStatusName      string                 `protobuf:"bytes,9,opt,name=disc_status_name,json=discStatusName,proto3" json:"disc_status_name,omitempty"`
-	IsErasable          bool                   `protobuf:"varint,10,opt,name=is_erasable,json=isErasable,proto3" json:"is_erasable,omitempty"`
-	DiscVendorId        string                 `protobuf:"bytes,11,opt,name=disc_vendor_id,json=discVendorId,proto3" json:"disc_vendor_id,omitempty"`
-	DiscSerialNumberHex string                 `protobuf:"bytes,12,opt,name=disc_serial_number_hex,json=discSerialNumberHex,proto3" json:"disc_serial_number_hex,omitempty"`
-	BlockSizeBytes      int32                  `protobuf:"varint,13,opt,name=block_size_bytes,json=blockSizeBytes,proto3" json:"block_size_bytes,omitempty"`
-	NextRecordableLba   int32                  `protobuf:"varint,14,opt,name=next_recordable_lba,json=nextRecordableLba,proto3" json:"next_recordable_lba,omitempty"`
+	state                         protoimpl.MessageState `protogen:"open.v1"`
+	MediaProfile                  int32                  `protobuf:"varint,1,opt,name=media_profile,json=mediaProfile,proto3" json:"media_profile,omitempty"`
+	MediaIsBlank                  bool                   `protobuf:"varint,2,opt,name=media_is_blank,json=mediaIsBlank,proto3" json:"media_is_blank,omitempty"`
+	MediaIsCd                     bool                   `protobuf:"varint,3,opt,name=media_is_cd,json=mediaIsCd,proto3" json:"media_is_cd,omitempty"`
+	MediaIsDvd                    bool                   `protobuf:"varint,4,opt,name=media_is_dvd,json=mediaIsDvd,proto3" json:"media_is_dvd,omitempty"`
+	MediaIsBd                     bool                   `protobuf:"varint,5,opt,name=media_is_bd,json=mediaIsBd,proto3" json:"media_is_bd,omitempty"`
+	ProfileCode                   int32                  `protobuf:"varint,6,opt,name=profile_code,json=profileCode,proto3" json:"profile_code,omitempty"`
+	ProfileName                   string                 `protobuf:"bytes,7,opt,name=profile_name,json=profileName,proto3" json:"profile_name,omitempty"`
+	DiscStatusCode                int32                  `protobuf:"varint,8,opt,name=disc_status_code,json=discStatusCode,proto3" json:"disc_status_code,omitempty"`
+	DiscStatusName                string                 `protobuf:"bytes,9,opt,name=disc_status_name,json=discStatusName,proto3" json:"disc_status_name,omitempty"`
+	IsErasable                    bool                   `protobuf:"varint,10,opt,name=is_erasable,json=isErasable,proto3" json:"is_erasable,omitempty"`
+	DiscVendorId                  string                 `protobuf:"bytes,11,opt,name=disc_vendor_id,json=discVendorId,proto3" json:"disc_vendor_id,omitempty"`
+	DiscSerialNumberHex           string                 `protobuf:"bytes,12,opt,name=disc_serial_number_hex,json=discSerialNumberHex,proto3" json:"disc_serial_number_hex,omitempty"`
+	BlockSizeBytes                int32                  `protobuf:"varint,13,opt,name=block_size_bytes,json=blockSizeBytes,proto3" json:"block_size_bytes,omitempty"`
+	TrackNextWritableAddress      int32                  `protobuf:"varint,14,opt,name=track_next_writable_address,json=trackNextWritableAddress,proto3" json:"track_next_writable_address,omitempty"`
+	TrackNextWritableAddressValid bool                   `protobuf:"varint,23,opt,name=track_next_writable_address_valid,json=trackNextWritableAddressValid,proto3" json:"track_next_writable_address_valid,omitempty"`
+	WritableState                 string                 `protobuf:"bytes,24,opt,name=writable_state,json=writableState,proto3" json:"writable_state,omitempty"`
 	// User-data byte totals from Primo block counters times block_size_bytes (bluray-demo: scaled capacity / free space).
 	MediaCapacity  int64 `protobuf:"varint,15,opt,name=media_capacity,json=mediaCapacity,proto3" json:"media_capacity,omitempty"`
 	MediaFreeSpace int64 `protobuf:"varint,16,opt,name=media_free_space,json=mediaFreeSpace,proto3" json:"media_free_space,omitempty"`
@@ -989,11 +1007,25 @@ func (x *OpticalDiscInfo) GetBlockSizeBytes() int32 {
 	return 0
 }
 
-func (x *OpticalDiscInfo) GetNextRecordableLba() int32 {
+func (x *OpticalDiscInfo) GetTrackNextWritableAddress() int32 {
 	if x != nil {
-		return x.NextRecordableLba
+		return x.TrackNextWritableAddress
 	}
 	return 0
+}
+
+func (x *OpticalDiscInfo) GetTrackNextWritableAddressValid() bool {
+	if x != nil {
+		return x.TrackNextWritableAddressValid
+	}
+	return false
+}
+
+func (x *OpticalDiscInfo) GetWritableState() string {
+	if x != nil {
+		return x.WritableState
+	}
+	return ""
 }
 
 func (x *OpticalDiscInfo) GetMediaCapacity() int64 {
@@ -2960,7 +2992,7 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\x0eos_description\x18\a \x01(\tR\rosDescription\x12%\n" +
 	"\x0ebase_directory\x18\b \x01(\tR\rbaseDirectory\x12*\n" +
 	"\x11license_file_path\x18\t \x01(\tR\x0flicenseFilePath\"\x16\n" +
-	"\x14TestUnitReadyRequest\"\x9a\x05\n" +
+	"\x14TestUnitReadyRequest\"\x9a\x06\n" +
 	"\x15TestUnitReadyResponse\x12\x14\n" +
 	"\x05ready\x18\x01 \x01(\bR\x05ready\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12!\n" +
@@ -2977,9 +3009,11 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\ftotal_blocks\x18\v \x01(\x05R\vtotalBlocks\x12\x1f\n" +
 	"\vfree_blocks\x18\f \x01(\x05R\n" +
 	"freeBlocks\x12<\n" +
-	"\x1arecordable_capacity_blocks\x18\r \x01(\x05R\x18recordableCapacityBlocks\x12.\n" +
-	"\x13next_recordable_lba\x18\x0e \x01(\x05R\x11nextRecordableLba\x123\n" +
-	"\x16disc_serial_number_hex\x18\x0f \x01(\tR\x13discSerialNumberHex\"\xa4\x01\n" +
+	"\x1arecordable_capacity_blocks\x18\r \x01(\x05R\x18recordableCapacityBlocks\x12=\n" +
+	"\x1btrack_next_writable_address\x18\x0e \x01(\x05R\x18trackNextWritableAddress\x12H\n" +
+	"!track_next_writable_address_valid\x18\x10 \x01(\bR\x1dtrackNextWritableAddressValid\x123\n" +
+	"\x16disc_serial_number_hex\x18\x0f \x01(\tR\x13discSerialNumberHex\x12%\n" +
+	"\x0ewritable_state\x18\x11 \x01(\tR\rwritableState\"\xa4\x01\n" +
 	"\x12GetDiscInfoRequest\x12!\n" +
 	"\fdevice_index\x18\x01 \x01(\x05R\vdeviceIndex\x125\n" +
 	"\x17include_session_disc_id\x18\x02 \x01(\bR\x14includeSessionDiscId\x124\n" +
@@ -3015,7 +3049,7 @@ const file_burnbridge_proto_rawDesc = "" +
 	"product_id\x18\x02 \x01(\tR\tproductId\x12)\n" +
 	"\x10product_revision\x18\x03 \x01(\tR\x0fproductRevision\x12#\n" +
 	"\rserial_number\x18\x04 \x01(\tR\fserialNumber\x12\x1e\n" +
-	"\vis_mmc_unit\x18\x05 \x01(\bR\tisMmcUnit\"\xb4\a\n" +
+	"\vis_mmc_unit\x18\x05 \x01(\bR\tisMmcUnit\"\xb4\b\n" +
 	"\x0fOpticalDiscInfo\x12#\n" +
 	"\rmedia_profile\x18\x01 \x01(\x05R\fmediaProfile\x12$\n" +
 	"\x0emedia_is_blank\x18\x02 \x01(\bR\fmediaIsBlank\x12\x1e\n" +
@@ -3032,8 +3066,10 @@ const file_burnbridge_proto_rawDesc = "" +
 	"isErasable\x12$\n" +
 	"\x0edisc_vendor_id\x18\v \x01(\tR\fdiscVendorId\x123\n" +
 	"\x16disc_serial_number_hex\x18\f \x01(\tR\x13discSerialNumberHex\x12(\n" +
-	"\x10block_size_bytes\x18\r \x01(\x05R\x0eblockSizeBytes\x12.\n" +
-	"\x13next_recordable_lba\x18\x0e \x01(\x05R\x11nextRecordableLba\x12%\n" +
+	"\x10block_size_bytes\x18\r \x01(\x05R\x0eblockSizeBytes\x12=\n" +
+	"\x1btrack_next_writable_address\x18\x0e \x01(\x05R\x18trackNextWritableAddress\x12H\n" +
+	"!track_next_writable_address_valid\x18\x17 \x01(\bR\x1dtrackNextWritableAddressValid\x12%\n" +
+	"\x0ewritable_state\x18\x18 \x01(\tR\rwritableState\x12%\n" +
 	"\x0emedia_capacity\x18\x0f \x01(\x03R\rmediaCapacity\x12(\n" +
 	"\x10media_free_space\x18\x10 \x01(\x03R\x0emediaFreeSpace\x12(\n" +
 	"\x10media_used_space\x18\x11 \x01(\x03R\x0emediaUsedSpace\x12!\n" +

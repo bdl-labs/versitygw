@@ -531,7 +531,9 @@ type BurnbridgeDiscInfoDocument struct {
 	TotalBlocks              int32  `json:"totalBlocks,omitempty"`
 	FreeBlocks               int32  `json:"freeBlocks,omitempty"`
 	RecordableCapacityBlocks int32  `json:"recordableCapacityBlocks,omitempty"`
-	NextRecordableLba        int32  `json:"nextRecordableLba,omitempty"`
+	TrackNextWritableAddress int32  `json:"trackNextWritableAddress,omitempty"`
+	TrackNextWritableAddressValid bool `json:"trackNextWritableAddressValid,omitempty"`
+	WritableState            string `json:"writableState,omitempty"`
 }
 
 // StoreBurnbridgeDiscInfo upserts disc JSON for the reserved DiscInfo key (not visible in ListObjects).

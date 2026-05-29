@@ -419,7 +419,9 @@ func discInfoDocFromProto(s3Bucket string, resp *burnbridgev1.TestUnitReadyRespo
 		TotalBlocks:              resp.GetTotalBlocks(),
 		FreeBlocks:               resp.GetFreeBlocks(),
 		RecordableCapacityBlocks: resp.GetRecordableCapacityBlocks(),
-		NextRecordableLba:        resp.GetNextRecordableLba(),
+		TrackNextWritableAddress: resp.GetTrackNextWritableAddress(),
+		TrackNextWritableAddressValid: resp.GetTrackNextWritableAddressValid(),
+		WritableState:            strings.TrimSpace(resp.GetWritableState()),
 	}
 }
 
@@ -1075,7 +1077,9 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 		TotalBlocks:              0,
 		FreeBlocks:               0,
 		RecordableCapacityBlocks: 0,
-		NextRecordableLba:        0,
+		TrackNextWritableAddress: 0,
+		TrackNextWritableAddressValid: false,
+		WritableState:            "Unknown",
 	})
 }
 
