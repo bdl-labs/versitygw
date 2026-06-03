@@ -187,6 +187,7 @@ type BurnBridge struct {
 	lastRecorderWritableState   string
 	lastRecorderReadyObservedAt time.Time
 	importedBucketState         map[string]bool
+	pendingImportedConvergence  map[string]bool
 	statusWatchCancel           context.CancelFunc
 	statusWatchEnabled          atomic.Bool
 	metaDBPath                  string
@@ -612,6 +613,7 @@ func New(opts Options) (*BurnBridge, error) {
 		recorderS3PresignedGetURL: strings.TrimSpace(opts.RecorderS3PresignedGetURL),
 		putQueueSem:               make(chan struct{}, defaultPutQueueLimit),
 		importedBucketState:       make(map[string]bool),
+		pendingImportedConvergence: make(map[string]bool),
 		metaDBPath:                opts.DBPath,
 	}
 	if strings.TrimSpace(activeBucket) != "" {
@@ -649,6 +651,9 @@ func (b *BurnBridge) markImportedBucketSynced(bucket string) {
 		b.importedBucketState = make(map[string]bool)
 	}
 	b.importedBucketState[normalized] = true
+	if b.pendingImportedConvergence != nil {
+		delete(b.pendingImportedConvergence, normalized)
+	}
 }
 
 func (b *BurnBridge) importedBucketSynced(bucket string) bool {
@@ -666,6 +671,32 @@ func (b *BurnBridge) resetImportedBucketSyncState() {
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
 	b.importedBucketState = make(map[string]bool)
+	b.pendingImportedConvergence = make(map[string]bool)
+}
+
+func (b *BurnBridge) markImportedBucketConvergencePending(bucket string) {
+	normalized := normalizeRuntimeBucket(bucket)
+	if normalized == "" {
+		return
+	}
+
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	if b.pendingImportedConvergence == nil {
+		b.pendingImportedConvergence = make(map[string]bool)
+	}
+	b.pendingImportedConvergence[normalized] = true
+}
+
+func (b *BurnBridge) importedBucketConvergencePending(bucket string) bool {
+	normalized := normalizeRuntimeBucket(bucket)
+	if normalized == "" {
+		return false
+	}
+
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	return b.pendingImportedConvergence[normalized]
 }
 
 func (b *BurnBridge) runRecorderStateProbe(ctx context.Context) error {
@@ -814,13 +845,14 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 		return nil
 	}
 
+	previousBucket := strings.TrimSpace(b.activeBucket)
 	b.captureReadyDiscIdentity(resp)
 
 	if strings.EqualFold(strings.TrimSpace(b.volumeLabelRaw), rawVolume) && strings.TrimSpace(b.activeBucket) != "" {
 		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 			return err
 		}
-		return b.ensureImportedBucketState(context.Background(), b.activeBucket)
+		return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
 	}
 
 	if binding, ok := loadDiscBucketBinding(b.meta, rawVolume); ok && binding != nil {
@@ -829,10 +861,13 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 			b.udfLabel = strings.TrimSpace(binding.UdfVolumeLabel)
 		}
 		b.volumeLabelRaw = rawVolume
+		if previousBucket == "" || !strings.EqualFold(previousBucket, b.activeBucket) {
+			b.markImportedBucketConvergencePending(b.activeBucket)
+		}
 		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 			return err
 		}
-		return b.ensureImportedBucketState(context.Background(), b.activeBucket)
+		return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
 	}
 
 	sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
@@ -846,13 +881,16 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	b.activeBucket = sanitizedBucket
 	b.volumeLabelRaw = rawVolume
 	b.udfLabel = rawVolume
+	if previousBucket == "" || !strings.EqualFold(previousBucket, b.activeBucket) {
+		b.markImportedBucketConvergencePending(b.activeBucket)
+	}
 	if err := persistDiscBucketBinding(b.meta, rawVolume, b.activeBucket, b.udfLabel); err != nil {
 		return err
 	}
 	if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 		return err
 	}
-	return b.ensureImportedBucketState(context.Background(), b.activeBucket)
+	return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
 }
 
 func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string) error {
@@ -971,16 +1009,28 @@ func (b *BurnBridge) restoreBucketStateFromMetadata(bucket string) bool {
 }
 
 func (b *BurnBridge) ensureImportedBucketState(ctx context.Context, bucket string) error {
+	return b.ensureImportedBucketStateWithMode(ctx, bucket, false)
+}
+
+func (b *BurnBridge) ensureImportedBucketStateForConvergence(ctx context.Context, bucket string) error {
+	return b.ensureImportedBucketStateWithMode(ctx, bucket, b.importedBucketConvergencePending(bucket))
+}
+
+func (b *BurnBridge) ensureImportedBucketStateWithMode(ctx context.Context, bucket string, forceConvergence bool) error {
 	if strings.TrimSpace(bucket) == "" {
 		return nil
 	}
 
-	committed, err := b.meta.ListCommittedObjects(bucket)
-	if err == nil && len(committed) > 0 {
-		return nil
-	}
-	if err != nil {
-		return err
+	var err error
+	if !forceConvergence {
+		var committed []meta.CommittedObjectSummary
+		committed, err = b.meta.ListCommittedObjects(bucket)
+		if err == nil && len(committed) > 0 {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
 	}
 
 	if b.importedBucketSynced(bucket) {
@@ -995,7 +1045,9 @@ func (b *BurnBridge) ensureImportedBucketState(ctx context.Context, bucket strin
 
 func (b *BurnBridge) ensureActiveBucketLoaded(ctx context.Context) error {
 	if strings.TrimSpace(b.activeBucket) != "" {
-		_ = b.restoreBucketStateFromMetadata(b.activeBucket)
+		if b.restoreBucketStateFromMetadata(b.activeBucket) {
+			b.markImportedBucketConvergencePending(b.activeBucket)
+		}
 		if strings.TrimSpace(b.activeBucket) != "" {
 			return nil
 		}
@@ -1104,6 +1156,7 @@ func (b *BurnBridge) handleNoDiscState() error {
 	b.udfLabel = ""
 	b.lastNoDiscObservedAt = time.Now().UTC()
 	b.importedBucketState = make(map[string]bool)
+	b.pendingImportedConvergence = make(map[string]bool)
 	b.clearRecorderReadyStateLocked()
 	b.stateMu.Unlock()
 	return nil
@@ -1220,6 +1273,7 @@ func (b *BurnBridge) maybeRestoreNoDiscBackup(resp *burnbridgev1.TestUnitReadyRe
 	b.lastNoDiscBackupBucket = ""
 	b.lastNoDiscObservedAt = time.Time{}
 	b.stateMu.Unlock()
+	b.markImportedBucketConvergencePending(currentBucket)
 
 	slog.Info("burnbridge: restored no-disc backup after same disc reinserted",
 		"bucket", backupBucket,
