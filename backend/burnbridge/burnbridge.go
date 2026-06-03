@@ -1227,6 +1227,91 @@ func sanitizeBackupFilePart(value string) string {
 	return normalized
 }
 
+func matchesDiscInfoDocToResponse(doc *meta.BurnbridgeDiscInfoDocument, resp *burnbridgev1.TestUnitReadyResponse) bool {
+	if doc == nil || resp == nil || !resp.GetReady() {
+		return false
+	}
+
+	normalizedSerial := strings.TrimSpace(doc.DiscSerialNumberHex)
+	normalizedVolume := strings.TrimSpace(doc.VolumeLabel)
+	currentSerial := strings.TrimSpace(resp.GetDiscSerialNumberHex())
+	currentVolume := strings.TrimSpace(resp.GetVolumeLabel())
+
+	matchesCurrentIdentity := func(value string) bool {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return false
+		}
+
+		return strings.EqualFold(trimmed, currentSerial) || strings.EqualFold(trimmed, currentVolume)
+	}
+
+	if (normalizedSerial != "" || normalizedVolume != "") &&
+		!matchesCurrentIdentity(normalizedSerial) &&
+		!matchesCurrentIdentity(normalizedVolume) {
+		return false
+	}
+
+	if doc.TrackNextWritableAddressValid &&
+		doc.TrackNextWritableAddress > 0 &&
+		resp.GetTrackNextWritableAddressValid() &&
+		resp.GetTrackNextWritableAddress() > 0 {
+		delta := doc.TrackNextWritableAddress - resp.GetTrackNextWritableAddress()
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 32 {
+			return false
+		}
+	}
+
+	if doc.FreeBlocks > 0 && resp.GetFreeBlocks() > 0 {
+		delta := doc.FreeBlocks - resp.GetFreeBlocks()
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 32 {
+			return false
+		}
+	}
+
+	if doc.TotalBlocks > 0 && resp.GetTotalBlocks() > 0 && doc.TotalBlocks != resp.GetTotalBlocks() {
+		return false
+	}
+
+	if doc.RecordableCapacityBlocks > 0 && resp.GetRecordableCapacityBlocks() > 0 {
+		delta := doc.RecordableCapacityBlocks - resp.GetRecordableCapacityBlocks()
+		if delta < 0 {
+			delta = -delta
+		}
+		if delta > 32 {
+			return false
+		}
+	}
+
+	return true
+}
+
+func readDiscInfoFromBackup(backup *meta.BurnbridgeBucketBackup) *meta.BurnbridgeDiscInfoDocument {
+	if backup == nil {
+		return nil
+	}
+
+	for _, row := range backup.MetadataRows {
+		if row.ObjectName != meta.BurnbridgeDiscInfoObjectKey || row.Attribute != meta.BurnbridgeDiscInfoAttribute {
+			continue
+		}
+
+		var doc meta.BurnbridgeDiscInfoDocument
+		if err := json.Unmarshal(row.Value, &doc); err != nil {
+			return nil
+		}
+		return &doc
+	}
+
+	return nil
+}
+
 func (b *BurnBridge) maybeRestoreNoDiscBackup(resp *burnbridgev1.TestUnitReadyResponse) error {
 	if resp == nil || !resp.GetReady() {
 		return nil
@@ -1263,6 +1348,9 @@ func (b *BurnBridge) maybeRestoreNoDiscBackup(resp *burnbridgev1.TestUnitReadyRe
 	var backup meta.BurnbridgeBucketBackup
 	if err := json.Unmarshal(raw, &backup); err != nil {
 		return fmt.Errorf("burnbridge: decode no-disc backup: %w", err)
+	}
+	if backupDiscInfo := readDiscInfoFromBackup(&backup); backupDiscInfo != nil && !matchesDiscInfoDocToResponse(backupDiscInfo, resp) {
+		return nil
 	}
 	if err := b.meta.RestoreBurnbridgeBucket(&backup); err != nil {
 		return fmt.Errorf("burnbridge: restore no-disc backup: %w", err)

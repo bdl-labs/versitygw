@@ -1280,6 +1280,20 @@ func TestMaybeRestoreNoDiscBackupRestoresSameDiscBucket(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:                   "disc-a",
+		VolumeLabel:              "DISC-A",
+		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:      "SERIAL-A",
+		TotalBlocks:              1000,
+		FreeBlocks:               400,
+		RecordableCapacityBlocks: 400,
+		TrackNextWritableAddress: 600,
+		TrackNextWritableAddressValid: true,
+		WritableState:            "Appendable",
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	b := &BurnBridge{
 		meta:           store,
@@ -1312,6 +1326,72 @@ func TestMaybeRestoreNoDiscBackupRestoresSameDiscBucket(t *testing.T) {
 	}
 	if sum.Size != 7 {
 		t.Fatalf("expected restored size 7, got %d", sum.Size)
+	}
+}
+
+func TestMaybeRestoreNoDiscBackupSkipsDifferentDiscGeometry(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:                   "disc-a",
+		VolumeLabel:              "DISC-A",
+		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:      "SERIAL-A",
+		TotalBlocks:              1000,
+		FreeBlocks:               400,
+		RecordableCapacityBlocks: 400,
+		TrackNextWritableAddress: 600,
+		TrackNextWritableAddressValid: true,
+		WritableState:            "Appendable",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:           store,
+		grpc:           testBurnBridgeClient{},
+		activeBucket:   "disc-a",
+		volumeLabelRaw: "DISC-A",
+		udfLabel:       "DISC-A",
+		metaDBPath:     dbPath,
+	}
+
+	if err := b.handleNoDiscState(); err != nil {
+		t.Fatal(err)
+	}
+
+	b.activeBucket = "disc-a"
+	b.volumeLabelRaw = "DISC-A"
+	b.lastDiscSerialHex = "SERIAL-A"
+	b.lastReadyVolumeLabel = "DISC-A"
+	if err := b.maybeRestoreNoDiscBackup(&burnbridgev1.TestUnitReadyResponse{
+		Ready:                        true,
+		VolumeLabel:                  "DISC-A",
+		DiscSerialNumberHex:          "SERIAL-A",
+		TotalBlocks:                  1000,
+		FreeBlocks:                   200,
+		RecordableCapacityBlocks:     200,
+		TrackNextWritableAddress:     800,
+		TrackNextWritableAddressValid: true,
+		WritableState:                "Appendable",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetCommittedObjectSummary("disc-a", "file.txt"); err == nil {
+		t.Fatal("expected mismatched disc geometry to skip backup restore")
 	}
 }
 
