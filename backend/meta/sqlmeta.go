@@ -534,6 +534,13 @@ type BurnbridgeDiscInfoDocument struct {
 	TrackNextWritableAddress int32  `json:"trackNextWritableAddress,omitempty"`
 	TrackNextWritableAddressValid bool `json:"trackNextWritableAddressValid,omitempty"`
 	WritableState            string `json:"writableState,omitempty"`
+	DiscStatusName           string `json:"discStatusName,omitempty"`
+	SessionIsFinalized       bool   `json:"sessionIsFinalized,omitempty"`
+	SessionTempDiscId        string `json:"sessionTempDiscId,omitempty"`
+	LayoutStatus             string `json:"layoutStatus,omitempty"`
+	LayoutMessage            string `json:"layoutMessage,omitempty"`
+	LayoutCompletedAtUtc     string `json:"layoutCompletedAtUtc,omitempty"`
+	LayoutCloseDisc          bool   `json:"layoutCloseDisc,omitempty"`
 }
 
 // StoreBurnbridgeDiscInfo upserts disc JSON for the reserved DiscInfo key (not visible in ListObjects).

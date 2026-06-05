@@ -33,6 +33,7 @@ type testBurnBridgeClient struct {
 	cancelJobFn           func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error)
 	registerPullSourceFn  func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
 	finalizeFn            func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
+	getDiscInfoFn         func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error)
 	importedBucketStateFn func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error)
 	testUnitReadyFn       func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error)
 	readObjectFn          func(context.Context, *burnbridgev1.ReadObjectRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error)
@@ -103,7 +104,10 @@ func (c testBurnBridgeClient) WatchUnitStatus(ctx context.Context, req *burnbrid
 	return nil, status.Error(codes.Unimplemented, "not implemented")
 }
 
-func (testBurnBridgeClient) GetDiscInfo(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+func (c testBurnBridgeClient) GetDiscInfo(ctx context.Context, req *burnbridgev1.GetDiscInfoRequest, opts ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+	if c.getDiscInfoFn != nil {
+		return c.getDiscInfoFn(ctx, req, opts...)
+	}
 	panic("unexpected GetDiscInfo call")
 }
 
@@ -1442,6 +1446,123 @@ func TestInvokeFinalizeLayoutReusesSuccessfulTranscript(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Fatalf("expected no grpc finalize call, got %d", calls)
+	}
+}
+
+func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	finalizePayload, err := json.Marshal(meta.BurnbridgeFinalizeLayoutDocument{
+		Bucket:         "bucket1",
+		RecorderStatus: "finalized",
+		CompletedAtUtc: "2026-06-04T14:50:52.3067628Z",
+		CloseDisc:      false,
+		GrpcOK:         true,
+		GrpcCode:       "OK",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeFinalizeLayoutJSON("bucket1", finalizePayload); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "bucket1",
+		volumeLabelRaw: "DISC001",
+		udfLabel:     "DISC001",
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return &burnbridgev1.TestUnitReadyResponse{
+					Ready:                        true,
+					VolumeLabel:                  "DISC001",
+					DiscSerialNumberHex:          "SER-001",
+					MediaType:                    "BD-R",
+					TotalCapacityBytes:           1000,
+					FreeCapacityBytes:            400,
+					UsedCapacityBytes:            600,
+					WritableCapacityBytes:        300,
+					FinalizeReserveBytes:         100,
+					BlockSizeBytes:               2048,
+					TotalBlocks:                  320,
+					FreeBlocks:                   0,
+					RecordableCapacityBlocks:     0,
+					TrackNextWritableAddress:     0,
+					TrackNextWritableAddressValid: false,
+					WritableState:                "Appendable",
+				}, nil
+			},
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return &burnbridgev1.GetDiscInfoResponse{
+					Disc: &burnbridgev1.OpticalDiscInfo{
+						ProfileName:                 "BD-R",
+						DiscStatusName:              "incomplete/appendable",
+						DiscSerialNumberHex:         "SER-001",
+						BlockSizeBytes:              2048,
+						TotalBlocks:                 48878592,
+						FreeBlocks:                  1773184,
+						RecordableCapacityBlocks:    1773184,
+						TrackNextWritableAddress:    47105408,
+						TrackNextWritableAddressValid: true,
+						WritableState:               "Appendable",
+						MediaCapacity:               100103356416,
+						MediaFreeSpace:              3631470592,
+						MediaUsedSpace:              96471885824,
+						SessionDiscId: &burnbridgev1.SessionDiscId{
+							IsFinalized: true,
+							TempDiscId:  "DISC001",
+						},
+					},
+				}, nil
+			},
+		},
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("bucket1"),
+		Key:    ptr(meta.BurnbridgeDiscInfoObjectKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var doc meta.BurnbridgeDiscInfoDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+
+	if doc.WritableState != "Appendable" {
+		t.Fatalf("expected writableState Appendable, got %q", doc.WritableState)
+	}
+	if doc.DiscStatusName != "incomplete/appendable" {
+		t.Fatalf("expected discStatusName incomplete/appendable, got %q", doc.DiscStatusName)
+	}
+	if !doc.SessionIsFinalized {
+		t.Fatal("expected sessionIsFinalized true")
+	}
+	if doc.LayoutStatus != "finalized" {
+		t.Fatalf("expected layoutStatus finalized, got %q", doc.LayoutStatus)
+	}
+	if doc.LayoutCompletedAtUtc == "" {
+		t.Fatal("expected layoutCompletedAtUtc to be populated")
+	}
+	if doc.TotalBlocks != 48878592 {
+		t.Fatalf("expected refreshed totalBlocks 48878592, got %d", doc.TotalBlocks)
+	}
+	if !doc.TrackNextWritableAddressValid {
+		t.Fatal("expected trackNextWritableAddressValid true")
 	}
 }
 

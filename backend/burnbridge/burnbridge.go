@@ -414,11 +414,17 @@ func persistDiscBucketBinding(metaStore meta.SqlMeta, rawVolume, bucket, udfVolu
 	})
 }
 
-func discInfoDocFromProto(s3Bucket string, resp *burnbridgev1.TestUnitReadyResponse) *meta.BurnbridgeDiscInfoDocument {
+func discInfoDocFromProto(
+	s3Bucket string,
+	resp *burnbridgev1.TestUnitReadyResponse,
+	discResp *burnbridgev1.GetDiscInfoResponse,
+	finalizeDoc *meta.BurnbridgeFinalizeLayoutDocument,
+) *meta.BurnbridgeDiscInfoDocument {
 	if resp == nil || !resp.GetReady() {
 		return nil
 	}
-	return &meta.BurnbridgeDiscInfoDocument{
+
+	doc := &meta.BurnbridgeDiscInfoDocument{
 		Bucket:                        s3Bucket,
 		VolumeLabel:                   strings.TrimSpace(resp.GetVolumeLabel()),
 		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
@@ -437,6 +443,113 @@ func discInfoDocFromProto(s3Bucket string, resp *burnbridgev1.TestUnitReadyRespo
 		TrackNextWritableAddressValid: resp.GetTrackNextWritableAddressValid(),
 		WritableState:                 strings.TrimSpace(resp.GetWritableState()),
 	}
+
+	if disc := discResp.GetDisc(); disc != nil {
+		if serial := strings.TrimSpace(disc.GetDiscSerialNumberHex()); serial != "" {
+			doc.DiscSerialNumberHex = serial
+		}
+		if mediaType := strings.TrimSpace(disc.GetProfileName()); mediaType != "" {
+			doc.MediaType = mediaType
+		}
+		if blockSize := disc.GetBlockSizeBytes(); blockSize > 0 {
+			doc.BlockSizeBytes = blockSize
+		}
+		if totalBlocks := disc.GetTotalBlocks(); totalBlocks > 0 {
+			doc.TotalBlocks = totalBlocks
+		}
+		if freeBlocks := disc.GetFreeBlocks(); freeBlocks > 0 {
+			doc.FreeBlocks = freeBlocks
+		}
+		if recordableCapacityBlocks := disc.GetRecordableCapacityBlocks(); recordableCapacityBlocks > 0 {
+			doc.RecordableCapacityBlocks = recordableCapacityBlocks
+		}
+		if trackNwa := disc.GetTrackNextWritableAddress(); trackNwa > 0 {
+			doc.TrackNextWritableAddress = trackNwa
+		}
+		if disc.GetTrackNextWritableAddressValid() {
+			doc.TrackNextWritableAddressValid = true
+		}
+		if writableState := strings.TrimSpace(disc.GetWritableState()); writableState != "" {
+			doc.WritableState = writableState
+		}
+		if discStatusName := strings.TrimSpace(disc.GetDiscStatusName()); discStatusName != "" {
+			doc.DiscStatusName = discStatusName
+		}
+		if mediaCapacity := disc.GetMediaCapacity(); mediaCapacity > 0 {
+			doc.TotalCapacityBytes = mediaCapacity
+		}
+		if mediaFree := disc.GetMediaFreeSpace(); mediaFree > 0 {
+			doc.FreeCapacityBytes = mediaFree
+		}
+		if mediaUsed := disc.GetMediaUsedSpace(); mediaUsed > 0 {
+			doc.UsedCapacityBytes = mediaUsed
+		}
+		if session := disc.GetSessionDiscId(); session != nil {
+			doc.SessionIsFinalized = session.GetIsFinalized()
+			doc.SessionTempDiscId = strings.TrimSpace(session.GetTempDiscId())
+		}
+	}
+
+	if finalizeDoc != nil {
+		doc.LayoutStatus = strings.TrimSpace(finalizeDoc.RecorderStatus)
+		doc.LayoutMessage = strings.TrimSpace(finalizeDoc.RecorderMessage)
+		doc.LayoutCompletedAtUtc = strings.TrimSpace(finalizeDoc.CompletedAtUtc)
+		doc.LayoutCloseDisc = finalizeDoc.CloseDisc
+	}
+
+	return doc
+}
+
+func readFinalizeLayoutTranscript(metaStore meta.SqlMeta, bucket string) *meta.BurnbridgeFinalizeLayoutDocument {
+	raw, err := metaStore.GetBurnbridgeFinalizeLayoutJSON(bucket)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+
+	var doc meta.BurnbridgeFinalizeLayoutDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	return &doc
+}
+
+func (b *BurnBridge) refreshDiscInfoDocument(ctx context.Context, bucket string) ([]byte, *meta.BurnbridgeDiscInfoDocument, error) {
+	if err := b.requireRecorderReady(ctx); err != nil {
+		return nil, nil, err
+	}
+
+	resp, err := b.grpc.TestUnitReady(ctx, &burnbridgev1.TestUnitReadyRequest{})
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp == nil || !resp.GetReady() {
+		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+
+	discResp, err := b.grpc.GetDiscInfo(ctx, &burnbridgev1.GetDiscInfoRequest{
+		IncludeSessionDiscId: true,
+		IncludeDriveIdentity: false,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+
+	finalizeDoc := readFinalizeLayoutTranscript(b.meta, bucket)
+	doc := discInfoDocFromProto(bucket, resp, discResp, finalizeDoc)
+	if doc == nil {
+		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+
+	if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
+		return nil, nil, err
+	}
+
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return raw, doc, nil
 }
 
 func parseReadyReason(message string) (reasonCode string, reasonDetail string) {
@@ -552,7 +665,7 @@ func New(opts Options) (*BurnBridge, error) {
 		}
 	}
 	if activeBucket != "" {
-		if doc := discInfoDocFromProto(activeBucket, turResp); doc != nil {
+		if doc := discInfoDocFromProto(activeBucket, turResp, nil, readFinalizeLayoutTranscript(metaStore, activeBucket)); doc != nil {
 			if perr := metaStore.StoreBurnbridgeDiscInfo(doc); perr != nil {
 				_ = conn.Close()
 				return nil, fmt.Errorf("burnbridge: persist disc info: %w", perr)
@@ -784,7 +897,7 @@ func (b *BurnBridge) applyRecorderStatusEvent(event *burnbridgev1.UnitStatusEven
 		return err
 	}
 	b.recordRecorderReadyState(resp)
-	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
+	if doc := discInfoDocFromProto(b.activeBucket, resp, nil, readFinalizeLayoutTranscript(b.meta, b.activeBucket)); doc != nil {
 		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
 			return fmt.Errorf("burnbridge: persist streamed disc info: %w", err)
 		}
@@ -821,7 +934,7 @@ func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
 		return err
 	}
 	b.recordRecorderReadyState(resp)
-	if doc := discInfoDocFromProto(b.activeBucket, resp); doc != nil {
+	if doc := discInfoDocFromProto(b.activeBucket, resp, nil, readFinalizeLayoutTranscript(b.meta, b.activeBucket)); doc != nil {
 		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
 			return fmt.Errorf("burnbridge: persist disc info: %w", err)
 		}
@@ -1937,12 +2050,15 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 	}
 
 	if key == meta.BurnbridgeDiscInfoObjectKey {
-		raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
-		if err != nil {
-			if errors.Is(err, meta.ErrNoSuchKey) {
-				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+		raw, _, err := b.refreshDiscInfoDocument(ctx, bucket)
+		if err != nil || len(raw) == 0 {
+			raw, err = b.meta.GetBurnbridgeDiscInfoJSON(bucket)
+			if err != nil {
+				if errors.Is(err, meta.ErrNoSuchKey) {
+					return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+				}
+				return nil, err
 			}
-			return nil, err
 		}
 		clen := int64(len(raw))
 		etag := quotedMD5Bytes(raw)
@@ -2118,12 +2234,15 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 	}
 
 	if key == meta.BurnbridgeDiscInfoObjectKey {
-		raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
-		if err != nil {
-			if errors.Is(err, meta.ErrNoSuchKey) {
-				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+		raw, _, err := b.refreshDiscInfoDocument(ctx, bucket)
+		if err != nil || len(raw) == 0 {
+			raw, err = b.meta.GetBurnbridgeDiscInfoJSON(bucket)
+			if err != nil {
+				if errors.Is(err, meta.ErrNoSuchKey) {
+					return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+				}
+				return nil, err
 			}
-			return nil, err
 		}
 		objSize := int64(len(raw))
 		startOffset, length, contentRange, err := parseCommittedGetRange(objSize, backend.GetStringFromPtr(input.Range))
