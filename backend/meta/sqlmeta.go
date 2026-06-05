@@ -566,8 +566,11 @@ func (s SqlMeta) GetBurnbridgeDiscInfoJSON(bucket string) ([]byte, error) {
 // BurnbridgeFinalizeLayoutObjectKey triggers UDF/disc finalization via GetObject against the recorder.
 const BurnbridgeFinalizeLayoutObjectKey = "FinalizeLayout"
 
-// BurnbridgeFinalizeLayoutAttribute holds JSON documenting the last FinalizeLayout gRPC invocation.
-const BurnbridgeFinalizeLayoutAttribute = "burnbridge-finalize-layout"
+// BurnbridgeCloseDiscObjectKey triggers recorder finalization with close_disc=true.
+const BurnbridgeCloseDiscObjectKey = "CloseDisc"
+
+// BurnbridgeFinalizeLayoutAttributePrefix holds JSON documenting the last finalize-style gRPC invocation.
+const BurnbridgeFinalizeLayoutAttributePrefix = "burnbridge-finalize-layout"
 
 // BurnbridgeFinalizeLayoutDocument captures the outcome of invoking the recorder finalize RPC (from gateway).
 type BurnbridgeFinalizeLayoutDocument struct {
@@ -596,25 +599,48 @@ type BurnbridgeDiscBucketBindingDocument struct {
 	UpdatedAtUtc     string `json:"updatedAtUtc"`
 }
 
-// StoreBurnbridgeFinalizeLayoutJSON saves the finalize outcome for reserved key BurnbridgeFinalizeLayoutObjectKey.
-func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, payload []byte) error {
+func burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey string) (string, error) {
+	switch strings.TrimSpace(objectKey) {
+	case BurnbridgeFinalizeLayoutObjectKey:
+		return BurnbridgeFinalizeLayoutAttributePrefix, nil
+	case BurnbridgeCloseDiscObjectKey:
+		return BurnbridgeFinalizeLayoutAttributePrefix + "-close-disc", nil
+	default:
+		return "", fmt.Errorf("finalize layout: unsupported object key %q", objectKey)
+	}
+}
+
+// StoreBurnbridgeFinalizeLayoutJSON saves the finalize outcome for a reserved finalize-style object key.
+func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string, payload []byte) error {
 	if strings.TrimSpace(bucket) == "" {
 		return fmt.Errorf("finalize layout: empty bucket")
+	}
+	attr, err := burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey)
+	if err != nil {
+		return err
 	}
 	if len(payload) == 0 {
 		return fmt.Errorf("finalize layout: empty payload")
 	}
-	return s.StoreAttribute(nil, bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute, payload)
+	return s.StoreAttribute(nil, bucket, objectKey, attr, payload)
 }
 
-// GetBurnbridgeFinalizeLayoutJSON returns raw JSON persisted for BurnbridgeFinalizeLayoutObjectKey (if HeadObject/GetObject before first GET finalized, returns ErrNoSuchKey).
-func (s SqlMeta) GetBurnbridgeFinalizeLayoutJSON(bucket string) ([]byte, error) {
-	return s.RetrieveAttribute(nil, bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute)
+// GetBurnbridgeFinalizeLayoutJSON returns raw JSON persisted for a reserved finalize-style object key.
+func (s SqlMeta) GetBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string) ([]byte, error) {
+	attr, err := burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey)
+	if err != nil {
+		return nil, err
+	}
+	return s.RetrieveAttribute(nil, bucket, objectKey, attr)
 }
 
-// DeleteBurnbridgeFinalizeLayoutJSON removes the cached finalize transcript for the reserved FinalizeLayout key.
-func (s SqlMeta) DeleteBurnbridgeFinalizeLayoutJSON(bucket string) error {
-	return s.DeleteAttribute(bucket, BurnbridgeFinalizeLayoutObjectKey, BurnbridgeFinalizeLayoutAttribute)
+// DeleteBurnbridgeFinalizeLayoutJSON removes the cached finalize transcript for a reserved finalize-style object key.
+func (s SqlMeta) DeleteBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string) error {
+	attr, err := burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey)
+	if err != nil {
+		return err
+	}
+	return s.DeleteAttribute(bucket, objectKey, attr)
 }
 
 // StoreBurnbridgeDiscBucketBinding persists runtime media naming for restart-safe blank-disc bucket binding.

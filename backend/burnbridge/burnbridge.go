@@ -500,8 +500,8 @@ func discInfoDocFromProto(
 	return doc
 }
 
-func readFinalizeLayoutTranscript(metaStore meta.SqlMeta, bucket string) *meta.BurnbridgeFinalizeLayoutDocument {
-	raw, err := metaStore.GetBurnbridgeFinalizeLayoutJSON(bucket)
+func readFinalizeLayoutTranscript(metaStore meta.SqlMeta, bucket string, objectKey string) *meta.BurnbridgeFinalizeLayoutDocument {
+	raw, err := metaStore.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey)
 	if err != nil || len(raw) == 0 {
 		return nil
 	}
@@ -534,7 +534,7 @@ func (b *BurnBridge) refreshDiscInfoDocument(ctx context.Context, bucket string)
 		return nil, nil, err
 	}
 
-	finalizeDoc := readFinalizeLayoutTranscript(b.meta, bucket)
+	finalizeDoc := readFinalizeLayoutTranscript(b.meta, bucket, meta.BurnbridgeFinalizeLayoutObjectKey)
 	doc := discInfoDocFromProto(bucket, resp, discResp, finalizeDoc)
 	if doc == nil {
 		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
@@ -665,7 +665,7 @@ func New(opts Options) (*BurnBridge, error) {
 		}
 	}
 	if activeBucket != "" {
-		if doc := discInfoDocFromProto(activeBucket, turResp, nil, readFinalizeLayoutTranscript(metaStore, activeBucket)); doc != nil {
+		if doc := discInfoDocFromProto(activeBucket, turResp, nil, readFinalizeLayoutTranscript(metaStore, activeBucket, meta.BurnbridgeFinalizeLayoutObjectKey)); doc != nil {
 			if perr := metaStore.StoreBurnbridgeDiscInfo(doc); perr != nil {
 				_ = conn.Close()
 				return nil, fmt.Errorf("burnbridge: persist disc info: %w", perr)
@@ -897,7 +897,7 @@ func (b *BurnBridge) applyRecorderStatusEvent(event *burnbridgev1.UnitStatusEven
 		return err
 	}
 	b.recordRecorderReadyState(resp)
-	if doc := discInfoDocFromProto(b.activeBucket, resp, nil, readFinalizeLayoutTranscript(b.meta, b.activeBucket)); doc != nil {
+	if doc := discInfoDocFromProto(b.activeBucket, resp, nil, readFinalizeLayoutTranscript(b.meta, b.activeBucket, meta.BurnbridgeFinalizeLayoutObjectKey)); doc != nil {
 		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
 			return fmt.Errorf("burnbridge: persist streamed disc info: %w", err)
 		}
@@ -934,7 +934,7 @@ func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
 		return err
 	}
 	b.recordRecorderReadyState(resp)
-	if doc := discInfoDocFromProto(b.activeBucket, resp, nil, readFinalizeLayoutTranscript(b.meta, b.activeBucket)); doc != nil {
+	if doc := discInfoDocFromProto(b.activeBucket, resp, nil, readFinalizeLayoutTranscript(b.meta, b.activeBucket, meta.BurnbridgeFinalizeLayoutObjectKey)); doc != nil {
 		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
 			return fmt.Errorf("burnbridge: persist disc info: %w", err)
 		}
@@ -1940,12 +1940,20 @@ func buildFinalizeLayoutResultJSON(bucket string, closeDisc bool, resp *burnbrid
 	return json.Marshal(doc)
 }
 
-// invokeFinalizeLayoutAgainstRecorder persists a JSON transcript (success or RPC error) for object key FinalizeLayout.
+func finalizeObjectKeyForCloseDisc(closeDisc bool) string {
+	if closeDisc {
+		return meta.BurnbridgeCloseDiscObjectKey
+	}
+	return meta.BurnbridgeFinalizeLayoutObjectKey
+}
+
+// invokeFinalizeLayoutAgainstRecorder persists a JSON transcript (success or RPC error) for a reserved finalize-style object key.
 func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bucket string, closeDisc bool) ([]byte, error) {
 	b.putSerialMu.Lock()
 	defer b.putSerialMu.Unlock()
 
-	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, prev) {
+	objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
+	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, closeDisc, prev) {
 		return prev, nil
 	}
 
@@ -1963,7 +1971,7 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 	if mErr != nil {
 		return nil, fmt.Errorf("burnbridge finalize layout json: %w", mErr)
 	}
-	if err := b.meta.StoreBurnbridgeFinalizeLayoutJSON(bucket, payload); err != nil {
+	if err := b.meta.StoreBurnbridgeFinalizeLayoutJSON(bucket, objectKey, payload); err != nil {
 		return nil, err
 	}
 	if grpcErr != nil {
@@ -1973,7 +1981,7 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 	return payload, nil
 }
 
-func shouldReuseFinalizeLayoutTranscript(bucket string, raw []byte) bool {
+func shouldReuseFinalizeLayoutTranscript(bucket string, closeDisc bool, raw []byte) bool {
 	var doc meta.BurnbridgeFinalizeLayoutDocument
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return false
@@ -1981,30 +1989,34 @@ func shouldReuseFinalizeLayoutTranscript(bucket string, raw []byte) bool {
 	if !strings.EqualFold(strings.TrimSpace(doc.Bucket), strings.TrimSpace(bucket)) {
 		return false
 	}
+	if doc.CloseDisc != closeDisc {
+		return false
+	}
 	return doc.GrpcOK
 }
 
 func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
-	if err := b.meta.DeleteBurnbridgeFinalizeLayoutJSON(bucket); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
-		slog.Warn("burnbridge: failed to invalidate cached FinalizeLayout transcript",
-			"bucket", bucket, "err", err)
-		return
+	for _, objectKey := range []string{meta.BurnbridgeFinalizeLayoutObjectKey, meta.BurnbridgeCloseDiscObjectKey} {
+		if err := b.meta.DeleteBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			slog.Warn("burnbridge: failed to invalidate cached finalize transcript",
+				"bucket", bucket, "object_key", objectKey, "err", err)
+			continue
+		}
+		slog.Info("burnbridge: invalidated cached finalize transcript",
+			"bucket", bucket, "object_key", objectKey)
 	}
-	slog.Info("burnbridge: invalidated cached FinalizeLayout transcript", "bucket", bucket)
 }
 
 func (b *BurnBridge) loadOrFinalizeLayoutTranscript(ctx context.Context, bucket string, closeDisc bool) ([]byte, error) {
-	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, prev) {
+	objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
+	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, closeDisc, prev) {
 		return prev, nil
 	}
 
-	groupKey := bucket
-	if closeDisc {
-		groupKey += "|close"
-	}
+	groupKey := bucket + "|" + objectKey
 
 	value, err, _ := b.finalizeGroup.Do(groupKey, func() (interface{}, error) {
-		if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, prev) {
+		if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, closeDisc, prev) {
 			return prev, nil
 		}
 		return b.invokeFinalizeLayoutAgainstRecorder(ctx, bucket, closeDisc)
@@ -2029,8 +2041,9 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
-	if key == meta.BurnbridgeFinalizeLayoutObjectKey {
-		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, false)
+	if key == meta.BurnbridgeFinalizeLayoutObjectKey || key == meta.BurnbridgeCloseDiscObjectKey {
+		closeDisc := key == meta.BurnbridgeCloseDiscObjectKey
+		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, closeDisc)
 		if err != nil {
 			if errors.Is(err, meta.ErrNoSuchKey) {
 				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
@@ -2206,8 +2219,9 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		return nil, s3err.GetAPIError(s3err.ErrInvalidPartNumber)
 	}
 
-	if key == meta.BurnbridgeFinalizeLayoutObjectKey {
-		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, false)
+	if key == meta.BurnbridgeFinalizeLayoutObjectKey || key == meta.BurnbridgeCloseDiscObjectKey {
+		closeDisc := key == meta.BurnbridgeCloseDiscObjectKey
+		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, closeDisc)
 		if err != nil {
 			return nil, err
 		}
@@ -3129,6 +3143,10 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	}
 
 	if key == meta.BurnbridgeFinalizeLayoutObjectKey {
+		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrAccessDenied)
+	}
+
+	if key == meta.BurnbridgeCloseDiscObjectKey {
 		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
 

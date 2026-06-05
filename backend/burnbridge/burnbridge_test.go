@@ -1417,7 +1417,7 @@ func TestInvokeFinalizeLayoutReusesSuccessfulTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StoreBurnbridgeFinalizeLayoutJSON("bucket1", payload); err != nil {
+	if err := store.StoreBurnbridgeFinalizeLayoutJSON("bucket1", meta.BurnbridgeFinalizeLayoutObjectKey, payload); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1468,7 +1468,7 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StoreBurnbridgeFinalizeLayoutJSON("bucket1", finalizePayload); err != nil {
+	if err := store.StoreBurnbridgeFinalizeLayoutJSON("bucket1", meta.BurnbridgeFinalizeLayoutObjectKey, finalizePayload); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1618,6 +1618,119 @@ func TestLoadOrFinalizeLayoutTranscriptSingleflight(t *testing.T) {
 		if len(results[i]) == 0 {
 			t.Fatalf("worker %d returned empty transcript", i)
 		}
+	}
+}
+
+func TestCloseDiscGetObjectInvokesFinalizeWithCloseDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var gotCloseDisc bool
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			finalizeFn: func(_ctx context.Context, req *burnbridgev1.FinalizeLayoutRequest, _opts ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				gotCloseDisc = req.GetCloseDisc()
+				return &burnbridgev1.FinalizeLayoutResponse{
+					Bucket:  "bucket1",
+					Status:  "finalized",
+					Message: "disc closed",
+				}, nil
+			},
+		},
+		activeBucket: "bucket1",
+		udfLabel:     "BUCKET1",
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("bucket1"),
+		Key:    ptr(meta.BurnbridgeCloseDiscObjectKey),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if !gotCloseDisc {
+		t.Fatal("expected CloseDisc object to invoke FinalizeLayout with closeDisc=true")
+	}
+
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var doc meta.BurnbridgeFinalizeLayoutDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.CloseDisc {
+		t.Fatal("expected persisted transcript closeDisc=true")
+	}
+	if doc.RecorderStatus != "finalized" {
+		t.Fatalf("expected recorderStatus finalized, got %q", doc.RecorderStatus)
+	}
+}
+
+func TestLoadOrFinalizeLayoutTranscriptSeparatesCloseDiscCache(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var closeCalls int32
+	var openCalls int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			finalizeFn: func(_ctx context.Context, req *burnbridgev1.FinalizeLayoutRequest, _opts ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				if req.GetCloseDisc() {
+					atomic.AddInt32(&closeCalls, 1)
+					return &burnbridgev1.FinalizeLayoutResponse{Bucket: "bucket1", Status: "closed"}, nil
+				}
+				atomic.AddInt32(&openCalls, 1)
+				return &burnbridgev1.FinalizeLayoutResponse{Bucket: "bucket1", Status: "finalized"}, nil
+			},
+		},
+		activeBucket: "bucket1",
+		udfLabel:     "BUCKET1",
+	}
+
+	openPayload, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closePayload, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&openCalls) != 1 {
+		t.Fatalf("expected one non-close finalize call, got %d", atomic.LoadInt32(&openCalls))
+	}
+	if atomic.LoadInt32(&closeCalls) != 1 {
+		t.Fatalf("expected one close finalize call, got %d", atomic.LoadInt32(&closeCalls))
+	}
+
+	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", true); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&openCalls) != 1 {
+		t.Fatalf("expected cached non-close transcript reuse, got %d calls", atomic.LoadInt32(&openCalls))
+	}
+	if atomic.LoadInt32(&closeCalls) != 1 {
+		t.Fatalf("expected cached close transcript reuse, got %d calls", atomic.LoadInt32(&closeCalls))
+	}
+	if bytes.Equal(openPayload, closePayload) {
+		t.Fatal("expected close and non-close transcripts to differ")
 	}
 }
 
