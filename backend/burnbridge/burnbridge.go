@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,6 +51,48 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
+
+const (
+	burnbridgeControlNamespacePrefix = ".__bbctl__/"
+	burnbridgeControlKeyPrefix       = ".__bbctl__/v1/"
+	burnbridgeControlAPIVersion      = "v1"
+)
+
+type burnbridgeControlAction string
+
+const (
+	burnbridgeControlActionDiscInfo       burnbridgeControlAction = "disc-info"
+	burnbridgeControlActionFinalizeLayout burnbridgeControlAction = "finalize-layout"
+	burnbridgeControlActionCloseDisc      burnbridgeControlAction = "close-disc"
+)
+
+type burnbridgeControlRequest struct {
+	Action      burnbridgeControlAction
+	RequestTime int64
+	RequestID   string
+	Key         string
+}
+
+type burnbridgeControlError struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
+type burnbridgeControlEnvelope struct {
+	APIVersion string                  `json:"apiVersion"`
+	Action     string                  `json:"action"`
+	RequestID  string                  `json:"requestId"`
+	RequestTime int64                  `json:"requestTime"`
+	Bucket     string                  `json:"bucket"`
+	Ok         bool                    `json:"ok"`
+	Data       any                     `json:"data,omitempty"`
+	Error      *burnbridgeControlError `json:"error,omitempty"`
+}
+
+type burnbridgeControlPayload struct {
+	Raw          []byte
+	LastModified time.Time
+}
 
 type Options struct {
 	DBPath string
@@ -139,6 +182,99 @@ func (u *unlockOnCloseReadCloser) Close() error {
 		u.unlock = nil
 	}
 	return err
+}
+
+func burnbridgeInvalidRequest(message string) error {
+	apiErr := s3err.GetAPIError(s3err.ErrInvalidRequest)
+	apiErr.Description = message
+	return apiErr
+}
+
+func isBurnbridgeControlNamespace(key string) bool {
+	return strings.HasPrefix(strings.TrimSpace(key), burnbridgeControlNamespacePrefix)
+}
+
+func isBurnbridgeUUIDText(value string) bool {
+	if len(value) != 36 {
+		return false
+	}
+	for idx, ch := range value {
+		switch idx {
+		case 8, 13, 18, 23:
+			if ch != '-' {
+				return false
+			}
+		default:
+			switch {
+			case ch >= '0' && ch <= '9':
+			case ch >= 'a' && ch <= 'f':
+			case ch >= 'A' && ch <= 'F':
+			default:
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func parseBurnbridgeControlRequest(key string) (*burnbridgeControlRequest, bool, error) {
+	trimmed := strings.TrimSpace(key)
+	if !isBurnbridgeControlNamespace(trimmed) {
+		return nil, false, nil
+	}
+
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 5 || parts[0] != ".__bbctl__" || parts[1] != burnbridgeControlAPIVersion {
+		return nil, true, burnbridgeInvalidRequest("invalid burnbridge control key format; expected .__bbctl__/v1/<action>/<unixMs>/<uuid>")
+	}
+
+	var action burnbridgeControlAction
+	switch parts[2] {
+	case string(burnbridgeControlActionDiscInfo):
+		action = burnbridgeControlActionDiscInfo
+	case string(burnbridgeControlActionFinalizeLayout):
+		action = burnbridgeControlActionFinalizeLayout
+	case string(burnbridgeControlActionCloseDisc):
+		action = burnbridgeControlActionCloseDisc
+	default:
+		return nil, true, burnbridgeInvalidRequest(fmt.Sprintf("unsupported burnbridge control action %q", parts[2]))
+	}
+
+	requestTime, err := strconv.ParseInt(parts[3], 10, 64)
+	if err != nil || requestTime <= 0 {
+		return nil, true, burnbridgeInvalidRequest(fmt.Sprintf("invalid burnbridge control timestamp %q", parts[3]))
+	}
+	if !isBurnbridgeUUIDText(parts[4]) {
+		return nil, true, burnbridgeInvalidRequest(fmt.Sprintf("invalid burnbridge control request id %q", parts[4]))
+	}
+
+	return &burnbridgeControlRequest{
+		Action:      action,
+		RequestTime: requestTime,
+		RequestID:   parts[4],
+		Key:         trimmed,
+	}, true, nil
+}
+
+func buildBurnbridgeControlPayload(req *burnbridgeControlRequest, bucket string, ok bool, data any, controlErr *burnbridgeControlError, lastModified time.Time) (burnbridgeControlPayload, error) {
+	raw, err := json.Marshal(burnbridgeControlEnvelope{
+		APIVersion: burnbridgeControlAPIVersion,
+		Action:     string(req.Action),
+		RequestID:  req.RequestID,
+		RequestTime: req.RequestTime,
+		Bucket:     bucket,
+		Ok:         ok,
+		Data:       data,
+		Error:      controlErr,
+	})
+	if err != nil {
+		return burnbridgeControlPayload{}, err
+	}
+
+	return burnbridgeControlPayload{
+		Raw:          raw,
+		LastModified: lastModified,
+	}, nil
 }
 
 type BurnBridge struct {
@@ -1915,6 +2051,129 @@ func finalizeLayoutLastModifiedFromJSON(raw []byte) time.Time {
 	return time.Now().UTC()
 }
 
+func buildDiscInfoControlJSON(req *burnbridgeControlRequest, bucket string, doc *meta.BurnbridgeDiscInfoDocument) (burnbridgeControlPayload, error) {
+	if req == nil {
+		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: disc info control request is required")
+	}
+	if doc == nil {
+		return buildBurnbridgeControlPayload(req, bucket, false, nil, &burnbridgeControlError{
+			Code:    s3err.GetAPIError(s3err.ErrNoSuchKey).Code,
+			Message: "disc info unavailable",
+		}, time.Now().UTC())
+	}
+	lastModified := time.Now().UTC()
+	if strings.TrimSpace(doc.UpdatedAt) != "" {
+		if t, err := time.Parse(time.RFC3339Nano, doc.UpdatedAt); err == nil {
+			lastModified = t.UTC()
+		} else if t, err := time.Parse(time.RFC3339, doc.UpdatedAt); err == nil {
+			lastModified = t.UTC()
+		}
+	}
+	return buildBurnbridgeControlPayload(req, bucket, true, doc, nil, lastModified)
+}
+
+func buildFinalizeControlJSON(req *burnbridgeControlRequest, bucket string, doc *meta.BurnbridgeFinalizeLayoutDocument) (burnbridgeControlPayload, error) {
+	if req == nil {
+		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: finalize control request is required")
+	}
+	if doc == nil {
+		return buildBurnbridgeControlPayload(req, bucket, false, nil, &burnbridgeControlError{
+			Code:    s3err.GetAPIError(s3err.ErrNoSuchKey).Code,
+			Message: "finalize transcript unavailable",
+		}, time.Now().UTC())
+	}
+	lastModified := time.Now().UTC()
+	if strings.TrimSpace(doc.CompletedAtUtc) != "" {
+		if t, err := time.Parse(time.RFC3339Nano, doc.CompletedAtUtc); err == nil {
+			lastModified = t.UTC()
+		} else if t, err := time.Parse(time.RFC3339, doc.CompletedAtUtc); err == nil {
+			lastModified = t.UTC()
+		}
+	}
+	if doc.GrpcOK {
+		return buildBurnbridgeControlPayload(req, bucket, true, doc, nil, lastModified)
+	}
+	errCode := doc.GrpcCode
+	if strings.TrimSpace(errCode) == "" {
+		errCode = "InternalError"
+	}
+	errMessage := doc.GrpcDetails
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = doc.Error
+	}
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = doc.RecorderMessage
+	}
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = "finalize failed"
+	}
+	return buildBurnbridgeControlPayload(req, bucket, false, doc, &burnbridgeControlError{
+		Code:    errCode,
+		Message: errMessage,
+	}, lastModified)
+}
+
+func parseFinalizeControlDocument(raw []byte) *meta.BurnbridgeFinalizeLayoutDocument {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc meta.BurnbridgeFinalizeLayoutDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	return &doc
+}
+
+func parseDiscInfoControlDocument(raw []byte) *meta.BurnbridgeDiscInfoDocument {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc meta.BurnbridgeDiscInfoDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	return &doc
+}
+
+func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req *burnbridgeControlRequest) (burnbridgeControlPayload, error) {
+	if req == nil {
+		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: control request is required")
+	}
+
+	switch req.Action {
+	case burnbridgeControlActionDiscInfo:
+		raw, doc, err := b.refreshDiscInfoDocument(ctx, bucket)
+		if err != nil || len(raw) == 0 {
+			raw, err = b.meta.GetBurnbridgeDiscInfoJSON(bucket)
+			if err != nil {
+				if errors.Is(err, meta.ErrNoSuchKey) {
+					return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+				}
+				return burnbridgeControlPayload{}, err
+			}
+			doc = parseDiscInfoControlDocument(raw)
+		}
+		if doc == nil {
+			doc = parseDiscInfoControlDocument(raw)
+		}
+		return buildDiscInfoControlJSON(req, bucket, doc)
+
+	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc:
+		closeDisc := req.Action == burnbridgeControlActionCloseDisc
+		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, closeDisc)
+		if err != nil {
+			if errors.Is(err, meta.ErrNoSuchKey) {
+				return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+			}
+			return burnbridgeControlPayload{}, err
+		}
+		doc := parseFinalizeControlDocument(raw)
+		return buildFinalizeControlJSON(req, bucket, doc)
+	default:
+		return burnbridgeControlPayload{}, burnbridgeInvalidRequest(fmt.Sprintf("unsupported burnbridge control action %q", req.Action))
+	}
+}
+
 func buildFinalizeLayoutResultJSON(bucket string, closeDisc bool, resp *burnbridgev1.FinalizeLayoutResponse, grpcErr error) ([]byte, error) {
 	doc := meta.BurnbridgeFinalizeLayoutDocument{
 		Bucket:         bucket,
@@ -2041,47 +2300,22 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
-	if key == meta.BurnbridgeFinalizeLayoutObjectKey || key == meta.BurnbridgeCloseDiscObjectKey {
-		closeDisc := key == meta.BurnbridgeCloseDiscObjectKey
-		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, closeDisc)
+	if controlReq, isControl, err := parseBurnbridgeControlRequest(key); isControl {
 		if err != nil {
-			if errors.Is(err, meta.ErrNoSuchKey) {
-				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
-			}
 			return nil, err
 		}
-		clen := int64(len(raw))
-		etag := quotedMD5Bytes(raw)
-		ct := discInfoContentType
-		lm := finalizeLayoutLastModifiedFromJSON(raw)
-		return &s3.HeadObjectOutput{
-			ContentType:   &ct,
-			ContentLength: &clen,
-			ETag:          &etag,
-			LastModified:  backend.GetTimePtr(lm),
-		}, nil
-	}
-
-	if key == meta.BurnbridgeDiscInfoObjectKey {
-		raw, _, err := b.refreshDiscInfoDocument(ctx, bucket)
-		if err != nil || len(raw) == 0 {
-			raw, err = b.meta.GetBurnbridgeDiscInfoJSON(bucket)
-			if err != nil {
-				if errors.Is(err, meta.ErrNoSuchKey) {
-					return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
-				}
-				return nil, err
-			}
+		payload, err := b.loadControlPayload(ctx, bucket, controlReq)
+		if err != nil {
+			return nil, err
 		}
-		clen := int64(len(raw))
-		etag := quotedMD5Bytes(raw)
+		clen := int64(len(payload.Raw))
+		etag := quotedMD5Bytes(payload.Raw)
 		ct := discInfoContentType
-		lm := discInfoLastModifiedFromJSON(raw)
 		return &s3.HeadObjectOutput{
 			ContentType:   &ct,
 			ContentLength: &clen,
 			ETag:          &etag,
-			LastModified:  backend.GetTimePtr(lm),
+			LastModified:  backend.GetTimePtr(payload.LastModified),
 		}, nil
 	}
 
@@ -2219,60 +2453,28 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		return nil, s3err.GetAPIError(s3err.ErrInvalidPartNumber)
 	}
 
-	if key == meta.BurnbridgeFinalizeLayoutObjectKey || key == meta.BurnbridgeCloseDiscObjectKey {
-		closeDisc := key == meta.BurnbridgeCloseDiscObjectKey
-		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, closeDisc)
+	if controlReq, isControl, err := parseBurnbridgeControlRequest(key); isControl {
 		if err != nil {
 			return nil, err
 		}
-		objSize := int64(len(raw))
+		payload, err := b.loadControlPayload(ctx, bucket, controlReq)
+		if err != nil {
+			return nil, err
+		}
+		objSize := int64(len(payload.Raw))
 		startOffset, length, contentRange, err := parseCommittedGetRange(objSize, backend.GetStringFromPtr(input.Range))
 		if err != nil {
 			return nil, err
 		}
-		slice := raw[startOffset : startOffset+length]
-		etag := quotedMD5Bytes(raw)
-		lm := finalizeLayoutLastModifiedFromJSON(raw)
+		slice := payload.Raw[startOffset : startOffset+length]
+		etag := quotedMD5Bytes(payload.Raw)
 		ct := discInfoContentType
 		clen := length
 		return &s3.GetObjectOutput{
 			Body:          io.NopCloser(bytes.NewReader(slice)),
 			AcceptRanges:  backend.GetPtrFromString("bytes"),
 			ETag:          &etag,
-			LastModified:  backend.GetTimePtr(lm),
-			ContentLength: &clen,
-			ContentRange:  contentRange,
-			StorageClass:  types.StorageClassStandard,
-			ContentType:   &ct,
-		}, nil
-	}
-
-	if key == meta.BurnbridgeDiscInfoObjectKey {
-		raw, _, err := b.refreshDiscInfoDocument(ctx, bucket)
-		if err != nil || len(raw) == 0 {
-			raw, err = b.meta.GetBurnbridgeDiscInfoJSON(bucket)
-			if err != nil {
-				if errors.Is(err, meta.ErrNoSuchKey) {
-					return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
-				}
-				return nil, err
-			}
-		}
-		objSize := int64(len(raw))
-		startOffset, length, contentRange, err := parseCommittedGetRange(objSize, backend.GetStringFromPtr(input.Range))
-		if err != nil {
-			return nil, err
-		}
-		slice := raw[startOffset : startOffset+length]
-		etag := quotedMD5Bytes(raw)
-		lm := discInfoLastModifiedFromJSON(raw)
-		ct := discInfoContentType
-		clen := length
-		return &s3.GetObjectOutput{
-			Body:          io.NopCloser(bytes.NewReader(slice)),
-			AcceptRanges:  backend.GetPtrFromString("bytes"),
-			ETag:          &etag,
-			LastModified:  backend.GetTimePtr(lm),
+			LastModified:  backend.GetTimePtr(payload.LastModified),
 			ContentLength: &clen,
 			ContentRange:  contentRange,
 			StorageClass:  types.StorageClassStandard,
@@ -3138,20 +3340,12 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
+	if isBurnbridgeControlNamespace(key) {
+		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrAccessDenied)
+	}
+
 	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
 		return s3response.PutObjectOutput{}, err
-	}
-
-	if key == meta.BurnbridgeFinalizeLayoutObjectKey {
-		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrAccessDenied)
-	}
-
-	if key == meta.BurnbridgeCloseDiscObjectKey {
-		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrAccessDenied)
-	}
-
-	if key == meta.BurnbridgeDiscInfoObjectKey {
-		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
 
 	b.putSerialMu.Lock()

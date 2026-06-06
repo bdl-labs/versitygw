@@ -1449,6 +1449,10 @@ func TestInvokeFinalizeLayoutReusesSuccessfulTranscript(t *testing.T) {
 	}
 }
 
+func testControlKey(action string) string {
+	return ".__bbctl__/v1/" + action + "/1780622225123/550e8400-e29b-41d4-a716-446655440000"
+}
+
 func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -1526,7 +1530,7 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 
 	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: ptr("bucket1"),
-		Key:    ptr(meta.BurnbridgeDiscInfoObjectKey),
+		Key:    ptr(testControlKey("disc-info")),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1538,8 +1542,25 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 		t.Fatal(err)
 	}
 
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected ok=true, got false with error %+v", envelope.Error)
+	}
+	if envelope.Action != "disc-info" {
+		t.Fatalf("expected action disc-info, got %q", envelope.Action)
+	}
+	if envelope.RequestID != "550e8400-e29b-41d4-a716-446655440000" {
+		t.Fatalf("unexpected request id %q", envelope.RequestID)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var doc meta.BurnbridgeDiscInfoDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
+	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1648,7 +1669,7 @@ func TestCloseDiscGetObjectInvokesFinalizeWithCloseDisc(t *testing.T) {
 
 	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
 		Bucket: ptr("bucket1"),
-		Key:    ptr(meta.BurnbridgeCloseDiscObjectKey),
+		Key:    ptr(testControlKey("close-disc")),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1664,8 +1685,22 @@ func TestCloseDiscGetObjectInvokesFinalizeWithCloseDisc(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected ok=true, got false with error %+v", envelope.Error)
+	}
+	if envelope.Action != "close-disc" {
+		t.Fatalf("expected action close-disc, got %q", envelope.Action)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var doc meta.BurnbridgeFinalizeLayoutDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
+	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatal(err)
 	}
 	if !doc.CloseDisc {
@@ -1731,6 +1766,65 @@ func TestLoadOrFinalizeLayoutTranscriptSeparatesCloseDiscCache(t *testing.T) {
 	}
 	if bytes.Equal(openPayload, closePayload) {
 		t.Fatal("expected close and non-close transcripts to differ")
+	}
+}
+
+func TestHeadObjectControlKeyReturnsEnvelopeMetadata(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:      "bucket1",
+		UpdatedAt:   "2026-06-05T10:11:12.1234567Z",
+		VolumeLabel: "DISC001",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "bucket1",
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return nil, status.Error(codes.Unavailable, "offline for cache fallback")
+			},
+		},
+	}
+	out, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: ptr("bucket1"),
+		Key:    ptr(testControlKey("disc-info")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.ContentLength == nil || *out.ContentLength <= 0 {
+		t.Fatal("expected positive content length")
+	}
+	if out.LastModified == nil {
+		t.Fatal("expected last modified")
+	}
+}
+
+func TestPutObjectRejectsControlNamespace(t *testing.T) {
+	b := &BurnBridge{
+		activeBucket: "bucket1",
+		putQueueSem:  make(chan struct{}, 1),
+	}
+	_, err := b.PutObject(context.Background(), s3response.PutObjectInput{
+		Bucket: ptr("bucket1"),
+		Key:    ptr(testControlKey("disc-info")),
+		Body:   io.NopCloser(strings.NewReader("x")),
+	})
+	if err == nil {
+		t.Fatal("expected access denied")
+	}
+	st, ok := err.(interface{ Error() string })
+	if !ok || !strings.Contains(st.Error(), "AccessDenied") {
+		t.Fatalf("expected access denied error, got %v", err)
 	}
 }
 

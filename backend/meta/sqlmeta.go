@@ -509,13 +509,13 @@ type CommittedObjectSummary struct {
 // BurnbridgeCommittedAttribute is the metadata_entries key for a JSON snapshot after successful BurnBridge PutObject.
 const BurnbridgeCommittedAttribute = "burnbridge-committed"
 
-// BurnbridgeDiscInfoObjectKey is the fixed S3 object key for optical disc metadata (hidden from ListObjects).
-const BurnbridgeDiscInfoObjectKey = "DiscInfo"
+// BurnbridgeDiscInfoObjectKey is the internal metadata object slot used to persist burnbridge disc JSON.
+const BurnbridgeDiscInfoObjectKey = ".__bbctl__/state/disc-info"
 
 // BurnbridgeDiscInfoAttribute stores JSON for BurnbridgeDiscInfoDocument (not a committed object; not listed).
 const BurnbridgeDiscInfoAttribute = "burnbridge-disc-info"
 
-// BurnbridgeDiscInfoDocument is JSON returned by GetObject/HeadObject for key BurnbridgeDiscInfoObjectKey.
+// BurnbridgeDiscInfoDocument is the persisted recorder/gateway disc snapshot.
 type BurnbridgeDiscInfoDocument struct {
 	Bucket                   string `json:"bucket"`
 	VolumeLabel              string `json:"volumeLabel"`
@@ -543,7 +543,7 @@ type BurnbridgeDiscInfoDocument struct {
 	LayoutCloseDisc          bool   `json:"layoutCloseDisc,omitempty"`
 }
 
-// StoreBurnbridgeDiscInfo upserts disc JSON for the reserved DiscInfo key (not visible in ListObjects).
+// StoreBurnbridgeDiscInfo upserts disc JSON into the internal burnbridge control slot.
 func (s SqlMeta) StoreBurnbridgeDiscInfo(doc *BurnbridgeDiscInfoDocument) error {
 	if doc == nil {
 		return nil
@@ -558,16 +558,16 @@ func (s SqlMeta) StoreBurnbridgeDiscInfo(doc *BurnbridgeDiscInfoDocument) error 
 	return s.StoreAttribute(nil, doc.Bucket, BurnbridgeDiscInfoObjectKey, BurnbridgeDiscInfoAttribute, b)
 }
 
-// GetBurnbridgeDiscInfoJSON returns raw JSON bytes for GetObject/HeadObject on BurnbridgeDiscInfoObjectKey.
+// GetBurnbridgeDiscInfoJSON returns raw persisted disc JSON.
 func (s SqlMeta) GetBurnbridgeDiscInfoJSON(bucket string) ([]byte, error) {
 	return s.RetrieveAttribute(nil, bucket, BurnbridgeDiscInfoObjectKey, BurnbridgeDiscInfoAttribute)
 }
 
-// BurnbridgeFinalizeLayoutObjectKey triggers UDF/disc finalization via GetObject against the recorder.
-const BurnbridgeFinalizeLayoutObjectKey = "FinalizeLayout"
+// BurnbridgeFinalizeLayoutObjectKey is the internal metadata object slot for finalize transcript caching.
+const BurnbridgeFinalizeLayoutObjectKey = ".__bbctl__/state/finalize-layout"
 
-// BurnbridgeCloseDiscObjectKey triggers recorder finalization with close_disc=true.
-const BurnbridgeCloseDiscObjectKey = "CloseDisc"
+// BurnbridgeCloseDiscObjectKey is the internal metadata object slot for close-disc transcript caching.
+const BurnbridgeCloseDiscObjectKey = ".__bbctl__/state/close-disc"
 
 // BurnbridgeFinalizeLayoutAttributePrefix holds JSON documenting the last finalize-style gRPC invocation.
 const BurnbridgeFinalizeLayoutAttributePrefix = "burnbridge-finalize-layout"
@@ -610,7 +610,7 @@ func burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey string) (string, er
 	}
 }
 
-// StoreBurnbridgeFinalizeLayoutJSON saves the finalize outcome for a reserved finalize-style object key.
+// StoreBurnbridgeFinalizeLayoutJSON saves the finalize outcome for an internal finalize-style control slot.
 func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string, payload []byte) error {
 	if strings.TrimSpace(bucket) == "" {
 		return fmt.Errorf("finalize layout: empty bucket")
@@ -625,7 +625,7 @@ func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, objectKey stri
 	return s.StoreAttribute(nil, bucket, objectKey, attr, payload)
 }
 
-// GetBurnbridgeFinalizeLayoutJSON returns raw JSON persisted for a reserved finalize-style object key.
+// GetBurnbridgeFinalizeLayoutJSON returns raw JSON persisted for an internal finalize-style control slot.
 func (s SqlMeta) GetBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string) ([]byte, error) {
 	attr, err := burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey)
 	if err != nil {
@@ -634,7 +634,7 @@ func (s SqlMeta) GetBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string
 	return s.RetrieveAttribute(nil, bucket, objectKey, attr)
 }
 
-// DeleteBurnbridgeFinalizeLayoutJSON removes the cached finalize transcript for a reserved finalize-style object key.
+// DeleteBurnbridgeFinalizeLayoutJSON removes the cached finalize transcript for an internal finalize-style control slot.
 func (s SqlMeta) DeleteBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string) error {
 	attr, err := burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey)
 	if err != nil {
