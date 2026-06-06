@@ -1616,6 +1616,119 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 	}
 }
 
+func TestDiscInfoGetObjectSuppressesStaleFinalizeStateOnMismatchedDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	finalizePayload, err := json.Marshal(meta.BurnbridgeFinalizeLayoutDocument{
+		Bucket:         "bucket1",
+		RecorderStatus: "finalized",
+		CompletedAtUtc: "2026-06-04T14:50:52.3067628Z",
+		CloseDisc:      false,
+		GrpcOK:         true,
+		GrpcCode:       "OK",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeFinalizeLayoutJSON("bucket1", meta.BurnbridgeFinalizeLayoutObjectKey, finalizePayload); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "bucket1",
+		udfLabel:     "BUCKET1",
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return &burnbridgev1.TestUnitReadyResponse{
+					Ready:                         true,
+					VolumeLabel:                   "DISC002",
+					DiscSerialNumberHex:           "SER-002",
+					MediaType:                     "BD-R",
+					TotalCapacityBytes:            1000,
+					FreeCapacityBytes:             1000,
+					UsedCapacityBytes:             0,
+					WritableCapacityBytes:         900,
+					FinalizeReserveBytes:          100,
+					BlockSizeBytes:                2048,
+					TotalBlocks:                   320,
+					FreeBlocks:                    320,
+					RecordableCapacityBlocks:      320,
+					TrackNextWritableAddress:      0,
+					TrackNextWritableAddressValid: false,
+					WritableState:                 "Blank",
+				}, nil
+			},
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return &burnbridgev1.GetDiscInfoResponse{
+					Disc: &burnbridgev1.OpticalDiscInfo{
+						ProfileName:                   "BD-R",
+						DiscStatusName:                "empty",
+						DiscSerialNumberHex:           "SER-002",
+						BlockSizeBytes:                2048,
+						TotalBlocks:                   320,
+						FreeBlocks:                    320,
+						RecordableCapacityBlocks:      320,
+						TrackNextWritableAddress:      0,
+						TrackNextWritableAddressValid: false,
+						WritableState:                 "Blank",
+						MediaCapacity:                 1000,
+						MediaFreeSpace:                1000,
+						MediaUsedSpace:                0,
+					},
+				}, nil
+			},
+		},
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("bucket1"),
+		Key:    ptr(testControlKey("disc-info")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc meta.BurnbridgeDiscInfoDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.LayoutStatus != "" {
+		t.Fatalf("expected stale layoutStatus to be suppressed, got %q", doc.LayoutStatus)
+	}
+	if doc.LayoutCompletedAtUtc != "" {
+		t.Fatalf("expected stale layoutCompletedAtUtc to be suppressed, got %q", doc.LayoutCompletedAtUtc)
+	}
+	if doc.WritableState != "Blank" {
+		t.Fatalf("expected writableState Blank, got %q", doc.WritableState)
+	}
+	if doc.VolumeLabel != "DISC002" {
+		t.Fatalf("expected current volume label DISC002, got %q", doc.VolumeLabel)
+	}
+	if _, err := store.GetBurnbridgeDiscInfoJSON("bucket1"); err == nil {
+		t.Fatal("expected mismatched-disc disc-info request to avoid overwriting bucket1 disc info cache")
+	}
+}
+
 func TestLoadOrFinalizeLayoutTranscriptSingleflight(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)

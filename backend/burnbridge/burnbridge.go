@@ -670,14 +670,20 @@ func (b *BurnBridge) refreshDiscInfoDocument(ctx context.Context, bucket string)
 		return nil, nil, err
 	}
 
-	finalizeDoc := readFinalizeLayoutTranscript(b.meta, bucket, meta.BurnbridgeFinalizeLayoutObjectKey)
+	includeFinalizeTranscript := strings.EqualFold(strings.TrimSpace(bucket), strings.TrimSpace(b.activeBucket))
+	var finalizeDoc *meta.BurnbridgeFinalizeLayoutDocument
+	if includeFinalizeTranscript {
+		finalizeDoc = readFinalizeLayoutTranscript(b.meta, bucket, meta.BurnbridgeFinalizeLayoutObjectKey)
+	}
 	doc := discInfoDocFromProto(bucket, resp, discResp, finalizeDoc)
 	if doc == nil {
 		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
 	}
 
-	if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
-		return nil, nil, err
+	if includeFinalizeTranscript {
+		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	raw, err := json.Marshal(doc)
