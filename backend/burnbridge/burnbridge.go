@@ -79,14 +79,14 @@ type burnbridgeControlError struct {
 }
 
 type burnbridgeControlEnvelope struct {
-	APIVersion string                  `json:"apiVersion"`
-	Action     string                  `json:"action"`
-	RequestID  string                  `json:"requestId"`
-	RequestTime int64                  `json:"requestTime"`
-	Bucket     string                  `json:"bucket"`
-	Ok         bool                    `json:"ok"`
-	Data       any                     `json:"data,omitempty"`
-	Error      *burnbridgeControlError `json:"error,omitempty"`
+	APIVersion  string                  `json:"apiVersion"`
+	Action      string                  `json:"action"`
+	RequestID   string                  `json:"requestId"`
+	RequestTime int64                   `json:"requestTime"`
+	Bucket      string                  `json:"bucket"`
+	Ok          bool                    `json:"ok"`
+	Data        any                     `json:"data,omitempty"`
+	Error       *burnbridgeControlError `json:"error,omitempty"`
 }
 
 type burnbridgeControlPayload struct {
@@ -258,14 +258,14 @@ func parseBurnbridgeControlRequest(key string) (*burnbridgeControlRequest, bool,
 
 func buildBurnbridgeControlPayload(req *burnbridgeControlRequest, bucket string, ok bool, data any, controlErr *burnbridgeControlError, lastModified time.Time) (burnbridgeControlPayload, error) {
 	raw, err := json.Marshal(burnbridgeControlEnvelope{
-		APIVersion: burnbridgeControlAPIVersion,
-		Action:     string(req.Action),
-		RequestID:  req.RequestID,
+		APIVersion:  burnbridgeControlAPIVersion,
+		Action:      string(req.Action),
+		RequestID:   req.RequestID,
 		RequestTime: req.RequestTime,
-		Bucket:     bucket,
-		Ok:         ok,
-		Data:       data,
-		Error:      controlErr,
+		Bucket:      bucket,
+		Ok:          ok,
+		Data:        data,
+		Error:       controlErr,
 	})
 	if err != nil {
 		return burnbridgeControlPayload{}, err
@@ -853,17 +853,17 @@ func New(opts Options) (*BurnBridge, error) {
 		volumeLabelRaw:     rawVol,
 		allowBucketBinding: opts.AllowCreateBucketBinding,
 
-		recorderS3Endpoint:        strings.TrimSpace(opts.RecorderS3Endpoint),
-		recorderS3Region:          strings.TrimSpace(opts.RecorderS3Region),
-		recorderS3AccessKey:       opts.RecorderS3AccessKey,
-		recorderS3SecretKey:       opts.RecorderS3SecretKey,
-		recorderS3SessionToken:    opts.RecorderS3SessionToken,
-		recorderS3PathStyle:       opts.RecorderS3ForcePathStyle,
-		recorderS3PresignedGetURL: strings.TrimSpace(opts.RecorderS3PresignedGetURL),
-		putQueueSem:               make(chan struct{}, defaultPutQueueLimit),
-		importedBucketState:       make(map[string]bool),
+		recorderS3Endpoint:         strings.TrimSpace(opts.RecorderS3Endpoint),
+		recorderS3Region:           strings.TrimSpace(opts.RecorderS3Region),
+		recorderS3AccessKey:        opts.RecorderS3AccessKey,
+		recorderS3SecretKey:        opts.RecorderS3SecretKey,
+		recorderS3SessionToken:     opts.RecorderS3SessionToken,
+		recorderS3PathStyle:        opts.RecorderS3ForcePathStyle,
+		recorderS3PresignedGetURL:  strings.TrimSpace(opts.RecorderS3PresignedGetURL),
+		putQueueSem:                make(chan struct{}, defaultPutQueueLimit),
+		importedBucketState:        make(map[string]bool),
 		pendingImportedConvergence: make(map[string]bool),
-		metaDBPath:                opts.DBPath,
+		metaDBPath:                 opts.DBPath,
 	}
 	if strings.TrimSpace(activeBucket) != "" {
 		if err := bridge.syncImportedBucketState(context.Background(), activeBucket); err != nil {
@@ -2159,8 +2159,7 @@ func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req 
 		return buildDiscInfoControlJSON(req, bucket, doc)
 
 	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc:
-		closeDisc := req.Action == burnbridgeControlActionCloseDisc
-		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, closeDisc)
+		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, req)
 		if err != nil {
 			if errors.Is(err, meta.ErrNoSuchKey) {
 				return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
@@ -2174,9 +2173,11 @@ func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req 
 	}
 }
 
-func buildFinalizeLayoutResultJSON(bucket string, closeDisc bool, resp *burnbridgev1.FinalizeLayoutResponse, grpcErr error) ([]byte, error) {
+func buildFinalizeLayoutResultJSON(bucket string, req *burnbridgeControlRequest, closeDisc bool, resp *burnbridgev1.FinalizeLayoutResponse, grpcErr error) ([]byte, error) {
 	doc := meta.BurnbridgeFinalizeLayoutDocument{
 		Bucket:         bucket,
+		RequestID:      strings.TrimSpace(req.RequestID),
+		RequestTime:    req.RequestTime,
 		CloseDisc:      closeDisc,
 		CompletedAtUtc: time.Now().UTC().Format(time.RFC3339Nano),
 	}
@@ -2207,12 +2208,34 @@ func finalizeObjectKeyForCloseDisc(closeDisc bool) string {
 }
 
 // invokeFinalizeLayoutAgainstRecorder persists a JSON transcript (success or RPC error) for a reserved finalize-style object key.
-func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bucket string, closeDisc bool) ([]byte, error) {
+func shouldReuseFinalizeLayoutTranscript(bucket string, req *burnbridgeControlRequest, closeDisc bool, raw []byte) bool {
+	if req == nil {
+		return false
+	}
+
+	var doc meta.BurnbridgeFinalizeLayoutDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(doc.Bucket), strings.TrimSpace(bucket)) {
+		return false
+	}
+	if doc.CloseDisc != closeDisc {
+		return false
+	}
+	if doc.RequestTime != req.RequestTime {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(doc.RequestID), strings.TrimSpace(req.RequestID))
+}
+
+func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
 	b.putSerialMu.Lock()
 	defer b.putSerialMu.Unlock()
 
+	closeDisc := req.Action == burnbridgeControlActionCloseDisc
 	objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
-	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, closeDisc, prev) {
+	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, req, closeDisc, prev) {
 		return prev, nil
 	}
 
@@ -2226,7 +2249,7 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 		CloseDisc:      closeDisc,
 	})
 
-	payload, mErr := buildFinalizeLayoutResultJSON(bucket, closeDisc, resp, grpcErr)
+	payload, mErr := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, resp, grpcErr)
 	if mErr != nil {
 		return nil, fmt.Errorf("burnbridge finalize layout json: %w", mErr)
 	}
@@ -2238,20 +2261,6 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 			"bucket", bucket, "grpc_err", grpcErr)
 	}
 	return payload, nil
-}
-
-func shouldReuseFinalizeLayoutTranscript(bucket string, closeDisc bool, raw []byte) bool {
-	var doc meta.BurnbridgeFinalizeLayoutDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return false
-	}
-	if !strings.EqualFold(strings.TrimSpace(doc.Bucket), strings.TrimSpace(bucket)) {
-		return false
-	}
-	if doc.CloseDisc != closeDisc {
-		return false
-	}
-	return doc.GrpcOK
 }
 
 func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
@@ -2266,19 +2275,20 @@ func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
 	}
 }
 
-func (b *BurnBridge) loadOrFinalizeLayoutTranscript(ctx context.Context, bucket string, closeDisc bool) ([]byte, error) {
+func (b *BurnBridge) loadOrFinalizeLayoutTranscript(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
+	closeDisc := req.Action == burnbridgeControlActionCloseDisc
 	objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
-	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, closeDisc, prev) {
+	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, req, closeDisc, prev) {
 		return prev, nil
 	}
 
-	groupKey := bucket + "|" + objectKey
+	groupKey := bucket + "|" + req.Key
 
 	value, err, _ := b.finalizeGroup.Do(groupKey, func() (interface{}, error) {
-		if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, closeDisc, prev) {
+		if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, req, closeDisc, prev) {
 			return prev, nil
 		}
-		return b.invokeFinalizeLayoutAgainstRecorder(ctx, bucket, closeDisc)
+		return b.invokeFinalizeLayoutAgainstRecorder(ctx, bucket, req)
 	})
 	if err != nil {
 		return nil, err

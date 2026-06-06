@@ -90,7 +90,7 @@ func (burnbridgeObjectSegment) TableName() string {
 
 // BurnObjectSegment is returned by GetBurnObjectSegment for BurnBridge chunk lookups.
 type BurnObjectSegment struct {
-	MediaID      string
+	MediaID     string
 	ByteOffset  int64
 	ByteSize    int64
 	ChecksumMD5 string
@@ -105,10 +105,10 @@ type BurnObjectSegmentDetail struct {
 }
 
 type BurnbridgeBucketBackup struct {
-	Bucket         string                     `json:"bucket"`
-	BackedUpAtUtc  string                     `json:"backedUpAtUtc"`
-	MetadataRows   []burnbridgeMetadataRow    `json:"metadataRows"`
-	SegmentRows    []burnbridgeSegmentRow     `json:"segmentRows"`
+	Bucket        string                  `json:"bucket"`
+	BackedUpAtUtc string                  `json:"backedUpAtUtc"`
+	MetadataRows  []burnbridgeMetadataRow `json:"metadataRows"`
+	SegmentRows   []burnbridgeSegmentRow  `json:"segmentRows"`
 }
 
 type burnbridgeMetadataRow struct {
@@ -239,7 +239,7 @@ func (s SqlMeta) GetBurnObjectSegment(bucket, object string, segmentIndex int) (
 			return perr
 		}
 		out = BurnObjectSegment{
-			MediaID:      row.MediaID,
+			MediaID:     row.MediaID,
 			ByteOffset:  row.ByteOffset,
 			ByteSize:    row.ByteSize,
 			ChecksumMD5: row.ChecksumMD5,
@@ -345,7 +345,7 @@ func (s SqlMeta) ListBurnObjectSegments(bucket, object string) ([]BurnObjectSegm
 			result = append(result, BurnObjectSegmentDetail{
 				SegmentIndex: row.SegmentIndex,
 				BurnObjectSegment: BurnObjectSegment{
-					MediaID:      row.MediaID,
+					MediaID:     row.MediaID,
 					ByteOffset:  row.ByteOffset,
 					ByteSize:    row.ByteSize,
 					ChecksumMD5: row.ChecksumMD5,
@@ -517,30 +517,30 @@ const BurnbridgeDiscInfoAttribute = "burnbridge-disc-info"
 
 // BurnbridgeDiscInfoDocument is the persisted recorder/gateway disc snapshot.
 type BurnbridgeDiscInfoDocument struct {
-	Bucket                   string `json:"bucket"`
-	VolumeLabel              string `json:"volumeLabel"`
-	UpdatedAt                string `json:"updatedAt"` // RFC3339Nano
-	DiscSerialNumberHex      string `json:"discSerialNumberHex,omitempty"`
-	TotalCapacityBytes       int64  `json:"totalCapacityBytes,omitempty"`
-	FreeCapacityBytes        int64  `json:"freeCapacityBytes,omitempty"`
-	UsedCapacityBytes        int64  `json:"usedCapacityBytes,omitempty"`
-	WritableCapacityBytes    int64  `json:"writableCapacityBytes,omitempty"`
-	FinalizeReserveBytes     int64  `json:"finalizeReserveBytes,omitempty"`
-	MediaType                string `json:"mediaType,omitempty"`
-	BlockSizeBytes           int32  `json:"blockSizeBytes,omitempty"`
-	TotalBlocks              int32  `json:"totalBlocks,omitempty"`
-	FreeBlocks               int32  `json:"freeBlocks,omitempty"`
-	RecordableCapacityBlocks int32  `json:"recordableCapacityBlocks,omitempty"`
-	TrackNextWritableAddress int32  `json:"trackNextWritableAddress,omitempty"`
-	TrackNextWritableAddressValid bool `json:"trackNextWritableAddressValid,omitempty"`
-	WritableState            string `json:"writableState,omitempty"`
-	DiscStatusName           string `json:"discStatusName,omitempty"`
-	SessionIsFinalized       bool   `json:"sessionIsFinalized,omitempty"`
-	SessionTempDiscId        string `json:"sessionTempDiscId,omitempty"`
-	LayoutStatus             string `json:"layoutStatus,omitempty"`
-	LayoutMessage            string `json:"layoutMessage,omitempty"`
-	LayoutCompletedAtUtc     string `json:"layoutCompletedAtUtc,omitempty"`
-	LayoutCloseDisc          bool   `json:"layoutCloseDisc,omitempty"`
+	Bucket                        string `json:"bucket"`
+	VolumeLabel                   string `json:"volumeLabel"`
+	UpdatedAt                     string `json:"updatedAt"` // RFC3339Nano
+	DiscSerialNumberHex           string `json:"discSerialNumberHex,omitempty"`
+	TotalCapacityBytes            int64  `json:"totalCapacityBytes,omitempty"`
+	FreeCapacityBytes             int64  `json:"freeCapacityBytes,omitempty"`
+	UsedCapacityBytes             int64  `json:"usedCapacityBytes,omitempty"`
+	WritableCapacityBytes         int64  `json:"writableCapacityBytes,omitempty"`
+	FinalizeReserveBytes          int64  `json:"finalizeReserveBytes,omitempty"`
+	MediaType                     string `json:"mediaType,omitempty"`
+	BlockSizeBytes                int32  `json:"blockSizeBytes,omitempty"`
+	TotalBlocks                   int32  `json:"totalBlocks,omitempty"`
+	FreeBlocks                    int32  `json:"freeBlocks,omitempty"`
+	RecordableCapacityBlocks      int32  `json:"recordableCapacityBlocks,omitempty"`
+	TrackNextWritableAddress      int32  `json:"trackNextWritableAddress,omitempty"`
+	TrackNextWritableAddressValid bool   `json:"trackNextWritableAddressValid,omitempty"`
+	WritableState                 string `json:"writableState,omitempty"`
+	DiscStatusName                string `json:"discStatusName,omitempty"`
+	SessionIsFinalized            bool   `json:"sessionIsFinalized,omitempty"`
+	SessionTempDiscId             string `json:"sessionTempDiscId,omitempty"`
+	LayoutStatus                  string `json:"layoutStatus,omitempty"`
+	LayoutMessage                 string `json:"layoutMessage,omitempty"`
+	LayoutCompletedAtUtc          string `json:"layoutCompletedAtUtc,omitempty"`
+	LayoutCloseDisc               bool   `json:"layoutCloseDisc,omitempty"`
 }
 
 // StoreBurnbridgeDiscInfo upserts disc JSON into the internal burnbridge control slot.
@@ -575,6 +575,8 @@ const BurnbridgeFinalizeLayoutAttributePrefix = "burnbridge-finalize-layout"
 // BurnbridgeFinalizeLayoutDocument captures the outcome of invoking the recorder finalize RPC (from gateway).
 type BurnbridgeFinalizeLayoutDocument struct {
 	Bucket          string `json:"bucket"`
+	RequestID       string `json:"requestId,omitempty"`
+	RequestTime     int64  `json:"requestTime,omitempty"`
 	RecorderStatus  string `json:"recorderStatus"`
 	RecorderMessage string `json:"recorderMessage,omitempty"`
 	CloseDisc       bool   `json:"closeDisc,omitempty"`

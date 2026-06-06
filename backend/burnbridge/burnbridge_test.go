@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -1285,16 +1286,16 @@ func TestMaybeRestoreNoDiscBackupRestoresSameDiscBucket(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
-		Bucket:                   "disc-a",
-		VolumeLabel:              "DISC-A",
-		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
-		DiscSerialNumberHex:      "SERIAL-A",
-		TotalBlocks:              1000,
-		FreeBlocks:               400,
-		RecordableCapacityBlocks: 400,
-		TrackNextWritableAddress: 600,
+		Bucket:                        "disc-a",
+		VolumeLabel:                   "DISC-A",
+		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:           "SERIAL-A",
+		TotalBlocks:                   1000,
+		FreeBlocks:                    400,
+		RecordableCapacityBlocks:      400,
+		TrackNextWritableAddress:      600,
 		TrackNextWritableAddressValid: true,
-		WritableState:            "Appendable",
+		WritableState:                 "Appendable",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1349,16 +1350,16 @@ func TestMaybeRestoreNoDiscBackupSkipsDifferentDiscGeometry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
-		Bucket:                   "disc-a",
-		VolumeLabel:              "DISC-A",
-		UpdatedAt:                time.Now().UTC().Format(time.RFC3339Nano),
-		DiscSerialNumberHex:      "SERIAL-A",
-		TotalBlocks:              1000,
-		FreeBlocks:               400,
-		RecordableCapacityBlocks: 400,
-		TrackNextWritableAddress: 600,
+		Bucket:                        "disc-a",
+		VolumeLabel:                   "DISC-A",
+		UpdatedAt:                     time.Now().UTC().Format(time.RFC3339Nano),
+		DiscSerialNumberHex:           "SERIAL-A",
+		TotalBlocks:                   1000,
+		FreeBlocks:                    400,
+		RecordableCapacityBlocks:      400,
+		TrackNextWritableAddress:      600,
 		TrackNextWritableAddressValid: true,
-		WritableState:            "Appendable",
+		WritableState:                 "Appendable",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1381,15 +1382,15 @@ func TestMaybeRestoreNoDiscBackupSkipsDifferentDiscGeometry(t *testing.T) {
 	b.lastDiscSerialHex = "SERIAL-A"
 	b.lastReadyVolumeLabel = "DISC-A"
 	if err := b.maybeRestoreNoDiscBackup(&burnbridgev1.TestUnitReadyResponse{
-		Ready:                        true,
-		VolumeLabel:                  "DISC-A",
-		DiscSerialNumberHex:          "SERIAL-A",
-		TotalBlocks:                  1000,
-		FreeBlocks:                   200,
-		RecordableCapacityBlocks:     200,
-		TrackNextWritableAddress:     800,
+		Ready:                         true,
+		VolumeLabel:                   "DISC-A",
+		DiscSerialNumberHex:           "SERIAL-A",
+		TotalBlocks:                   1000,
+		FreeBlocks:                    200,
+		RecordableCapacityBlocks:      200,
+		TrackNextWritableAddress:      800,
 		TrackNextWritableAddressValid: true,
-		WritableState:                "Appendable",
+		WritableState:                 "Appendable",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1399,7 +1400,7 @@ func TestMaybeRestoreNoDiscBackupSkipsDifferentDiscGeometry(t *testing.T) {
 	}
 }
 
-func TestInvokeFinalizeLayoutReusesSuccessfulTranscript(t *testing.T) {
+func TestInvokeFinalizeLayoutReusesOnlyMatchingControlRequest(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
 	if err != nil {
@@ -1409,6 +1410,8 @@ func TestInvokeFinalizeLayoutReusesSuccessfulTranscript(t *testing.T) {
 
 	payload, err := json.Marshal(meta.BurnbridgeFinalizeLayoutDocument{
 		Bucket:         "bucket1",
+		RequestID:      "550e8400-e29b-41d4-a716-446655440000",
+		RequestTime:    1780622225123,
 		RecorderStatus: "finalized",
 		CompletedAtUtc: time.Now().UTC().Format(time.RFC3339Nano),
 		GrpcOK:         true,
@@ -1437,7 +1440,8 @@ func TestInvokeFinalizeLayoutReusesSuccessfulTranscript(t *testing.T) {
 		udfLabel:     "BUCKET1",
 	}
 
-	got, err := b.invokeFinalizeLayoutAgainstRecorder(context.Background(), "bucket1", false)
+	req := testControlRequest(t, "finalize-layout", 1780622225123, "550e8400-e29b-41d4-a716-446655440000")
+	got, err := b.invokeFinalizeLayoutAgainstRecorder(context.Background(), "bucket1", req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1447,10 +1451,35 @@ func TestInvokeFinalizeLayoutReusesSuccessfulTranscript(t *testing.T) {
 	if calls != 0 {
 		t.Fatalf("expected no grpc finalize call, got %d", calls)
 	}
+
+	req = testControlRequest(t, "finalize-layout", 1780622225999, "550e8400-e29b-41d4-a716-446655440001")
+	got, err = b.invokeFinalizeLayoutAgainstRecorder(context.Background(), "bucket1", req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) == string(payload) {
+		t.Fatalf("expected a new control request to bypass the cached transcript")
+	}
+	if calls != 1 {
+		t.Fatalf("expected one grpc finalize call for a new request, got %d", calls)
+	}
 }
 
 func testControlKey(action string) string {
 	return ".__bbctl__/v1/" + action + "/1780622225123/550e8400-e29b-41d4-a716-446655440000"
+}
+
+func testControlRequest(t *testing.T, action string, requestTime int64, requestID string) *burnbridgeControlRequest {
+	t.Helper()
+	req, isControl, err := parseBurnbridgeControlRequest(
+		fmt.Sprintf(".__bbctl__/v1/%s/%d/%s", action, requestTime, requestID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !isControl {
+		t.Fatal("expected control request")
+	}
+	return req
 }
 
 func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) {
@@ -1477,47 +1506,47 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 	}
 
 	b := &BurnBridge{
-		meta:         store,
-		activeBucket: "bucket1",
+		meta:           store,
+		activeBucket:   "bucket1",
 		volumeLabelRaw: "DISC001",
-		udfLabel:     "DISC001",
+		udfLabel:       "DISC001",
 		grpc: testBurnBridgeClient{
 			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
 				return &burnbridgev1.TestUnitReadyResponse{
-					Ready:                        true,
-					VolumeLabel:                  "DISC001",
-					DiscSerialNumberHex:          "SER-001",
-					MediaType:                    "BD-R",
-					TotalCapacityBytes:           1000,
-					FreeCapacityBytes:            400,
-					UsedCapacityBytes:            600,
-					WritableCapacityBytes:        300,
-					FinalizeReserveBytes:         100,
-					BlockSizeBytes:               2048,
-					TotalBlocks:                  320,
-					FreeBlocks:                   0,
-					RecordableCapacityBlocks:     0,
-					TrackNextWritableAddress:     0,
+					Ready:                         true,
+					VolumeLabel:                   "DISC001",
+					DiscSerialNumberHex:           "SER-001",
+					MediaType:                     "BD-R",
+					TotalCapacityBytes:            1000,
+					FreeCapacityBytes:             400,
+					UsedCapacityBytes:             600,
+					WritableCapacityBytes:         300,
+					FinalizeReserveBytes:          100,
+					BlockSizeBytes:                2048,
+					TotalBlocks:                   320,
+					FreeBlocks:                    0,
+					RecordableCapacityBlocks:      0,
+					TrackNextWritableAddress:      0,
 					TrackNextWritableAddressValid: false,
-					WritableState:                "Appendable",
+					WritableState:                 "Appendable",
 				}, nil
 			},
 			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
 				return &burnbridgev1.GetDiscInfoResponse{
 					Disc: &burnbridgev1.OpticalDiscInfo{
-						ProfileName:                 "BD-R",
-						DiscStatusName:              "incomplete/appendable",
-						DiscSerialNumberHex:         "SER-001",
-						BlockSizeBytes:              2048,
-						TotalBlocks:                 48878592,
-						FreeBlocks:                  1773184,
-						RecordableCapacityBlocks:    1773184,
-						TrackNextWritableAddress:    47105408,
+						ProfileName:                   "BD-R",
+						DiscStatusName:                "incomplete/appendable",
+						DiscSerialNumberHex:           "SER-001",
+						BlockSizeBytes:                2048,
+						TotalBlocks:                   48878592,
+						FreeBlocks:                    1773184,
+						RecordableCapacityBlocks:      1773184,
+						TrackNextWritableAddress:      47105408,
 						TrackNextWritableAddressValid: true,
-						WritableState:               "Appendable",
-						MediaCapacity:               100103356416,
-						MediaFreeSpace:              3631470592,
-						MediaUsedSpace:              96471885824,
+						WritableState:                 "Appendable",
+						MediaCapacity:                 100103356416,
+						MediaFreeSpace:                3631470592,
+						MediaUsedSpace:                96471885824,
 						SessionDiscId: &burnbridgev1.SessionDiscId{
 							IsFinalized: true,
 							TempDiscId:  "DISC001",
@@ -1621,7 +1650,8 @@ func TestLoadOrFinalizeLayoutTranscriptSingleflight(t *testing.T) {
 	for i := 0; i < workers; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			results[idx], errs[idx] = b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", false)
+			req := testControlRequest(t, "finalize-layout", 1780622225123, "550e8400-e29b-41d4-a716-446655440000")
+			results[idx], errs[idx] = b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", req)
 		}(i)
 	}
 
@@ -1737,11 +1767,13 @@ func TestLoadOrFinalizeLayoutTranscriptSeparatesCloseDiscCache(t *testing.T) {
 		udfLabel:     "BUCKET1",
 	}
 
-	openPayload, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", false)
+	openReq1 := testControlRequest(t, "finalize-layout", 1780622225123, "550e8400-e29b-41d4-a716-446655440000")
+	closeReq1 := testControlRequest(t, "close-disc", 1780622225124, "550e8400-e29b-41d4-a716-446655440001")
+	openPayload, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", openReq1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	closePayload, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", true)
+	closePayload, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", closeReq1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1752,10 +1784,10 @@ func TestLoadOrFinalizeLayoutTranscriptSeparatesCloseDiscCache(t *testing.T) {
 		t.Fatalf("expected one close finalize call, got %d", atomic.LoadInt32(&closeCalls))
 	}
 
-	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", false); err != nil {
+	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", openReq1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", true); err != nil {
+	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", closeReq1); err != nil {
 		t.Fatal(err)
 	}
 	if atomic.LoadInt32(&openCalls) != 1 {
@@ -1766,6 +1798,21 @@ func TestLoadOrFinalizeLayoutTranscriptSeparatesCloseDiscCache(t *testing.T) {
 	}
 	if bytes.Equal(openPayload, closePayload) {
 		t.Fatal("expected close and non-close transcripts to differ")
+	}
+
+	openReq2 := testControlRequest(t, "finalize-layout", 1780622225999, "550e8400-e29b-41d4-a716-446655440010")
+	closeReq2 := testControlRequest(t, "close-disc", 1780622226000, "550e8400-e29b-41d4-a716-446655440011")
+	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", openReq2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.loadOrFinalizeLayoutTranscript(context.Background(), "bucket1", closeReq2); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&openCalls) != 2 {
+		t.Fatalf("expected a new finalize request to invoke grpc again, got %d calls", atomic.LoadInt32(&openCalls))
+	}
+	if atomic.LoadInt32(&closeCalls) != 2 {
+		t.Fatalf("expected a new close request to invoke grpc again, got %d calls", atomic.LoadInt32(&closeCalls))
 	}
 }
 
