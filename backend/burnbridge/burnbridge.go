@@ -29,6 +29,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/google/uuid"
 	"github.com/versity/versitygw/archiveconfig"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
@@ -346,7 +348,12 @@ const (
 	// burnbridgeUploadMaxDataPerFrame caps gRPC UploadObjectChunk.Data size (typical 4MiB recv limit).
 	burnbridgeUploadMaxDataPerFrame = 3 << 20
 
-	defaultChunkSizeBytes = 1 << 20
+	defaultChunkSizeBytes            = 1 << 20
+	burnbridgeImplicitSingleUploadID = "__single_put__"
+	burnbridgeMultipartInitAttrPref  = "bb-multipart-init:"
+	burnbridgeMultipartMetaAttr      = "mp-metadata"
+	burnbridgeMultipartInternalPref  = ".__bbmeta__/multipart/"
+	burnbridgeRecorderETagMetaKey    = "x-burn-etag"
 
 	listDefaultMaxKeys         int32 = 1000
 	defaultPutQueueLimit             = 512
@@ -355,6 +362,17 @@ const (
 	recorderReadyRetryAttempts       = 5
 	recorderReadyRetryDelay          = 750 * time.Millisecond
 )
+
+type burnbridgeMultipartInitState struct {
+	Metadata          map[string]string       `json:"metadata,omitempty"`
+	ChecksumAlgorithm types.ChecksumAlgorithm `json:"checksumAlgorithm,omitempty"`
+	ChecksumType      types.ChecksumType      `json:"checksumType,omitempty"`
+}
+
+type burnbridgeUploadStreamOptions struct {
+	AllowReuse                     bool
+	AllowInvalidateOnFirstMismatch bool
+}
 
 // burnbridgeWORMNoDelete is returned for delete operations on WORM optical media.
 var burnbridgeWORMNoDelete = s3err.APIError{
@@ -723,6 +741,13 @@ func readyResponseIndicatesNoDisc(resp *burnbridgev1.TestUnitReadyResponse) bool
 	}
 	reasonCode, _ := parseReadyReason(resp.GetMessage())
 	return strings.EqualFold(strings.TrimSpace(reasonCode), "NoDisc")
+}
+
+func readyResponseIndicatesBlankWritable(resp *burnbridgev1.TestUnitReadyResponse) bool {
+	if resp == nil || !resp.GetReady() {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(resp.GetWritableState()), "Blank")
 }
 
 func ensureWritableCapacity(doc *meta.BurnbridgeDiscInfoDocument, contentLen int64) error {
@@ -1103,6 +1128,49 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	previousBucket := strings.TrimSpace(b.activeBucket)
 	b.captureReadyDiscIdentity(resp)
 
+	if readyResponseIndicatesBlankWritable(resp) {
+		if binding, ok := loadDiscBucketBinding(b.meta, rawVolume); ok && binding != nil && strings.TrimSpace(binding.Bucket) != "" {
+			b.activeBucket = strings.TrimSpace(binding.Bucket)
+			if strings.TrimSpace(binding.UdfVolumeLabel) != "" {
+				b.udfLabel = strings.TrimSpace(binding.UdfVolumeLabel)
+			} else {
+				b.udfLabel = rawVolume
+			}
+			b.volumeLabelRaw = rawVolume
+			if previousBucket == "" || !strings.EqualFold(previousBucket, b.activeBucket) {
+				b.markImportedBucketConvergencePending(b.activeBucket)
+			}
+			if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
+				return err
+			}
+			return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
+		}
+
+		sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
+		if err != nil {
+			b.activeBucket = ""
+			b.volumeLabelRaw = rawVolume
+			b.udfLabel = rawVolume
+			b.resetImportedBucketSyncState()
+			return nil
+		}
+
+		if previousBucket != "" && !strings.EqualFold(previousBucket, sanitizedBucket) {
+			if err := b.backupAndClearBucketMetadata(previousBucket); err != nil {
+				return err
+			}
+		}
+
+		b.activeBucket = sanitizedBucket
+		b.volumeLabelRaw = rawVolume
+		b.udfLabel = rawVolume
+		b.resetImportedBucketSyncState()
+		if err := persistDiscBucketBinding(b.meta, rawVolume, b.activeBucket, b.udfLabel); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	if strings.EqualFold(strings.TrimSpace(b.volumeLabelRaw), rawVolume) && strings.TrimSpace(b.activeBucket) != "" {
 		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 			return err
@@ -1207,6 +1275,14 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 			CacheControl:       object.GetCacheControl(),
 			Expires:            object.GetExpires(),
 			Metadata:           userMetadata,
+		}
+		if mpMeta, metaErr := b.loadMultipartObjectMetadata(resolvedBucket, object.GetObjectKey()); metaErr == nil && mpMeta != nil {
+			if strings.TrimSpace(mpMeta.ETag) != "" {
+				rec.ETag = mpMeta.ETag
+			}
+			if partCount := len(mpMeta.Parts); partCount > 0 && mpMeta.Parts[partCount-1] > 0 {
+				rec.Size = mpMeta.Parts[partCount-1]
+			}
 		}
 		if err := b.meta.StoreBurnbridgeCommitted(nil, resolvedBucket, object.GetObjectKey(), rec); err != nil {
 			return fmt.Errorf("burnbridge sync imported object %s/%s: %w", resolvedBucket, object.GetObjectKey(), err)
@@ -1959,8 +2035,645 @@ func (b *BurnBridge) GetObjectLockConfiguration(_ context.Context, bucket string
 	return nil, s3err.GetAPIError(s3err.ErrObjectLockConfigurationNotFound)
 }
 
-// ListMultipartUploads returns an empty list for WebUI compatibility.
-// BurnBridge still does not support multipart upload write path APIs.
+func (b *BurnBridge) CreateMultipartUpload(ctx context.Context, input s3response.CreateMultipartUploadInput) (s3response.InitiateMultipartUploadResult, error) {
+	if input.Bucket == nil || input.Key == nil {
+		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrInvalidRequest)
+	}
+	bucket := *input.Bucket
+	key := *input.Key
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if isBurnbridgeControlNamespace(key) {
+		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrAccessDenied)
+	}
+	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
+
+	idx := objectLockIndex(bucket, key)
+	b.objectLocks[idx].Lock()
+	defer b.objectLocks[idx].Unlock()
+
+	uploadID := uuid.NewString()
+	initState := buildMultipartInitState(input)
+	createResp, err := b.grpc.CreateJob(ctx, &burnbridgev1.CreateJobRequest{
+		Bucket:        bucket,
+		ObjectKey:     key,
+		ContentLength: 0,
+		Metadata:      metadataMapToObjectMetadataItems(initState.Metadata),
+	})
+	if err != nil {
+		return s3response.InitiateMultipartUploadResult{}, mapRecorderWriteRPCError(err)
+	}
+	jobID := strings.TrimSpace(createResp.GetJobId())
+	if jobID == "" {
+		return s3response.InitiateMultipartUploadResult{}, fmt.Errorf("burnbridge: empty job id from CreateJob")
+	}
+	cancelJobNow := func(job string) {
+		if strings.TrimSpace(job) == "" {
+			return
+		}
+		cctx, cancel := context.WithTimeout(context.Background(), b.cancelJobTimeout)
+		defer cancel()
+		_, _ = b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: job})
+	}
+	if err := b.meta.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       uploadID,
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateWriting,
+		MediaID:        b.volumeLabelRaw,
+		RecorderJobID:  jobID,
+		ContentLength:  0,
+		BytesReceived:  0,
+		NextPartNumber: 1,
+	}); err != nil {
+		cancelJobNow(jobID)
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
+	if err := b.storeMultipartInitState(bucket, key, uploadID, initState); err != nil {
+		_ = b.meta.DeleteBurnUploadSession(bucket, key, uploadID)
+		cancelJobNow(jobID)
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
+	return s3response.InitiateMultipartUploadResult{
+		Bucket:   bucket,
+		Key:      key,
+		UploadId: uploadID,
+	}, nil
+}
+
+func (b *BurnBridge) UploadPart(ctx context.Context, input *s3.UploadPartInput) (*s3.UploadPartOutput, error) {
+	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil || input.PartNumber == nil {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidRequest)
+	}
+	bucket := *input.Bucket
+	key := *input.Key
+	uploadID := strings.TrimSpace(*input.UploadId)
+	partNumber := int(*input.PartNumber)
+	if !b.burnbridgeBucketExists(bucket) {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if isBurnbridgeControlNamespace(key) {
+		return nil, s3err.GetAPIError(s3err.ErrAccessDenied)
+	}
+	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
+		return nil, err
+	}
+
+	b.putSerialMu.Lock()
+	defer b.putSerialMu.Unlock()
+
+	idx := objectLockIndex(bucket, key)
+	b.objectLocks[idx].Lock()
+	defer b.objectLocks[idx].Unlock()
+
+	session, err := b.getMultipartUploadSession(bucket, key, uploadID)
+	if err != nil {
+		return nil, err
+	}
+	if session == nil || !b.multipartSessionVisibleOnCurrentMedia(bucket, session) {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchUpload)
+	}
+	if strings.TrimSpace(session.RecorderJobID) == "" {
+		return nil, fmt.Errorf("burnbridge: multipart upload session %s has no recorder job id", uploadID)
+	}
+	if session.NextPartNumber < 1 {
+		session.NextPartNumber = 1
+	}
+	existingPart, perr := b.meta.GetBurnUploadPart(bucket, key, uploadID, partNumber)
+	if perr != nil && !errors.Is(perr, meta.ErrNoSuchKey) {
+		return nil, perr
+	}
+	if errors.Is(perr, meta.ErrNoSuchKey) {
+		existingPart = nil
+	}
+
+	switch {
+	case partNumber == session.NextPartNumber:
+	case partNumber == session.NextPartNumber-1:
+		if existingPart == nil || existingPart.State != meta.BurnUploadStateCompleted {
+			return nil, s3err.GetAPIError(s3err.ErrInvalidPartOrder)
+		}
+		return completedMultipartReplayOutput(*existingPart, input.Body, b.chunkSize)
+	default:
+		return nil, s3err.GetAPIError(s3err.ErrInvalidPartOrder)
+	}
+
+	var contentLen int64
+	if input.ContentLength != nil {
+		contentLen = *input.ContentLength
+	}
+
+	partStartOffset := session.BytesReceived
+	partBytesReceived := int64(0)
+	if existingPart != nil {
+		switch existingPart.State {
+		case meta.BurnUploadStateWriting, meta.BurnUploadStateFailed:
+			partStartOffset = existingPart.StartOffset
+			if session.BytesReceived < partStartOffset {
+				return nil, fmt.Errorf("burnbridge: multipart session bytes_received moved behind current part start: uploadId=%s part=%d start=%d sessionBytes=%d",
+					uploadID, partNumber, partStartOffset, session.BytesReceived)
+			}
+			partBytesReceived = session.BytesReceived - partStartOffset
+		case meta.BurnUploadStateCompleted:
+			return completedMultipartReplayOutput(*existingPart, input.Body, b.chunkSize)
+		}
+	}
+
+	additionalBytes := contentLen
+	if additionalBytes > 0 && partBytesReceived > 0 {
+		additionalBytes -= partBytesReceived
+		if additionalBytes < 0 {
+			additionalBytes = 0
+		}
+	}
+	if additionalBytes > 0 {
+		raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
+		if err == nil && len(raw) > 0 {
+			var discInfo meta.BurnbridgeDiscInfoDocument
+			if uerr := json.Unmarshal(raw, &discInfo); uerr == nil {
+				if err := ensureWritableCapacity(&discInfo, additionalBytes); err != nil {
+					return nil, err
+				}
+			}
+		}
+	}
+
+	if existingPart != nil && contentLen > 0 && partBytesReceived == contentLen &&
+		(existingPart.State == meta.BurnUploadStateWriting || existingPart.State == meta.BurnUploadStateFailed) {
+		if input.Body == nil {
+			return nil, s3err.GetAPIError(s3err.ErrInvalidRequest)
+		}
+		size, digest, err := hashReaderMD5(input.Body, b.chunkSize)
+		if err != nil {
+			return nil, err
+		}
+		if size != contentLen {
+			return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		if existingPart.ChecksumMD5 != "" && !strings.EqualFold(existingPart.ChecksumMD5, digest) {
+			return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		offset := partStartOffset + size
+		etag := quotedETag(digest)
+		checksumMD5 := digest
+		if err := b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+			Bucket:        bucket,
+			ObjectName:    key,
+			UploadID:      uploadID,
+			PartNumber:    partNumber,
+			StartOffset:   partStartOffset,
+			BytesReceived: offset - partStartOffset,
+			PartSize:      size,
+			ChecksumMD5:   checksumMD5,
+			ETag:          etag,
+			State:         meta.BurnUploadStateCompleted,
+			SegmentCount:  existingPart.SegmentCount,
+		}); err != nil {
+			return nil, err
+		}
+		nextPartNumber := session.NextPartNumber
+		if partNumber >= nextPartNumber {
+			nextPartNumber = partNumber + 1
+		}
+		if err := b.meta.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+			Bucket:         bucket,
+			ObjectName:     key,
+			UploadID:       uploadID,
+			Kind:           meta.BurnUploadKindMultipart,
+			State:          meta.BurnUploadStateWriting,
+			MediaID:        b.volumeLabelRaw,
+			RecorderJobID:  session.RecorderJobID,
+			ContentLength:  offset,
+			BytesReceived:  offset,
+			NextPartNumber: nextPartNumber,
+		}); err != nil {
+			return nil, err
+		}
+		out := &s3.UploadPartOutput{ETag: &etag}
+		if checksumMD5 != "" {
+			out.ChecksumMD5 = &checksumMD5
+		}
+		slog.Info("burnbridge: multipart part completed from durable retry without recorder replay",
+			"bucket", bucket,
+			"key", key,
+			"uploadId", uploadID,
+			"partNumber", partNumber,
+			"bytes", size,
+			"offset", offset)
+		return out, nil
+	}
+
+	if err := b.meta.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       uploadID,
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateWriting,
+		MediaID:        b.volumeLabelRaw,
+		RecorderJobID:  session.RecorderJobID,
+		ContentLength:  session.ContentLength,
+		BytesReceived:  session.BytesReceived,
+		NextPartNumber: session.NextPartNumber,
+	}); err != nil {
+		return nil, err
+	}
+	if err := b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        bucket,
+		ObjectName:    key,
+		UploadID:      uploadID,
+		PartNumber:    partNumber,
+		StartOffset:   partStartOffset,
+		BytesReceived: partBytesReceived,
+		PartSize:      contentLen,
+		State:         meta.BurnUploadStateWriting,
+		SegmentCount:  0,
+	}); err != nil {
+		return nil, err
+	}
+
+	shadowKey := multipartSessionObjectKey(uploadID)
+	offset, uploadResp, stats, err := b.grpcUploadMultipartPartStream(
+		ctx,
+		session.RecorderJobID,
+		bucket,
+		shadowKey,
+		input.Body,
+		partStartOffset,
+		session.BytesReceived)
+	if err != nil {
+		failedPartBytes := offset - partStartOffset
+		if failedPartBytes < 0 {
+			failedPartBytes = 0
+		}
+		_ = b.meta.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+			Bucket:         bucket,
+			ObjectName:     key,
+			UploadID:       uploadID,
+			Kind:           meta.BurnUploadKindMultipart,
+			State:          meta.BurnUploadStateFailed,
+			MediaID:        b.volumeLabelRaw,
+			RecorderJobID:  session.RecorderJobID,
+			ContentLength:  offset,
+			BytesReceived:  offset,
+			NextPartNumber: session.NextPartNumber,
+		})
+		_ = b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+			Bucket:        bucket,
+			ObjectName:    key,
+			UploadID:      uploadID,
+			PartNumber:    partNumber,
+			StartOffset:   partStartOffset,
+			BytesReceived: failedPartBytes,
+			PartSize:      contentLen,
+			State:         meta.BurnUploadStateFailed,
+			SegmentCount:  int(stats.TotalSegments),
+		})
+		return nil, err
+	}
+
+	partSize := offset - partStartOffset
+	etag := quotedETag(uploadResp.GetChecksumMd5())
+	checksumMD5 := uploadResp.GetChecksumMd5()
+	if err := b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        bucket,
+		ObjectName:    key,
+		UploadID:      uploadID,
+		PartNumber:    partNumber,
+		StartOffset:   partStartOffset,
+		BytesReceived: partSize,
+		PartSize:      partSize,
+		ChecksumMD5:   checksumMD5,
+		ETag:          etag,
+		State:         meta.BurnUploadStateCompleted,
+		SegmentCount:  int(stats.TotalSegments),
+	}); err != nil {
+		return nil, err
+	}
+	nextPartNumber := session.NextPartNumber
+	if partNumber >= nextPartNumber {
+		nextPartNumber = partNumber + 1
+	}
+	if err := b.meta.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       uploadID,
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateWriting,
+		MediaID:        b.volumeLabelRaw,
+		RecorderJobID:  session.RecorderJobID,
+		ContentLength:  offset,
+		BytesReceived:  offset,
+		NextPartNumber: nextPartNumber,
+	}); err != nil {
+		return nil, err
+	}
+
+	out := &s3.UploadPartOutput{ETag: &etag}
+	if checksumMD5 != "" {
+		out.ChecksumMD5 = &checksumMD5
+	}
+	return out, nil
+}
+
+func (b *BurnBridge) ListParts(_ context.Context, input *s3.ListPartsInput) (s3response.ListPartsResult, error) {
+	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil {
+		return s3response.ListPartsResult{}, s3err.GetAPIError(s3err.ErrInvalidRequest)
+	}
+	bucket := *input.Bucket
+	key := *input.Key
+	uploadID := strings.TrimSpace(*input.UploadId)
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3response.ListPartsResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	session, err := b.getMultipartUploadSession(bucket, key, uploadID)
+	if err != nil {
+		return s3response.ListPartsResult{}, err
+	}
+	if session == nil || !b.multipartSessionVisibleOnCurrentMedia(bucket, session) {
+		return s3response.ListPartsResult{}, s3err.GetAPIError(s3err.ErrNoSuchUpload)
+	}
+	initState, err := b.loadMultipartInitState(bucket, key, uploadID)
+	if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return s3response.ListPartsResult{}, err
+	}
+	var partNumberMarker int
+	if input.PartNumberMarker != nil && strings.TrimSpace(*input.PartNumberMarker) != "" {
+		partNumberMarker, err = strconv.Atoi(strings.TrimSpace(*input.PartNumberMarker))
+		if err != nil {
+			return s3response.ListPartsResult{}, s3err.GetInvalidMaxLimiterErr("part-number-marker")
+		}
+	}
+	maxParts := int(listDefaultMaxKeys)
+	if input.MaxParts != nil && *input.MaxParts > 0 {
+		maxParts = int(*input.MaxParts)
+	}
+	rows, err := b.meta.ListBurnUploadParts(bucket, key, uploadID)
+	if err != nil {
+		return s3response.ListPartsResult{}, err
+	}
+	filtered := make([]s3response.Part, 0, len(rows))
+	for _, row := range rows {
+		if row.State != meta.BurnUploadStateCompleted || row.PartNumber <= partNumberMarker {
+			continue
+		}
+		part := s3response.Part{
+			PartNumber:   row.PartNumber,
+			LastModified: row.UpdatedAt,
+			ETag:         row.ETag,
+			Size:         row.PartSize,
+		}
+		if row.ChecksumMD5 != "" {
+			checksumMD5 := row.ChecksumMD5
+			part.ChecksumMD5 = &checksumMD5
+		}
+		filtered = append(filtered, part)
+	}
+	resultParts := filtered
+	nextPartNumberMarker := 0
+	isTruncated := false
+	if len(resultParts) > maxParts {
+		isTruncated = true
+		nextPartNumberMarker = resultParts[maxParts-1].PartNumber
+		resultParts = resultParts[:maxParts]
+	}
+	result := s3response.ListPartsResult{
+		Bucket:               bucket,
+		Key:                  key,
+		UploadID:             uploadID,
+		StorageClass:         types.StorageClassStandard,
+		PartNumberMarker:     partNumberMarker,
+		NextPartNumberMarker: nextPartNumberMarker,
+		MaxParts:             maxParts,
+		IsTruncated:          isTruncated,
+		Parts:                resultParts,
+	}
+	if initState != nil {
+		result.ChecksumAlgorithm = initState.ChecksumAlgorithm
+		result.ChecksumType = initState.ChecksumType
+	}
+	return result, nil
+}
+
+func (b *BurnBridge) CompleteMultipartUpload(ctx context.Context, input *s3.CompleteMultipartUploadInput) (s3response.CompleteMultipartUploadResult, string, error) {
+	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil || input.MultipartUpload == nil {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidRequest)
+	}
+	bucket := *input.Bucket
+	key := *input.Key
+	uploadID := strings.TrimSpace(*input.UploadId)
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if isBurnbridgeControlNamespace(key) {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrAccessDenied)
+	}
+	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+
+	b.putSerialMu.Lock()
+	defer b.putSerialMu.Unlock()
+
+	idx := objectLockIndex(bucket, key)
+	b.objectLocks[idx].Lock()
+	defer b.objectLocks[idx].Unlock()
+
+	session, err := b.getMultipartUploadSession(bucket, key, uploadID)
+	if err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	if session == nil || !b.multipartSessionVisibleOnCurrentMedia(bucket, session) {
+		mpMeta, metaErr := b.loadMultipartObjectMetadata(bucket, key)
+		if metaErr == nil && strings.EqualFold(strings.TrimSpace(mpMeta.UploadID), uploadID) {
+			committedRec, recErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
+			if recErr == nil {
+				return s3response.CompleteMultipartUploadResult{
+					Bucket: &bucket,
+					Key:    &key,
+					ETag:   &committedRec.ETag,
+				}, "", nil
+			}
+		}
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchUpload)
+	}
+	initState, err := b.loadMultipartInitState(bucket, key, uploadID)
+	if err != nil {
+		if errors.Is(err, meta.ErrNoSuchKey) {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchUpload)
+		}
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+
+	existingCommitted, committedErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
+	if committedErr != nil && !errors.Is(committedErr, meta.ErrNoSuchKey) {
+		return s3response.CompleteMultipartUploadResult{}, "", committedErr
+	}
+	if err := backend.EvaluateObjectPutPreconditions(func() string {
+		if committedErr == nil {
+			return existingCommitted.ETag
+		}
+		return ""
+	}(), input.IfMatch, input.IfNoneMatch, committedErr == nil); err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+
+	partRows, err := b.meta.ListBurnUploadParts(bucket, key, uploadID)
+	if err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	partRowByNumber := make(map[int]meta.BurnUploadPartRecord, len(partRows))
+	for _, row := range partRows {
+		partRowByNumber[row.PartNumber] = row
+	}
+
+	completedParts := input.MultipartUpload.Parts
+	last := len(completedParts) - 1
+	cumulativePartSizes := make([]int64, 0, len(completedParts))
+	var (
+		prevPartNumber int32
+		totalSize      int64
+	)
+	for idxPart, part := range completedParts {
+		if part.PartNumber == nil || *part.PartNumber < 1 {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		if *part.PartNumber <= prevPartNumber {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPartOrder)
+		}
+		prevPartNumber = *part.PartNumber
+		row, ok := partRowByNumber[int(*part.PartNumber)]
+		if !ok || row.State != meta.BurnUploadStateCompleted {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		if idxPart < last && row.PartSize < backend.MinPartSize {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrEntityTooSmall)
+		}
+		if part.ETag == nil || !backend.AreEtagsSame(row.ETag, *part.ETag) {
+			return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
+		}
+		totalSize += row.PartSize
+		cumulativePartSizes = append(cumulativePartSizes, totalSize)
+	}
+	if input.MpuObjectSize != nil && totalSize != *input.MpuObjectSize {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetIncorrectMpObjectSizeErr(totalSize, *input.MpuObjectSize)
+	}
+	etag, err := backend.GetMultipartMD5(completedParts)
+	if err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidPart)
+	}
+	shadowKey := multipartSessionObjectKey(uploadID)
+	finalizeManifest, err := b.buildFinalizeManifestForObject(bucket, shadowKey, key, totalSize)
+	if err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	if strings.TrimSpace(session.RecorderJobID) == "" {
+		return s3response.CompleteMultipartUploadResult{}, "", fmt.Errorf("burnbridge: multipart upload session %s has no recorder job id", uploadID)
+	}
+	if finalizeManifest == nil {
+		slog.Warn("burnbridge: multipart complete without usable disc extents; commit without finalize_manifest fallback",
+			"bucket", bucket, "key", key, "uploadId", uploadID, "jobId", session.RecorderJobID, "bytes", totalSize)
+	}
+
+	commitResp, err := b.grpc.CommitJob(ctx, &burnbridgev1.CommitJobRequest{
+		JobId:                  session.RecorderJobID,
+		UdfVolumeLabel:         b.udfLabel,
+		FinalizeManifest:       finalizeManifest,
+		CommittedEtag:          etag,
+		CommittedContentLength: totalSize,
+	})
+	if err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", mapRecorderWriteRPCError(err)
+	}
+
+	shadowSegments, err := b.meta.ListBurnObjectSegments(bucket, shadowKey)
+	if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	if err := b.meta.DeleteBurnObjectSegments(bucket, key); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	for _, seg := range shadowSegments {
+		if err := b.meta.UpsertBurnObjectSegment(bucket, key, seg.MediaID, seg.SegmentIndex, seg.ByteOffset, seg.ByteSize, seg.ChecksumMD5, seg.State, seg.DiscExtents); err != nil {
+			return s3response.CompleteMultipartUploadResult{}, "", err
+		}
+	}
+	if err := b.storeMultipartObjectMetadata(bucket, key, backend.MpUploadMetadata{
+		UploadID: uploadID,
+		ETag:     etag,
+		Parts:    cumulativePartSizes,
+	}); err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	lm := time.Now().UTC().Format(time.RFC3339Nano)
+	committedRec := &meta.BurnbridgeCommittedRecord{
+		JobID:        session.RecorderJobID,
+		Status:       commitResp.GetStatus(),
+		ETag:         etag,
+		LastModified: lm,
+		Size:         totalSize,
+	}
+	applyCommittedRecordMetadata(committedRec, initState.Metadata)
+	if err := b.meta.StoreBurnbridgeCommitted(nil, bucket, key, committedRec); err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
+	if err := b.cleanupMultipartUploadState(bucket, key, uploadID, partRows); err != nil {
+		slog.Warn("burnbridge: multipart cleanup after complete failed", "bucket", bucket, "key", key, "uploadId", uploadID, "error", err)
+	}
+	b.invalidateFinalizeLayoutTranscript(bucket)
+
+	return s3response.CompleteMultipartUploadResult{
+		Bucket: &bucket,
+		Key:    &key,
+		ETag:   &etag,
+	}, "", nil
+}
+
+func (b *BurnBridge) AbortMultipartUpload(_ context.Context, input *s3.AbortMultipartUploadInput) error {
+	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil {
+		return s3err.GetAPIError(s3err.ErrInvalidRequest)
+	}
+	bucket := *input.Bucket
+	key := *input.Key
+	uploadID := strings.TrimSpace(*input.UploadId)
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+
+	idx := objectLockIndex(bucket, key)
+	b.objectLocks[idx].Lock()
+	defer b.objectLocks[idx].Unlock()
+
+	session, err := b.getMultipartUploadSession(bucket, key, uploadID)
+	if err != nil {
+		return err
+	}
+	if session == nil || !b.multipartSessionVisibleOnCurrentMedia(bucket, session) {
+		return s3err.GetAPIError(s3err.ErrNoSuchUpload)
+	}
+	if input.IfMatchInitiatedTime != nil && input.IfMatchInitiatedTime.Unix() != session.CreatedAt.Unix() {
+		return s3err.GetAPIError(s3err.ErrPreconditionFailed)
+	}
+	partRows, err := b.meta.ListBurnUploadParts(bucket, key, uploadID)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(session.RecorderJobID) != "" {
+		cctx, cancel := context.WithTimeout(context.Background(), b.cancelJobTimeout)
+		defer cancel()
+		if _, err := b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: session.RecorderJobID}); err != nil {
+			slog.Warn("burnbridge: abort multipart cancel job failed", "bucket", bucket, "key", key, "uploadId", uploadID, "jobId", session.RecorderJobID, "error", err)
+		}
+	}
+	if err := b.cleanupMultipartUploadState(bucket, key, uploadID, partRows); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (b *BurnBridge) ListMultipartUploads(_ context.Context, input *s3.ListMultipartUploadsInput) (s3response.ListMultipartUploadsResult, error) {
 	if input == nil || input.Bucket == nil {
 		return s3response.ListMultipartUploadsResult{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
@@ -1978,18 +2691,74 @@ func (b *BurnBridge) ListMultipartUploads(_ context.Context, input *s3.ListMulti
 	if input.Prefix != nil {
 		prefix = *input.Prefix
 	}
+	keyMarker := ""
+	if input.KeyMarker != nil {
+		keyMarker = *input.KeyMarker
+	}
+	uploadIDMarker := ""
+	if input.UploadIdMarker != nil {
+		uploadIDMarker = *input.UploadIdMarker
+	}
 	maxUploads := int(listDefaultMaxKeys)
-	if input.MaxUploads != nil {
+	if input.MaxUploads != nil && *input.MaxUploads > 0 {
 		maxUploads = int(*input.MaxUploads)
 	}
 
+	sessions, err := b.meta.ListBurnUploadSessionsByBucket(bucket)
+	if err != nil {
+		return s3response.ListMultipartUploadsResult{}, err
+	}
+	uploads := make([]s3response.Upload, 0, len(sessions))
+	for _, session := range sessions {
+		if session.Kind != meta.BurnUploadKindMultipart {
+			continue
+		}
+		if session.State == meta.BurnUploadStateCompleted || session.State == meta.BurnUploadStateAborted {
+			continue
+		}
+		if !b.multipartSessionVisibleOnCurrentMedia(bucket, &session) {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(session.ObjectName, prefix) {
+			continue
+		}
+		if keyMarker != "" && session.ObjectName <= keyMarker {
+			continue
+		}
+		upload := s3response.Upload{
+			Key:          session.ObjectName,
+			UploadID:     session.UploadID,
+			Initiated:    session.CreatedAt,
+			StorageClass: types.StorageClassStandard,
+		}
+		if initState, ierr := b.loadMultipartInitState(bucket, session.ObjectName, session.UploadID); ierr == nil && initState != nil {
+			upload.ChecksumAlgorithm = initState.ChecksumAlgorithm
+			upload.ChecksumType = initState.ChecksumType
+		}
+		uploads = append(uploads, upload)
+	}
+	sort.SliceStable(uploads, func(i, j int) bool {
+		if uploads[i].Key == uploads[j].Key {
+			return uploads[i].Initiated.Before(uploads[j].Initiated)
+		}
+		return uploads[i].Key < uploads[j].Key
+	})
+	page, err := backend.ListMultipartUploads(uploads, prefix, delimiter, keyMarker, uploadIDMarker, maxUploads)
+	if err != nil {
+		return s3response.ListMultipartUploadsResult{}, err
+	}
 	return s3response.ListMultipartUploadsResult{
-		Bucket:         bucket,
-		Delimiter:      delimiter,
-		Prefix:         prefix,
-		MaxUploads:     maxUploads,
-		Uploads:        []s3response.Upload{},
-		CommonPrefixes: []s3response.CommonPrefix{},
+		Bucket:             bucket,
+		KeyMarker:          keyMarker,
+		UploadIDMarker:     uploadIDMarker,
+		NextKeyMarker:      page.NextKeyMarker,
+		NextUploadIDMarker: page.NextUploadIDMarker,
+		Delimiter:          delimiter,
+		Prefix:             prefix,
+		MaxUploads:         maxUploads,
+		IsTruncated:        page.IsTruncated,
+		Uploads:            page.Uploads,
+		CommonPrefixes:     page.CommonPrefixes,
 	}, nil
 }
 
@@ -2837,6 +3606,78 @@ func bbSegmentMD5Hex(p []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func multipartSegmentIndexForOffset(snapshot map[int]meta.BurnObjectSegment, startOffset int64) int {
+	if len(snapshot) == 0 || startOffset <= 0 {
+		return 0
+	}
+	exactIdx := -1
+	prevIdx := -1
+	prevOffset := int64(-1)
+	for idx, seg := range snapshot {
+		switch {
+		case seg.ByteOffset == startOffset:
+			if exactIdx == -1 || idx < exactIdx {
+				exactIdx = idx
+			}
+		case seg.ByteOffset < startOffset:
+			if seg.ByteOffset > prevOffset || (seg.ByteOffset == prevOffset && idx > prevIdx) {
+				prevIdx = idx
+				prevOffset = seg.ByteOffset
+			}
+		}
+	}
+	if exactIdx >= 0 {
+		return exactIdx
+	}
+	if prevIdx >= 0 {
+		return prevIdx + 1
+	}
+	return 0
+}
+
+func hashReaderMD5(r io.Reader, bufferSize int) (int64, string, error) {
+	if bufferSize <= 0 {
+		bufferSize = defaultChunkSizeBytes
+	}
+	buf := make([]byte, bufferSize)
+	hash := md5.New()
+	var total int64
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			total += int64(n)
+			_, _ = hash.Write(buf[:n])
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return total, "", err
+		}
+	}
+	return total, hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func completedMultipartReplayOutput(part meta.BurnUploadPartRecord, body io.Reader, bufferSize int) (*s3.UploadPartOutput, error) {
+	size, digest, err := hashReaderMD5(body, bufferSize)
+	if err != nil {
+		return nil, err
+	}
+	if size != part.PartSize {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
+	}
+	if part.ChecksumMD5 != "" && !strings.EqualFold(part.ChecksumMD5, digest) {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidPart)
+	}
+	etag := part.ETag
+	out := &s3.UploadPartOutput{ETag: &etag}
+	if part.ChecksumMD5 != "" {
+		checksumMD5 := part.ChecksumMD5
+		out.ChecksumMD5 = &checksumMD5
+	}
+	return out, nil
+}
+
 func quotedETag(md5Hex string) string {
 	h := strings.TrimSpace(strings.ToLower(md5Hex))
 	if h == "" {
@@ -2876,6 +3717,145 @@ func buildCreateJobMetadata(input s3response.PutObjectInput) []*burnbridgev1.Obj
 	return items
 }
 
+func objectMetadataItemsToMap(items []*burnbridgev1.ObjectMetadata) map[string]string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(items))
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		key := strings.TrimSpace(item.GetKey())
+		if key == "" {
+			continue
+		}
+		out[key] = item.GetValue()
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func metadataMapToObjectMetadataItems(values map[string]string) []*burnbridgev1.ObjectMetadata {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if strings.TrimSpace(key) == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	items := make([]*burnbridgev1.ObjectMetadata, 0, len(keys))
+	for _, key := range keys {
+		items = append(items, &burnbridgev1.ObjectMetadata{
+			Key:   key,
+			Value: values[key],
+		})
+	}
+	return items
+}
+
+func buildMultipartInitState(input s3response.CreateMultipartUploadInput) burnbridgeMultipartInitState {
+	items := buildCreateJobMetadata(s3response.PutObjectInput{
+		ContentType:        input.ContentType,
+		ContentEncoding:    input.ContentEncoding,
+		ContentDisposition: input.ContentDisposition,
+		ContentLanguage:    input.ContentLanguage,
+		CacheControl:       input.CacheControl,
+		Expires:            input.Expires,
+		Metadata:           input.Metadata,
+	})
+	return burnbridgeMultipartInitState{
+		Metadata:          objectMetadataItemsToMap(items),
+		ChecksumAlgorithm: input.ChecksumAlgorithm,
+		ChecksumType:      input.ChecksumType,
+	}
+}
+
+func multipartInitAttribute(uploadID string) string {
+	return burnbridgeMultipartInitAttrPref + strings.TrimSpace(uploadID)
+}
+
+func multipartSessionObjectKey(uploadID string) string {
+	return fmt.Sprintf("%ssession/%s", burnbridgeMultipartInternalPref, strings.TrimSpace(uploadID))
+}
+
+func (b *BurnBridge) storeMultipartInitState(bucket, key, uploadID string, state burnbridgeMultipartInitState) error {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return fmt.Errorf("burnbridge: encode multipart init state: %w", err)
+	}
+	return b.meta.StoreAttribute(nil, bucket, key, multipartInitAttribute(uploadID), raw)
+}
+
+func (b *BurnBridge) loadMultipartInitState(bucket, key, uploadID string) (*burnbridgeMultipartInitState, error) {
+	raw, err := b.meta.RetrieveAttribute(nil, bucket, key, multipartInitAttribute(uploadID))
+	if err != nil {
+		if errors.Is(err, meta.ErrNoSuchKey) {
+			return nil, meta.ErrNoSuchKey
+		}
+		return nil, err
+	}
+	var state burnbridgeMultipartInitState
+	if err := json.Unmarshal(raw, &state); err != nil {
+		return nil, fmt.Errorf("burnbridge: decode multipart init state: %w", err)
+	}
+	return &state, nil
+}
+
+func (b *BurnBridge) deleteMultipartInitState(bucket, key, uploadID string) error {
+	return b.meta.DeleteAttribute(bucket, key, multipartInitAttribute(uploadID))
+}
+
+func (b *BurnBridge) storeMultipartObjectMetadata(bucket, key string, mpMeta backend.MpUploadMetadata) error {
+	raw, err := json.Marshal(mpMeta)
+	if err != nil {
+		return fmt.Errorf("burnbridge: encode multipart object metadata: %w", err)
+	}
+	return b.meta.StoreAttribute(nil, bucket, key, burnbridgeMultipartMetaAttr, raw)
+}
+
+func (b *BurnBridge) loadMultipartObjectMetadata(bucket, key string) (*backend.MpUploadMetadata, error) {
+	raw, err := b.meta.RetrieveAttribute(nil, bucket, key, burnbridgeMultipartMetaAttr)
+	if err != nil {
+		if errors.Is(err, meta.ErrNoSuchKey) {
+			return nil, meta.ErrNoSuchKey
+		}
+		return nil, err
+	}
+	var doc backend.MpUploadMetadata
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("burnbridge: decode multipart object metadata: %w", err)
+	}
+	return &doc, nil
+}
+
+func applyCommittedRecordMetadata(rec *meta.BurnbridgeCommittedRecord, metadata map[string]string) {
+	if rec == nil || len(metadata) == 0 {
+		return
+	}
+	rec.ContentType = metadata["content-type"]
+	rec.ContentEncoding = metadata["content-encoding"]
+	rec.ContentDisposition = metadata["content-disposition"]
+	rec.ContentLanguage = metadata["content-language"]
+	rec.CacheControl = metadata["cache-control"]
+	rec.Expires = metadata["expires"]
+	userMeta := make(map[string]string)
+	for key, value := range metadata {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "x-amz-meta-") {
+			userMeta[key[len("x-amz-meta-"):]] = value
+		}
+	}
+	if len(userMeta) > 0 {
+		rec.Metadata = userMeta
+	}
+}
+
 func (b *BurnBridge) loadBurnSegmentSnapshot(bucket, key string) (map[int]meta.BurnObjectSegment, error) {
 	segments, err := b.meta.ListBurnObjectSegments(bucket, key)
 	if err != nil {
@@ -2890,6 +3870,65 @@ func (b *BurnBridge) loadBurnSegmentSnapshot(bucket, key string) (map[int]meta.B
 		snapshot[seg.SegmentIndex] = seg.BurnObjectSegment
 	}
 	return snapshot, nil
+}
+
+func (b *BurnBridge) getSingleUploadSession(bucket, key string) (*meta.BurnUploadSessionRecord, error) {
+	session, err := b.meta.GetBurnUploadSession(bucket, key, burnbridgeImplicitSingleUploadID)
+	if err != nil {
+		if errors.Is(err, meta.ErrNoSuchKey) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return session, nil
+}
+
+func (b *BurnBridge) upsertSingleUploadSession(bucket, key string, contentLen int64, state meta.BurnUploadState) error {
+	return b.meta.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       burnbridgeImplicitSingleUploadID,
+		Kind:           meta.BurnUploadKindSingle,
+		State:          state,
+		MediaID:        b.volumeLabelRaw,
+		ContentLength:  contentLen,
+		NextPartNumber: 1,
+	})
+}
+
+func (b *BurnBridge) singleUploadSessionAllowsResume(bucket, key string) (bool, error) {
+	session, err := b.getSingleUploadSession(bucket, key)
+	if err != nil {
+		return false, err
+	}
+	if session == nil {
+		return false, nil
+	}
+	if !b.acceptedSegmentMediaIDs(bucket).accepts(session.MediaID) {
+		return false, nil
+	}
+	return session.State == meta.BurnUploadStateWriting || session.State == meta.BurnUploadStateFailed, nil
+}
+
+func (b *BurnBridge) getMultipartUploadSession(bucket, key, uploadID string) (*meta.BurnUploadSessionRecord, error) {
+	session, err := b.meta.GetBurnUploadSession(bucket, key, uploadID)
+	if err != nil {
+		if errors.Is(err, meta.ErrNoSuchKey) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if session.Kind != meta.BurnUploadKindMultipart {
+		return nil, nil
+	}
+	return session, nil
+}
+
+func (b *BurnBridge) multipartSessionVisibleOnCurrentMedia(bucket string, session *meta.BurnUploadSessionRecord) bool {
+	if session == nil {
+		return false
+	}
+	return b.acceptedSegmentMediaIDs(bucket).accepts(session.MediaID)
 }
 
 func (b *BurnBridge) recorderImportedStateContainsObject(ctx context.Context, bucket, key string) (bool, error) {
@@ -2924,10 +3963,31 @@ func (b *BurnBridge) recorderImportedStateContainsObject(ctx context.Context, bu
 }
 
 func (b *BurnBridge) clearStaleLocalObjectState(bucket, key string) error {
+	sessions, err := b.meta.ListBurnUploadSessions(bucket, key)
+	if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return err
+	}
+	for _, session := range sessions {
+		if session.Kind != meta.BurnUploadKindMultipart {
+			continue
+		}
+		if err := b.meta.DeleteBurnObjectSegments(bucket, multipartSessionObjectKey(session.UploadID)); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			return err
+		}
+	}
+	if err := b.meta.DeleteBurnUploadParts(bucket, key, ""); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return err
+	}
+	if err := b.meta.DeleteBurnUploadSession(bucket, key, ""); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return err
+	}
 	if err := b.meta.DeleteBurnObjectSegments(bucket, key); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
 		return err
 	}
 	if err := b.meta.DeleteAttribute(bucket, key, meta.BurnbridgeCommittedAttribute); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return err
+	}
+	if err := b.meta.DeleteAttribute(bucket, key, burnbridgeMultipartMetaAttr); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
 		return err
 	}
 	return nil
@@ -2944,10 +4004,18 @@ func (b *BurnBridge) invalidateStaleResumeStateIfRecorderMissing(ctx context.Con
 	if segmentsErr != nil {
 		return segmentsErr
 	}
-	if !hasCommitted && len(segments) == 0 {
-		return nil
+	if !hasCommitted {
+		activeResume, err := b.singleUploadSessionAllowsResume(bucket, key)
+		if err != nil {
+			return err
+		}
+		if activeResume {
+			return nil
+		}
+		if len(segments) == 0 {
+			return nil
+		}
 	}
-
 	present, err := b.recorderImportedStateContainsObject(ctx, bucket, key)
 	if err != nil {
 		return err
@@ -3011,7 +4079,78 @@ func (b *BurnBridge) acceptedSegmentMediaIDs(bucket string) acceptedMediaSet {
 	return accepted
 }
 
-func (b *BurnBridge) burnMaybeInvalidateSegments(bucket, key string, snapshot map[int]meta.BurnObjectSegment, segmentIdx int, digest string) error {
+func (b *BurnBridge) cleanupMultipartUploadState(bucket, key, uploadID string, parts []meta.BurnUploadPartRecord) error {
+	var errs []error
+	_ = parts
+	if err := b.meta.DeleteBurnObjectSegments(bucket, multipartSessionObjectKey(uploadID)); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if err := b.meta.DeleteBurnUploadParts(bucket, key, uploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if err := b.meta.DeleteBurnUploadSession(bucket, key, uploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if err := b.deleteMultipartInitState(bucket, key, uploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func buildFinalizeManifestFromSegments(key string, objectSize int64, segments []meta.BurnObjectSegmentDetail) (*burnbridgev1.FinalizeManifest, error) {
+	if len(segments) == 0 {
+		return &burnbridgev1.FinalizeManifest{
+			Files: []*burnbridgev1.FinalizeFile{{
+				ObjectKey: key,
+				FileSize:  objectSize,
+			}},
+		}, nil
+	}
+	layouts := make([]*burnbridgev1.SegmentLayout, 0, len(segments))
+	hasUsableExtent := false
+	for idx, seg := range segments {
+		if seg.SegmentIndex != idx {
+			return nil, fmt.Errorf("burnbridge: finalize manifest segment sequence mismatch for %s: got=%d want=%d", key, seg.SegmentIndex, idx)
+		}
+		if seg.State != meta.BurnSegmentSucceeded {
+			return nil, fmt.Errorf("burnbridge: finalize manifest segment state not succeeded for %s segment=%d state=%d", key, seg.SegmentIndex, seg.State)
+		}
+		extents := make([]*burnbridgev1.DiscExtent, 0, len(seg.DiscExtents))
+		for _, ex := range seg.DiscExtents {
+			discAddress := strings.TrimSpace(ex.DiscAddress)
+			if discAddress == "" || ex.FileSize <= 0 {
+				continue
+			}
+			hasUsableExtent = true
+			extents = append(extents, &burnbridgev1.DiscExtent{
+				DiscAddress: discAddress,
+				FileSize:    ex.FileSize,
+			})
+		}
+		layouts = append(layouts, &burnbridgev1.SegmentLayout{
+			SegmentIndex: int32(seg.SegmentIndex),
+			ByteOffset:   seg.ByteOffset,
+			ByteSize:     seg.ByteSize,
+			ChecksumMd5:  seg.ChecksumMD5,
+			DiscExtents:  extents,
+		})
+	}
+	if !hasUsableExtent {
+		return nil, nil
+	}
+	return &burnbridgev1.FinalizeManifest{
+		Files: []*burnbridgev1.FinalizeFile{{
+			ObjectKey: key,
+			FileSize:  objectSize,
+			Segments:  layouts,
+		}},
+	}, nil
+}
+
+func (b *BurnBridge) burnMaybeInvalidateSegments(bucket, key string, snapshot map[int]meta.BurnObjectSegment, segmentIdx int, digest string, allowInvalidate bool) error {
 	if segmentIdx != 0 {
 		return nil
 	}
@@ -3020,6 +4159,9 @@ func (b *BurnBridge) burnMaybeInvalidateSegments(bucket, key string, snapshot ma
 		return nil
 	}
 	if prev.ChecksumMD5 != digest {
+		if !allowInvalidate {
+			return fmt.Errorf("burnbridge: upload payload differs from previously recorded segment 0 for %s/%s; overwrite is not allowed", bucket, key)
+		}
 		if err := b.meta.DeleteBurnObjectSegments(bucket, key); err != nil {
 			return err
 		}
@@ -3030,8 +4172,8 @@ func (b *BurnBridge) burnMaybeInvalidateSegments(bucket, key string, snapshot ma
 	return nil
 }
 
-func (b *BurnBridge) burnShouldSkipSegment(objectCommitted bool, snapshot map[int]meta.BurnObjectSegment, segmentIdx int, digest string, offset, segLen int64) bool {
-	if !objectCommitted {
+func (b *BurnBridge) burnShouldSkipSegment(allowReuse bool, snapshot map[int]meta.BurnObjectSegment, segmentIdx int, digest string, offset, segLen int64) bool {
+	if !allowReuse {
 		return false
 	}
 	if segmentIdx > 0 {
@@ -3055,7 +4197,7 @@ func (b *BurnBridge) burnShouldSkipSegment(objectCommitted bool, snapshot map[in
 }
 
 func (b *BurnBridge) recvSegmentUploadAck(stream grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck],
-	jobID, bucket, key string, segmentIdx int, offset, segLen int64, digest string, allowUploadComplete bool, snapshot map[int]meta.BurnObjectSegment) (bool, error) {
+	jobID, bucket, key string, segmentIdx int, ackSegmentIdx int, offset, segLen int64, digest string, allowUploadComplete bool, snapshot map[int]meta.BurnObjectSegment) (bool, error) {
 	persistSegment := func(state meta.BurnSegmentState, extents []meta.BurnDiscExtent) error {
 		if err := b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, segLen, digest, state, extents); err != nil {
 			return err
@@ -3097,9 +4239,9 @@ func (b *BurnBridge) recvSegmentUploadAck(stream grpc.BidiStreamingClient[burnbr
 		_ = persistSegment(meta.BurnSegmentFailed, nil)
 		return false, fmt.Errorf("burnbridge: ack job_id mismatch: got %q want %q", j, jobID)
 	}
-	if ack.GetSegmentIndex() != int32(segmentIdx) {
+	if ack.GetSegmentIndex() != int32(ackSegmentIdx) {
 		_ = persistSegment(meta.BurnSegmentFailed, nil)
-		return false, fmt.Errorf("burnbridge: segment_index mismatch: got %d want %d", ack.GetSegmentIndex(), segmentIdx)
+		return false, fmt.Errorf("burnbridge: segment_index mismatch: got %d want %d", ack.GetSegmentIndex(), ackSegmentIdx)
 	}
 	if ack.GetByteOffset() != offset || ack.GetByteSize() != segLen {
 		_ = persistSegment(meta.BurnSegmentFailed, nil)
@@ -3113,7 +4255,202 @@ func (b *BurnBridge) recvSegmentUploadAck(stream grpc.BidiStreamingClient[burnbr
 	return ack.GetUploadComplete(), nil
 }
 
-func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, key string, body io.Reader, _ int64) (int64, *burnbridgev1.UploadObjectAck, uploadRecoveryStats, error) {
+func (b *BurnBridge) grpcUploadMultipartPartStream(
+	ctx context.Context,
+	jobID, bucket, segmentKey string,
+	body io.Reader,
+	partStartOffset, resumeOffset int64,
+) (int64, *burnbridgev1.UploadObjectAck, uploadRecoveryStats, error) {
+	startedAt := time.Now()
+	stream, err := b.grpc.UploadObject(ctx)
+	if err != nil {
+		return resumeOffset, nil, uploadRecoveryStats{}, err
+	}
+	segmentSnapshot, err := b.loadBurnSegmentSnapshot(bucket, segmentKey)
+	if err != nil {
+		return resumeOffset, nil, uploadRecoveryStats{}, err
+	}
+	if resumeOffset < partStartOffset {
+		return resumeOffset, nil, uploadRecoveryStats{}, fmt.Errorf(
+			"burnbridge: multipart resume offset moved before part start. segmentKey=%s partStart=%d resume=%d",
+			segmentKey, partStartOffset, resumeOffset)
+	}
+
+	stats := uploadRecoveryStats{}
+	partMD5 := md5.New()
+	segBuf := make([]byte, b.chunkSize)
+	currentOffset := resumeOffset
+	logicalOffset := partStartOffset
+	segmentIdx := multipartSegmentIndexForOffset(segmentSnapshot, partStartOffset)
+	streamSegmentIdx := 0
+	uploadCompletedBySegmentAck := false
+
+	sendEOF := func() error {
+		return stream.Send(&burnbridgev1.UploadObjectChunk{JobId: jobID, Offset: currentOffset, Eof: true})
+	}
+
+	if body == nil {
+		if err := sendEOF(); err != nil {
+			return currentOffset, nil, stats, err
+		}
+		if err := stream.CloseSend(); err != nil {
+			return currentOffset, nil, stats, err
+		}
+		final, err := stream.Recv()
+		if err != nil {
+			return currentOffset, nil, stats, err
+		}
+		if !final.GetUploadComplete() {
+			return currentOffset, nil, stats, fmt.Errorf("burnbridge: expected upload_complete on multipart final ack for empty part")
+		}
+		if final.GetChecksumMd5() == "" {
+			final.ChecksumMd5 = hex.EncodeToString(partMD5.Sum(nil))
+		}
+		return currentOffset, final, stats, nil
+	}
+
+	for {
+		n, errRead := io.ReadFull(body, segBuf)
+		if n == 0 {
+			if errRead == io.EOF || errRead == io.ErrUnexpectedEOF {
+				break
+			}
+			return currentOffset, nil, stats, errRead
+		}
+		if errRead != nil && errRead != io.ErrUnexpectedEOF {
+			return currentOffset, nil, stats, errRead
+		}
+
+		chunk := segBuf[:n]
+		_, _ = partMD5.Write(chunk)
+		digest := bbSegmentMD5Hex(chunk)
+		stats.TotalSegments++
+		isTailSegment := errRead == io.ErrUnexpectedEOF
+
+		if logicalOffset < resumeOffset {
+			if logicalOffset+int64(len(chunk)) > resumeOffset {
+				return currentOffset, nil, stats, fmt.Errorf(
+					"burnbridge: multipart resumed within a segment boundary; unsupported state. segmentKey=%s partStart=%d resume=%d logicalOffset=%d chunkBytes=%d",
+					segmentKey, partStartOffset, resumeOffset, logicalOffset, len(chunk))
+			}
+			if !b.burnShouldSkipSegment(true, segmentSnapshot, segmentIdx, digest, logicalOffset, int64(len(chunk))) {
+				return currentOffset, nil, stats, fmt.Errorf(
+					"burnbridge: multipart retry payload mismatch against already-recorded prefix. segmentKey=%s segment=%d offset=%d size=%d",
+					segmentKey, segmentIdx, logicalOffset, len(chunk))
+			}
+			stats.SkippedSegments++
+			logicalOffset += int64(len(chunk))
+			segmentIdx++
+			if errRead == io.ErrUnexpectedEOF {
+				break
+			}
+			continue
+		}
+
+		if logicalOffset != currentOffset {
+			return currentOffset, nil, stats, fmt.Errorf(
+				"burnbridge: multipart logical offset diverged from recorder offset. segmentKey=%s logicalOffset=%d currentOffset=%d",
+				segmentKey, logicalOffset, currentOffset)
+		}
+
+		stats.ReplayedSegments++
+		if err := b.meta.UpsertBurnObjectSegment(bucket, segmentKey, b.volumeLabelRaw, segmentIdx, logicalOffset, int64(len(chunk)), digest, meta.BurnSegmentPending, nil); err != nil {
+			return currentOffset, nil, stats, err
+		}
+		segmentSnapshot[segmentIdx] = meta.BurnObjectSegment{
+			MediaID:     b.volumeLabelRaw,
+			ByteOffset:  logicalOffset,
+			ByteSize:    int64(len(chunk)),
+			ChecksumMD5: digest,
+			State:       meta.BurnSegmentPending,
+			DiscExtents: nil,
+		}
+
+		for i := 0; i < len(chunk); {
+			end := i + burnbridgeUploadMaxDataPerFrame
+			if end > len(chunk) {
+				end = len(chunk)
+			}
+			part := chunk[i:end]
+			frameEOF := isTailSegment && end == len(chunk)
+			if err := stream.Send(&burnbridgev1.UploadObjectChunk{
+				JobId:  jobID,
+				Offset: logicalOffset + int64(i),
+				Data:   part,
+				Eof:    frameEOF,
+			}); err != nil {
+				return currentOffset, nil, stats, err
+			}
+			i = end
+		}
+
+		completed, err := b.recvSegmentUploadAck(stream, jobID, bucket, segmentKey, segmentIdx, streamSegmentIdx, logicalOffset, int64(len(chunk)), digest, isTailSegment, segmentSnapshot)
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				_ = b.meta.UpsertBurnObjectSegment(bucket, segmentKey, b.volumeLabelRaw, segmentIdx, logicalOffset, int64(len(chunk)), digest, meta.BurnSegmentFailed, nil)
+			}
+			return currentOffset, nil, stats, err
+		}
+		uploadCompletedBySegmentAck = uploadCompletedBySegmentAck || completed
+
+		currentOffset += int64(len(chunk))
+		logicalOffset = currentOffset
+		segmentIdx++
+		streamSegmentIdx++
+		if errRead == io.ErrUnexpectedEOF {
+			break
+		}
+	}
+
+	trimmedRows, err := b.meta.DeleteBurnObjectSegmentsFromWithCount(bucket, segmentKey, segmentIdx)
+	if err != nil {
+		return currentOffset, nil, stats, err
+	}
+	stats.TrimmedSegments = trimmedRows
+
+	var final *burnbridgev1.UploadObjectAck
+	if !uploadCompletedBySegmentAck {
+		if err := sendEOF(); err != nil {
+			return currentOffset, nil, stats, err
+		}
+		if err := stream.CloseSend(); err != nil {
+			return currentOffset, nil, stats, err
+		}
+		final, err = stream.Recv()
+		if err != nil {
+			return currentOffset, nil, stats, err
+		}
+		if !final.GetUploadComplete() {
+			return currentOffset, nil, stats, fmt.Errorf("burnbridge: expected upload_complete on multipart part final ack")
+		}
+	} else {
+		if err := stream.CloseSend(); err != nil {
+			return currentOffset, nil, stats, err
+		}
+		final = &burnbridgev1.UploadObjectAck{
+			JobId:          jobID,
+			UploadComplete: true,
+			BytesReceived:  currentOffset,
+		}
+	}
+	if final.GetChecksumMd5() == "" {
+		final.ChecksumMd5 = hex.EncodeToString(partMD5.Sum(nil))
+	}
+	slog.Info("burnbridge: multipart part stream finished",
+		"bucket", bucket,
+		"segmentKey", segmentKey,
+		"jobId", jobID,
+		"bytes", currentOffset-partStartOffset,
+		"absoluteBytesReceived", currentOffset,
+		"segments_total", stats.TotalSegments,
+		"segments_skipped", stats.SkippedSegments,
+		"segments_replayed", stats.ReplayedSegments,
+		"segments_trimmed", stats.TrimmedSegments,
+		"elapsed_ms", time.Since(startedAt).Milliseconds())
+	return currentOffset, final, stats, nil
+}
+
+func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, key string, body io.Reader, _ int64, opts burnbridgeUploadStreamOptions) (int64, *burnbridgev1.UploadObjectAck, uploadRecoveryStats, error) {
 	startedAt := time.Now()
 	stream, err := b.grpc.UploadObject(ctx)
 	if err != nil {
@@ -3123,11 +4460,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 	if err != nil {
 		return 0, nil, uploadRecoveryStats{}, err
 	}
-	_, committedRecordErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
-	objectCommitted := committedRecordErr == nil
-	if committedRecordErr != nil && !errors.Is(committedRecordErr, meta.ErrNoSuchKey) {
-		return 0, nil, uploadRecoveryStats{}, committedRecordErr
-	}
+	allowReuse := opts.AllowReuse
 	stats := uploadRecoveryStats{}
 	uploadCompletedBySegmentAck := false
 	objectMD5 := md5.New()
@@ -3135,6 +4468,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 	segBuf := make([]byte, b.chunkSize)
 	offset := int64(0)
 	segmentIdx := 0
+	streamSegmentIdx := 0
 
 	sendEOF := func() error {
 		return stream.Send(&burnbridgev1.UploadObjectChunk{JobId: jobID, Offset: offset, Eof: true})
@@ -3175,12 +4509,12 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 		_, _ = objectMD5.Write(chunk)
 
 		digest := bbSegmentMD5Hex(chunk)
-		if err := b.burnMaybeInvalidateSegments(bucket, key, segmentSnapshot, segmentIdx, digest); err != nil {
+		if err := b.burnMaybeInvalidateSegments(bucket, key, segmentSnapshot, segmentIdx, digest, opts.AllowInvalidateOnFirstMismatch); err != nil {
 			return offset, nil, stats, err
 		}
 		stats.TotalSegments++
 
-		skip := b.burnShouldSkipSegment(objectCommitted, segmentSnapshot, segmentIdx, digest, offset, int64(len(chunk)))
+		skip := b.burnShouldSkipSegment(allowReuse, segmentSnapshot, segmentIdx, digest, offset, int64(len(chunk)))
 
 		isTailSegment := errRead == io.ErrUnexpectedEOF
 		if skip {
@@ -3222,7 +4556,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 			}
 		}
 
-		completed, err := b.recvSegmentUploadAck(stream, jobID, bucket, key, segmentIdx, offset, int64(len(chunk)), digest, isTailSegment, segmentSnapshot)
+		completed, err := b.recvSegmentUploadAck(stream, jobID, bucket, key, segmentIdx, streamSegmentIdx, offset, int64(len(chunk)), digest, isTailSegment, segmentSnapshot)
 		if err != nil {
 			if !skip {
 				_ = b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentFailed, nil)
@@ -3241,6 +4575,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 
 		offset += int64(len(chunk))
 		segmentIdx++
+		streamSegmentIdx++
 		if errRead == io.ErrUnexpectedEOF {
 			break
 		}
@@ -3398,7 +4733,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		Metadata:      buildCreateJobMetadata(input),
 	})
 	if err != nil {
-		return s3response.PutObjectOutput{}, err
+		return s3response.PutObjectOutput{}, mapRecorderWriteRPCError(err)
 	}
 	jobID := createResp.GetJobId()
 	if jobID == "" {
@@ -3410,6 +4745,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	}
 
 	var committed bool
+	sessionStarted := false
 	cancelJobNow := func(job string) {
 		if strings.TrimSpace(job) == "" {
 			return
@@ -3419,38 +4755,102 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		_, _ = b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: job})
 	}
 	defer func() {
+		if !committed && sessionStarted {
+			_ = b.upsertSingleUploadSession(bucket, key, contentLen, meta.BurnUploadStateFailed)
+			_ = b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+				Bucket:       bucket,
+				ObjectName:   key,
+				UploadID:     burnbridgeImplicitSingleUploadID,
+				PartNumber:   1,
+				PartSize:     contentLen,
+				State:        meta.BurnUploadStateFailed,
+				SegmentCount: 0,
+			})
+		}
 		if committed || jobID == "" {
 			return
 		}
 		cancelJobNow(jobID)
 	}()
+	if err := b.upsertSingleUploadSession(bucket, key, contentLen, meta.BurnUploadStateWriting); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
+	if err := b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:       bucket,
+		ObjectName:   key,
+		UploadID:     burnbridgeImplicitSingleUploadID,
+		PartNumber:   1,
+		PartSize:     contentLen,
+		State:        meta.BurnUploadStateWriting,
+		SegmentCount: 0,
+	}); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
+	sessionStarted = true
 
-	offset, uploadResp, stats, err := b.grpcUploadObjectStream(ctx, jobID, bucket, key, input.Body, contentLen)
+	_, committedRecordErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
+	objectCommitted := committedRecordErr == nil
+	if committedRecordErr != nil && !errors.Is(committedRecordErr, meta.ErrNoSuchKey) {
+		return s3response.PutObjectOutput{}, committedRecordErr
+	}
+	sessionAllowsResume, err := b.singleUploadSessionAllowsResume(bucket, key)
+	if err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
+
+	offset, uploadResp, stats, err := b.grpcUploadObjectStream(ctx, jobID, bucket, key, input.Body, contentLen, burnbridgeUploadStreamOptions{
+		AllowReuse:                     objectCommitted || sessionAllowsResume,
+		AllowInvalidateOnFirstMismatch: true,
+	})
 	if err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
 
 	if stats.AllSegmentsSkipped() {
 		committedRec, recErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
-		if recErr != nil {
+		if recErr != nil && !errors.Is(recErr, meta.ErrNoSuchKey) {
 			return s3response.PutObjectOutput{}, recErr
 		}
+		if recErr == nil {
+			committedChecksumMD5 := strings.Trim(strings.TrimSpace(committedRec.ETag), "\"")
+			if committedRec.Size == offset && (uploadResp.GetChecksumMd5() == "" || strings.EqualFold(committedChecksumMD5, uploadResp.GetChecksumMd5())) {
+				cancelJobNow(jobID)
+				jobID = ""
+				committed = true
+				_ = b.upsertSingleUploadSession(bucket, key, contentLen, meta.BurnUploadStateCompleted)
+				_ = b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+					Bucket:       bucket,
+					ObjectName:   key,
+					UploadID:     burnbridgeImplicitSingleUploadID,
+					PartNumber:   1,
+					PartSize:     committedRec.Size,
+					ChecksumMD5:  committedChecksumMD5,
+					ETag:         committedRec.ETag,
+					State:        meta.BurnUploadStateCompleted,
+					SegmentCount: int(stats.TotalSegments),
+				})
+				slog.Info("burnbridge: object already committed on media; skipping CommitJob for idempotent PutObject retry",
+					"bucket", bucket, "key", key, "jobId", jobID, "bytes", offset)
 
-		cancelJobNow(jobID)
-		jobID = ""
-		committed = true
-		slog.Info("burnbridge: object already committed on media; skipping CommitJob for idempotent PutObject retry",
-			"bucket", bucket, "key", key, "jobId", jobID, "bytes", offset)
+				out := s3response.PutObjectOutput{
+					ETag: committedRec.ETag,
+					Size: &committedRec.Size,
+				}
+				checksumMD5 := committedChecksumMD5
+				if checksumMD5 != "" {
+					out.ChecksumMD5 = &checksumMD5
+				}
+				return out, nil
+			}
 
-		out := s3response.PutObjectOutput{
-			ETag: committedRec.ETag,
-			Size: &committedRec.Size,
+			slog.Info("burnbridge: all segments were reusable but committed object metadata differs; continuing with CommitJob",
+				"bucket", bucket,
+				"key", key,
+				"committed_size", committedRec.Size,
+				"retry_size", offset,
+				"committed_md5", committedChecksumMD5,
+				"retry_md5", uploadResp.GetChecksumMd5())
 		}
-		checksumMD5 := strings.Trim(strings.TrimSpace(committedRec.ETag), "\"")
-		if checksumMD5 != "" {
-			out.ChecksumMD5 = &checksumMD5
-		}
-		return out, nil
 	}
 
 	finalizeManifest, err := b.buildFinalizeManifest(bucket, key, offset)
@@ -3463,12 +4863,13 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	}
 
 	commitResp, err := b.grpc.CommitJob(ctx, &burnbridgev1.CommitJobRequest{
-		JobId:            jobID,
-		UdfVolumeLabel:   b.udfLabel,
-		FinalizeManifest: finalizeManifest,
+		JobId:                  jobID,
+		UdfVolumeLabel:         b.udfLabel,
+		FinalizeManifest:       finalizeManifest,
+		CommittedContentLength: offset,
 	})
 	if err != nil {
-		return s3response.PutObjectOutput{}, err
+		return s3response.PutObjectOutput{}, mapRecorderWriteRPCError(err)
 	}
 	committed = true
 	slog.Info("burnbridge: CommitJob sent after full object stream (client transfer complete)",
@@ -3485,7 +4886,24 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		LastModified: lm,
 		Size:         offset,
 	}
+	applyCommittedRecordMetadata(committedRec, objectMetadataItemsToMap(buildCreateJobMetadata(input)))
 	if err := b.meta.StoreBurnbridgeCommitted(nil, bucket, key, committedRec); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
+	if err := b.upsertSingleUploadSession(bucket, key, contentLen, meta.BurnUploadStateCompleted); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
+	if err := b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:       bucket,
+		ObjectName:   key,
+		UploadID:     burnbridgeImplicitSingleUploadID,
+		PartNumber:   1,
+		PartSize:     offset,
+		ChecksumMD5:  checksumMD5,
+		ETag:         etag,
+		State:        meta.BurnUploadStateCompleted,
+		SegmentCount: int(stats.TotalSegments),
+	}); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
 	b.invalidateFinalizeLayoutTranscript(bucket)
@@ -3536,64 +4954,13 @@ func (b *BurnBridge) DeleteObjects(_ context.Context, input *s3.DeleteObjectsInp
 }
 
 func (b *BurnBridge) buildFinalizeManifest(bucket, key string, objectSize int64) (*burnbridgev1.FinalizeManifest, error) {
-	segments, err := b.meta.ListBurnObjectSegments(bucket, key)
+	return b.buildFinalizeManifestForObject(bucket, key, key, objectSize)
+}
+
+func (b *BurnBridge) buildFinalizeManifestForObject(bucket, segmentKey, objectKey string, objectSize int64) (*burnbridgev1.FinalizeManifest, error) {
+	segments, err := b.meta.ListBurnObjectSegments(bucket, segmentKey)
 	if err != nil {
 		return nil, err
 	}
-	if len(segments) == 0 {
-		return &burnbridgev1.FinalizeManifest{
-			Files: []*burnbridgev1.FinalizeFile{
-				{
-					ObjectKey: key,
-					FileSize:  objectSize,
-				},
-			},
-		}, nil
-	}
-
-	layouts := make([]*burnbridgev1.SegmentLayout, 0, len(segments))
-	hasUsableExtent := false
-	for idx, seg := range segments {
-		if seg.SegmentIndex != idx {
-			return nil, fmt.Errorf("burnbridge: finalize manifest segment sequence mismatch for %s/%s: got=%d want=%d", bucket, key, seg.SegmentIndex, idx)
-		}
-		if seg.State != meta.BurnSegmentSucceeded {
-			return nil, fmt.Errorf("burnbridge: finalize manifest segment state not succeeded for %s/%s segment=%d state=%d", bucket, key, seg.SegmentIndex, seg.State)
-		}
-
-		extents := make([]*burnbridgev1.DiscExtent, 0, len(seg.DiscExtents))
-		for _, ex := range seg.DiscExtents {
-			discAddress := strings.TrimSpace(ex.DiscAddress)
-			if discAddress == "" || ex.FileSize <= 0 {
-				continue
-			}
-			hasUsableExtent = true
-			extents = append(extents, &burnbridgev1.DiscExtent{
-				DiscAddress: discAddress,
-				FileSize:    ex.FileSize,
-			})
-		}
-
-		layouts = append(layouts, &burnbridgev1.SegmentLayout{
-			SegmentIndex: int32(seg.SegmentIndex),
-			ByteOffset:   seg.ByteOffset,
-			ByteSize:     seg.ByteSize,
-			ChecksumMd5:  seg.ChecksumMD5,
-			DiscExtents:  extents,
-		})
-	}
-
-	if !hasUsableExtent {
-		return nil, nil
-	}
-
-	return &burnbridgev1.FinalizeManifest{
-		Files: []*burnbridgev1.FinalizeFile{
-			{
-				ObjectKey: key,
-				FileSize:  objectSize,
-				Segments:  layouts,
-			},
-		},
-	}, nil
+	return buildFinalizeManifestFromSegments(objectKey, objectSize, segments)
 }

@@ -207,6 +207,30 @@ func mapReadFallbackError(err error) error {
 	}
 }
 
+func mapRecorderWriteRPCError(err error) error {
+	if err == nil {
+		return nil
+	}
+
+	st, ok := status.FromError(err)
+	if !ok {
+		return err
+	}
+
+	switch st.Code() {
+	case codes.FailedPrecondition:
+		return s3err.GetAPIError(s3err.ErrPreconditionFailed)
+	case codes.Unavailable, codes.DeadlineExceeded:
+		return s3err.APIError{
+			Code:           "BurnbridgeRecorderBusy",
+			Description:    "Recorder is temporarily unavailable or busy switching media access mode. Retry later.",
+			HTTPStatusCode: http.StatusServiceUnavailable,
+		}
+	default:
+		return err
+	}
+}
+
 func isGRPCUnimplemented(err error) bool {
 	st, ok := status.FromError(err)
 	return ok && st.Code() == codes.Unimplemented
