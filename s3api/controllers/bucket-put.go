@@ -519,9 +519,11 @@ func (c S3ApiController) CreateBucket(ctx *fiber.Ctx) (*Response, error) {
 	bucketOwner := utils.ContextKeyBucketOwner.Get(ctx).(auth.Account)
 
 	if creator.Role != auth.RoleAdmin && creator.Role != auth.RoleUserPlus {
-		return &Response{
-			MetaOpts: &MetaOptions{},
-		}, s3err.GetAPIError(s3err.ErrAccessDenied)
+		if !strings.EqualFold(strings.TrimSpace(c.be.String()), "BurnBridge") {
+			return &Response{
+				MetaOpts: &MetaOptions{},
+			}, s3err.GetAPIError(s3err.ErrAccessDenied)
+		}
 	}
 
 	// validate the bucket name

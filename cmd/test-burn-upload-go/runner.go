@@ -172,12 +172,16 @@ type discInfoDocument struct {
 }
 
 type interruptRetrySummary struct {
+	Mode                           string  `json:"mode,omitempty"`
 	Status                         string  `json:"status"`
 	Bucket                         string  `json:"bucket"`
 	ObjectKey                      string  `json:"objectKey"`
+	UploadID                       string  `json:"uploadId,omitempty"`
 	FilePath                       string  `json:"filePath"`
 	FileSizeBytes                  int64   `json:"fileSizeBytes"`
 	FileMD5                        string  `json:"fileMd5"`
+	PartSizeBytes                  int64   `json:"partSizeBytes,omitempty"`
+	InterruptedPartNumber          int32   `json:"interruptedPartNumber,omitempty"`
 	FailAfterBytes                 int64   `json:"failAfterBytes"`
 	FailAfterMiB                   float64 `json:"failAfterMiB"`
 	InterruptedUploadSeconds       float64 `json:"interruptedUploadSeconds"`
@@ -202,6 +206,9 @@ type interruptRetrySummary struct {
 	MemoryCSVPath                  string  `json:"memoryCsvPath"`
 	MemorySummaryPath              string  `json:"memorySummaryPath"`
 }
+
+const multipartMinPartSize int64 = 5 * 1024 * 1024
+const defaultMultipartPartSize int64 = 64 * 1024 * 1024
 
 type memorySampler struct {
 	scriptPath string
@@ -228,13 +235,13 @@ type failingReader struct {
 var errSimulatedDisconnect = errors.New("simulated upload disconnect")
 
 func newRunner(opts cliOptions) (*runner, error) {
-	if opts.interruptRetryOnly {
+	if opts.interruptRetryOnly || opts.multipartRetryOnly || opts.mode == modeMultipartFlow {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || info.IsDir() {
 			return nil, fmt.Errorf("data file not found: %s", opts.dataDir)
 		}
 	}
-	if !opts.interruptRetryOnly && !opts.remoteOnly && !opts.listObjectsOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
+	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("data directory not found: %s", opts.dataDir)
@@ -312,6 +319,7 @@ func (r *runner) run() (err error) {
 	r.logf("FinalizeOnly: %t", r.opts.finalizeOnly)
 	r.logf("CloseDiscOnly: %t", r.opts.closeDiscOnly)
 	r.logf("InterruptRetryOnly: %t", r.opts.interruptRetryOnly)
+	r.logf("MultipartRetryOnly: %t", r.opts.multipartRetryOnly)
 	if strings.TrimSpace(r.opts.singleObjectKey) != "" {
 		r.logf("SingleObjectKey: %s", r.opts.singleObjectKey)
 	}
@@ -320,6 +328,12 @@ func (r *runner) run() (err error) {
 	}
 	if r.opts.failAfterBytes > 0 {
 		r.logf("FailAfterBytes: %d", r.opts.failAfterBytes)
+	}
+	if r.opts.multipartPartBytes > 0 {
+		r.logf("MultipartPartBytes: %d", r.opts.multipartPartBytes)
+	}
+	if r.opts.multipartThreshold > 0 {
+		r.logf("MultipartThresholdBytes: %d", r.opts.multipartThreshold)
 	}
 	if strings.TrimSpace(r.opts.awsProfile) != "" {
 		r.logf("Profile: %s", r.opts.awsProfile)
@@ -356,6 +370,10 @@ func (r *runner) run() (err error) {
 		err = r.runHeadObjectOnly(activeBucket)
 	case r.opts.interruptRetryOnly:
 		err = r.runInterruptRetry(activeBucket)
+	case r.opts.multipartRetryOnly:
+		err = r.runMultipartInterruptRetry(activeBucket)
+	case r.opts.mode == modeMultipartFlow:
+		err = r.runMultipartFlow(activeBucket)
 	case strings.TrimSpace(r.opts.singleObjectKey) != "":
 		err = r.runSingleObjectDownload(activeBucket)
 	default:
@@ -785,6 +803,446 @@ func (r *runner) runInterruptRetry(bucket string) error {
 	return nil
 }
 
+func (r *runner) runMultipartInterruptRetry(bucket string) error {
+	source, err := buildSingleFileSource(r.opts.dataDir)
+	if err != nil {
+		return err
+	}
+	objectKey := source.RelativePath
+	if strings.TrimSpace(objectKey) == "" {
+		objectKey = filepath.Base(source.FullPath)
+	}
+
+	partSize := r.opts.multipartPartBytes
+	if partSize < multipartMinPartSize {
+		partSize = multipartMinPartSize
+	}
+	if source.Size <= partSize {
+		return fmt.Errorf("source file too small for multipart retry test: size=%d partSize=%d", source.Size, partSize)
+	}
+	if source.Size-partSize <= 0 {
+		return fmt.Errorf("multipart retry test requires at least two parts")
+	}
+	if r.opts.failAfterBytes >= source.Size-partSize {
+		return fmt.Errorf("failAfterBytes (%d) must be smaller than second part size (%d)", r.opts.failAfterBytes, source.Size-partSize)
+	}
+
+	beforeDiscInfoPath := filepath.Join(r.runRoot, "discinfo-before.json")
+	afterFailureDiscInfoPath := filepath.Join(r.runRoot, "discinfo-after-failure.json")
+	afterCompleteDiscInfoPath := filepath.Join(r.runRoot, "discinfo-after-complete.json")
+	downloadPath := resolveSingleObjectOutputPath(r.cfg.verifyDownloadRoot, bucket, objectKey, "")
+
+	r.logf("[3/9] Preparing multipart interrupt-retry source file...")
+	r.logf("  objectKey      : %s", objectKey)
+	r.logf("  filePath       : %s", source.FullPath)
+	r.logf("  fileSizeBytes  : %d", source.Size)
+	r.logf("  fileMd5        : %s", source.MD5)
+	r.logf("  partSizeBytes  : %d", partSize)
+	r.logf("  failAfterBytes : %d", r.opts.failAfterBytes)
+
+	r.logf("[4/9] Reading baseline DiscInfo...")
+	beforeInfo, err := r.fetchDiscInfo(bucket, beforeDiscInfoPath)
+	if err != nil {
+		return err
+	}
+	r.logf("  usedCapacityBytes(before) : %d", beforeInfo.Data.UsedCapacityBytes)
+
+	r.logf("[5/9] Initiating multipart upload...")
+	createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	defer cancelCreate()
+	createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
+		Bucket: &bucket,
+		Key:    &objectKey,
+	})
+	if err != nil {
+		return err
+	}
+	uploadID := awsString(createOut.UploadId)
+	if strings.TrimSpace(uploadID) == "" {
+		return fmt.Errorf("empty upload id from CreateMultipartUpload")
+	}
+	r.logf("  uploadId      : %s", uploadID)
+
+	r.logf("[6/9] Uploading part 1 normally...")
+	part1Start := time.Now()
+	part1Out, err := r.uploadPartFromFile(bucket, objectKey, uploadID, 1, source.FullPath, 0, partSize)
+	if err != nil {
+		return err
+	}
+	part1Seconds := roundSeconds(time.Since(part1Start))
+	part1Rate := rateMiBPerSecond(partSize, part1Seconds)
+	r.logf("  part1 etag    : %s", awsString(part1Out.ETag))
+	r.logf("  part1 elapsed : %.3fs", part1Seconds)
+	r.logf("  part1 rate    : %.3f MiB/s", part1Rate)
+
+	part2Offset := partSize
+	part2Size := source.Size - part2Offset
+	r.logf("[7/9] Uploading part 2 with simulated disconnect...")
+	interruptedStart := time.Now()
+	interruptedErr := r.uploadPartWithSimulatedDisconnect(bucket, objectKey, uploadID, 2, source.FullPath, part2Offset, part2Size, r.opts.failAfterBytes)
+	interruptedSeconds := roundSeconds(time.Since(interruptedStart))
+	if interruptedErr == nil {
+		return fmt.Errorf("simulated multipart part upload unexpectedly succeeded")
+	}
+	r.logf("  interruptedPartSeconds : %.3fs", interruptedSeconds)
+	r.logf("  interruptedPartError   : %v", interruptedErr)
+
+	time.Sleep(3 * time.Second)
+
+	r.logf("[7.5/9] Reading DiscInfo after interrupted part...")
+	afterFailureInfo, err := r.fetchDiscInfo(bucket, afterFailureDiscInfoPath)
+	if err != nil {
+		return err
+	}
+	visibleAfterFailure, visibleErr := r.objectExists(bucket, objectKey)
+	if visibleErr != nil {
+		return visibleErr
+	}
+	r.logf("  usedCapacityBytes(afterFailure) : %d", afterFailureInfo.Data.UsedCapacityBytes)
+	r.logf("  deltaAfterFailureBytes          : %d", afterFailureInfo.Data.UsedCapacityBytes-beforeInfo.Data.UsedCapacityBytes)
+	r.logf("  visibleAfterFailure             : %t", visibleAfterFailure)
+
+	r.logf("[8/9] Retrying part 2, then completing multipart upload...")
+	part2RetryStart := time.Now()
+	part2Out, err := r.uploadPartFromFile(bucket, objectKey, uploadID, 2, source.FullPath, part2Offset, part2Size)
+	if err != nil {
+		return err
+	}
+	part2RetrySeconds := roundSeconds(time.Since(part2RetryStart))
+	part2RetryRate := rateMiBPerSecond(part2Size, part2RetrySeconds)
+	r.logf("  part2 retry etag    : %s", awsString(part2Out.ETag))
+	r.logf("  part2 retry elapsed : %.3fs", part2RetrySeconds)
+	r.logf("  part2 retry rate    : %.3f MiB/s", part2RetryRate)
+
+	completeStart := time.Now()
+	completeCtx, cancelComplete := context.WithTimeout(context.Background(), r.cfg.finalizeReadTimeout)
+	defer cancelComplete()
+	_, err = r.client.CompleteMultipartUpload(completeCtx, &s3.CompleteMultipartUploadInput{
+		Bucket:   &bucket,
+		Key:      &objectKey,
+		UploadId: &uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: []types.CompletedPart{
+				{PartNumber: int32Ptr(1), ETag: part1Out.ETag},
+				{PartNumber: int32Ptr(2), ETag: part2Out.ETag},
+			},
+		},
+	})
+	if err != nil {
+		return err
+	}
+	completeSeconds := roundSeconds(time.Since(completeStart))
+	r.logf("  completeMultipartSeconds : %.3fs", completeSeconds)
+
+	r.logf("[8.5/9] Downloading completed object and verifying MD5...")
+	if err := ensureDir(filepath.Dir(downloadPath)); err != nil {
+		return err
+	}
+	downloadStart := time.Now()
+	if err := r.downloadObjectToFile(bucket, objectKey, downloadPath, defaultReadTimeout); err != nil {
+		return err
+	}
+	downloadSeconds := roundSeconds(time.Since(downloadStart))
+	downloadMD5, err := computeMD5(downloadPath)
+	if err != nil {
+		return err
+	}
+	if downloadMD5 != source.MD5 {
+		return fmt.Errorf("downloaded MD5 mismatch for %s", objectKey)
+	}
+	r.logf("  downloadSeconds : %.3fs", downloadSeconds)
+	r.logf("  downloadMd5     : %s", downloadMD5)
+
+	r.logf("[9/9] Reading DiscInfo after multipart complete...")
+	afterCompleteInfo, err := r.fetchDiscInfo(bucket, afterCompleteDiscInfoPath)
+	if err != nil {
+		return err
+	}
+	deltaAfterFailure := afterFailureInfo.Data.UsedCapacityBytes - beforeInfo.Data.UsedCapacityBytes
+	deltaRetryAndComplete := afterCompleteInfo.Data.UsedCapacityBytes - afterFailureInfo.Data.UsedCapacityBytes
+	deltaTotal := afterCompleteInfo.Data.UsedCapacityBytes - beforeInfo.Data.UsedCapacityBytes
+	r.logf("  usedCapacityBytes(afterComplete) : %d", afterCompleteInfo.Data.UsedCapacityBytes)
+	r.logf("  deltaRetryAndCompleteBytes       : %d", deltaRetryAndComplete)
+	r.logf("  deltaTotalBytes                  : %d", deltaTotal)
+
+	summary := &interruptRetrySummary{
+		Mode:                           "multipart-interrupt-retry",
+		Status:                         "Success",
+		Bucket:                         bucket,
+		ObjectKey:                      objectKey,
+		UploadID:                       uploadID,
+		FilePath:                       source.FullPath,
+		FileSizeBytes:                  source.Size,
+		FileMD5:                        source.MD5,
+		PartSizeBytes:                  partSize,
+		InterruptedPartNumber:          2,
+		FailAfterBytes:                 r.opts.failAfterBytes,
+		FailAfterMiB:                   roundFloat(float64(r.opts.failAfterBytes)/(1024*1024), 3),
+		InterruptedUploadSeconds:       interruptedSeconds,
+		InterruptedUploadError:         interruptedErr.Error(),
+		VisibleAfterFailure:            visibleAfterFailure,
+		RetryUploadSeconds:             part2RetrySeconds,
+		FinalizeLayoutSeconds:          completeSeconds,
+		DownloadSeconds:                downloadSeconds,
+		DownloadMD5:                    downloadMD5,
+		BeforeUsedCapacityBytes:        beforeInfo.Data.UsedCapacityBytes,
+		AfterFailureUsedCapacityBytes:  afterFailureInfo.Data.UsedCapacityBytes,
+		AfterFinalizeUsedCapacityBytes: afterCompleteInfo.Data.UsedCapacityBytes,
+		DeltaAfterFailureBytes:         deltaAfterFailure,
+		DeltaRetryAndFinalizeBytes:     deltaRetryAndComplete,
+		DeltaTotalBytes:                deltaTotal,
+		RunRoot:                        r.runRoot,
+		BeforeDiscInfoPath:             beforeDiscInfoPath,
+		AfterFailureDiscInfoPath:       afterFailureDiscInfoPath,
+		AfterFinalizeDiscInfoPath:      afterCompleteDiscInfoPath,
+		DownloadPath:                   downloadPath,
+		MemoryCSVPath:                  r.memoryCSVPath,
+		MemorySummaryPath:              r.memorySummaryPath,
+	}
+	if err := writeJSONFile(r.summaryJSONPath, summary); err != nil {
+		return err
+	}
+
+	r.logf("")
+	r.logf("Multipart interrupt-retry summary:")
+	r.logf("  upload id                  : %s", summary.UploadID)
+	r.logf("  part size bytes            : %d", summary.PartSizeBytes)
+	r.logf("  before used bytes          : %d", summary.BeforeUsedCapacityBytes)
+	r.logf("  after failure used bytes   : %d", summary.AfterFailureUsedCapacityBytes)
+	r.logf("  after complete used bytes  : %d", summary.AfterFinalizeUsedCapacityBytes)
+	r.logf("  delta after failure bytes  : %d", summary.DeltaAfterFailureBytes)
+	r.logf("  delta retry+complete bytes : %d", summary.DeltaRetryAndFinalizeBytes)
+	r.logf("  total delta bytes          : %d", summary.DeltaTotalBytes)
+	r.logf("  visible after failure      : %t", summary.VisibleAfterFailure)
+	r.logf("  summary json               : %s", r.summaryJSONPath)
+	return nil
+}
+
+func (r *runner) runMultipartFlow(bucket string) error {
+	testStart := time.Now()
+	source, err := buildSingleFileSource(r.opts.dataDir)
+	if err != nil {
+		return err
+	}
+	objectKey := source.RelativePath
+	if strings.TrimSpace(objectKey) == "" {
+		objectKey = filepath.Base(source.FullPath)
+	}
+
+	partSize := r.effectiveMultipartPartSize()
+
+	finalizeOutputPath := filepath.Join(r.runRoot, "finalize-layout-response.json")
+	downloadPath := resolveSingleObjectOutputPath(r.cfg.verifyDownloadRoot, bucket, objectKey, "")
+
+	r.logf("[3/8] Preparing multipart source file...")
+	r.logf("  objectKey      : %s", objectKey)
+	r.logf("  filePath       : %s", source.FullPath)
+	r.logf("  fileSizeBytes  : %d", source.Size)
+	r.logf("  fileMd5        : %s", source.MD5)
+	r.logf("  partSizeBytes  : %d", partSize)
+
+	r.logf("[4/8] Initiating multipart upload...")
+	createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	defer cancelCreate()
+	createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
+		Bucket: &bucket,
+		Key:    &objectKey,
+	})
+	if err != nil {
+		return err
+	}
+	uploadID := awsString(createOut.UploadId)
+	if strings.TrimSpace(uploadID) == "" {
+		return fmt.Errorf("empty upload id from CreateMultipartUpload")
+	}
+	r.logf("  uploadId      : %s", uploadID)
+
+	uploadSeconds, completeSeconds, completeETag, err := r.uploadMultipartObject(bucket, objectKey, source, partSize, uploadID)
+	if err != nil {
+		return err
+	}
+	r.logf("  complete elapsed : %.3fs", completeSeconds)
+	r.logf("  complete etag    : %s", completeETag)
+
+	r.logf("[7/8] Triggering FinalizeLayout...")
+	finalizeStart := time.Now()
+	controlKey, finalizeRaw, err := r.downloadControlObject(bucket, "finalize-layout", finalizeOutputPath)
+	if err != nil {
+		return err
+	}
+	finalizeSeconds := roundSeconds(time.Since(finalizeStart))
+	r.logf("  finalize control key : %s", controlKey)
+	r.logf("  finalize elapsed     : %.3fs", finalizeSeconds)
+	r.writeFinalizeSummary(finalizeRaw, bucket)
+
+	r.logf("[8/8] Downloading multipart object and verifying result...")
+	if err := ensureDir(filepath.Dir(downloadPath)); err != nil {
+		return err
+	}
+	downloadStart := time.Now()
+	if err := r.downloadObjectToFile(bucket, objectKey, downloadPath, defaultReadTimeout); err != nil {
+		return err
+	}
+	downloadSeconds := roundSeconds(time.Since(downloadStart))
+	info, err := os.Stat(downloadPath)
+	if err != nil {
+		return fmt.Errorf("downloaded file missing: %s", objectKey)
+	}
+	if info.Size() != source.Size {
+		return fmt.Errorf("downloaded size mismatch for %s", objectKey)
+	}
+
+	actualMD5 := ""
+	if !r.opts.skipMD5Verify {
+		actualMD5, err = computeMD5(downloadPath)
+		if err != nil {
+			return err
+		}
+		if actualMD5 != source.MD5 {
+			return fmt.Errorf("downloaded MD5 mismatch for %s", objectKey)
+		}
+	}
+	downloadRate := rateMiBPerSecond(source.Size, downloadSeconds)
+
+	summary := &runSummary{
+		Status:                  "Success",
+		Bucket:                  bucket,
+		RequestedBucket:         r.opts.bucket,
+		DataDirectory:           r.opts.dataDir,
+		RemoteOnly:              false,
+		FileCount:               1,
+		TotalBytes:              source.Size,
+		TotalMiB:                roundFloat(float64(source.Size)/(1024*1024), 3),
+		UploadSeconds:           roundFloat(uploadSeconds, 3),
+		UploadMiBPerSecond:      rateMiBPerSecond(source.Size, uploadSeconds),
+		FinalizeLayoutSeconds:   roundFloat(finalizeSeconds, 3),
+		DownloadSeconds:         roundFloat(downloadSeconds, 3),
+		DownloadMiBPerSecond:    downloadRate,
+		TotalTestSeconds:        roundSeconds(time.Since(testStart)),
+		RunRoot:                 r.runRoot,
+		MetricsCSVPath:          r.metricsCSVPath,
+		MemoryCSVPath:           r.memoryCSVPath,
+		MemorySummaryPath:       r.memorySummaryPath,
+		FinalizeResponsePath:    finalizeOutputPath,
+		VerifyDownloadDirectory: filepath.Dir(downloadPath),
+		RecorderLogDirectory:    r.cfg.runtimeRecorderLogDir,
+		GatewayLogDirectory:     r.cfg.runtimeGatewayLogDir,
+	}
+	if err := writeJSONFile(r.summaryJSONPath, summary); err != nil {
+		return err
+	}
+
+	r.logf("")
+	r.logf("Multipart flow summary:")
+	r.logf("  upload id        : %s", uploadID)
+	r.logf("  object           : %s", objectKey)
+	r.logf("  total size       : %.3f MiB", summary.TotalMiB)
+	r.logf("  upload total     : %.3fs @ %.3f MiB/s", summary.UploadSeconds, summary.UploadMiBPerSecond)
+	r.logf("  finalize total   : %.3fs", summary.FinalizeLayoutSeconds)
+	r.logf("  download total   : %.3fs @ %.3f MiB/s", summary.DownloadSeconds, summary.DownloadMiBPerSecond)
+	if !r.opts.skipMD5Verify {
+		r.logf("  md5              : %s", actualMD5)
+	}
+	r.logf("  summary json     : %s", r.summaryJSONPath)
+	return nil
+}
+
+func (r *runner) effectiveMultipartPartSize() int64 {
+	partSize := r.opts.multipartPartBytes
+	if partSize <= 0 {
+		partSize = defaultMultipartPartSize
+	}
+	if partSize < multipartMinPartSize {
+		partSize = multipartMinPartSize
+	}
+	return partSize
+}
+
+func (r *runner) shouldUseMultipart(size int64) bool {
+	if r.opts.mode != modeMixedFlow {
+		return false
+	}
+	threshold := r.opts.multipartThreshold
+	if threshold <= 0 {
+		threshold = r.effectiveMultipartPartSize()
+	}
+	return size >= threshold
+}
+
+func (r *runner) uploadMultipartObject(bucket, objectKey string, source sourceItem, partSize int64, uploadID string) (float64, float64, string, error) {
+	type completedPartStat struct {
+		partNumber int32
+		etag       string
+		size       int64
+		seconds    float64
+	}
+
+	completedStats := make([]completedPartStat, 0, int((source.Size+partSize-1)/partSize))
+
+	r.logf("  multipart start  : key=%s uploadId=%s partSize=%s MiB", objectKey, uploadID, formatSizeMiB(partSize))
+
+	var (
+		offset     int64
+		partNumber int32 = 1
+	)
+	for offset < source.Size {
+		size := partSize
+		remaining := source.Size - offset
+		if remaining < size {
+			size = remaining
+		}
+
+		start := time.Now()
+		partOut, err := r.uploadPartFromFile(bucket, objectKey, uploadID, partNumber, source.FullPath, offset, size)
+		if err != nil {
+			return 0, 0, "", err
+		}
+		seconds := roundSeconds(time.Since(start))
+		rate := rateMiBPerSecond(size, seconds)
+		etag := strings.TrimSpace(awsString(partOut.ETag))
+		completedStats = append(completedStats, completedPartStat{
+			partNumber: partNumber,
+			etag:       etag,
+			size:       size,
+			seconds:    seconds,
+		})
+		r.logf("    part %d | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s | etag=%s", partNumber, formatSizeMiB(size), seconds, rate, etag)
+
+		offset += size
+		partNumber++
+	}
+
+	completedParts := make([]types.CompletedPart, 0, len(completedStats))
+	uploadSeconds := 0.0
+	for _, stat := range completedStats {
+		uploadSeconds += stat.seconds
+		partNum := stat.partNumber
+		etag := stat.etag
+		completedParts = append(completedParts, types.CompletedPart{
+			ETag:       &etag,
+			PartNumber: &partNum,
+		})
+	}
+
+	completeCtx, cancelComplete := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	defer cancelComplete()
+	completeStart := time.Now()
+	completeOut, err := r.client.CompleteMultipartUpload(completeCtx, &s3.CompleteMultipartUploadInput{
+		Bucket:   &bucket,
+		Key:      &objectKey,
+		UploadId: &uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+		MpuObjectSize: int64Ptr(source.Size),
+	})
+	if err != nil {
+		return 0, 0, "", err
+	}
+
+	return uploadSeconds, roundSeconds(time.Since(completeStart)), strings.TrimSpace(awsString(completeOut.ETag)), nil
+}
+
 func (r *runner) runFullFlow(bucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) (*runSummary, float64, string, error) {
 	var snapshot fileSnapshot
 	var err error
@@ -829,11 +1287,36 @@ func (r *runner) runFullFlow(bucket string, metrics map[string]*fileMetric, fina
 	} else if r.opts.skipUpload {
 		r.logf("[4/8] Uploading directory %s ... skipped", r.opts.dataDir)
 	} else {
-		r.logf("[4/8] Uploading directory %s ...", r.opts.dataDir)
+		if r.opts.mode == modeMixedFlow {
+			r.logf("[4/8] Uploading directory %s with mixed strategy...", r.opts.dataDir)
+		} else {
+			r.logf("[4/8] Uploading directory %s ...", r.opts.dataDir)
+		}
 		for _, item := range snapshot.Items {
 			start := time.Now()
-			if err := r.putObject(bucket, item.RelativePath, item.FullPath); err != nil {
-				return nil, 0, "", err
+			uploadMethod := "putobject"
+			if r.shouldUseMultipart(item.Size) {
+				uploadMethod = fmt.Sprintf("multipart(part=%s MiB)", formatSizeMiB(r.effectiveMultipartPartSize()))
+				createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+				createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
+					Bucket: &bucket,
+					Key:    &item.RelativePath,
+				})
+				cancelCreate()
+				if err != nil {
+					return nil, 0, "", err
+				}
+				uploadID := awsString(createOut.UploadId)
+				if strings.TrimSpace(uploadID) == "" {
+					return nil, 0, "", fmt.Errorf("empty upload id from CreateMultipartUpload for %s", item.RelativePath)
+				}
+				if _, _, _, err := r.uploadMultipartObject(bucket, item.RelativePath, item, r.effectiveMultipartPartSize(), uploadID); err != nil {
+					return nil, 0, "", err
+				}
+			} else {
+				if err := r.putObject(bucket, item.RelativePath, item.FullPath); err != nil {
+					return nil, 0, "", err
+				}
 			}
 			seconds := roundSeconds(time.Since(start))
 			rate := rateMiBPerSecond(item.Size, seconds)
@@ -841,7 +1324,8 @@ func (r *runner) runFullFlow(bucket string, metrics map[string]*fileMetric, fina
 			metric.UploadSeconds = seconds
 			metric.UploadMiBPerSecond = rate
 			metric.Status = "Uploaded"
-			r.logf("  upload %s | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s", item.RelativePath, formatSizeMiB(item.Size), seconds, rate)
+			metric.Notes = uploadMethod
+			r.logf("  upload %s | mode=%s | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s", item.RelativePath, uploadMethod, formatSizeMiB(item.Size), seconds, rate)
 		}
 	}
 
@@ -1445,6 +1929,55 @@ func (r *runner) putObjectWithSimulatedDisconnect(bucket, key, fullPath string, 
 	return err
 }
 
+func (r *runner) uploadPartFromFile(bucket, key, uploadID string, partNumber int32, fullPath string, offset, size int64) (*s3.UploadPartOutput, error) {
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	reader := io.NewSectionReader(file, offset, size)
+	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	defer cancel()
+	return r.client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:        &bucket,
+		Key:           &key,
+		UploadId:      &uploadID,
+		PartNumber:    &partNumber,
+		Body:          reader,
+		ContentLength: int64Ptr(size),
+	})
+}
+
+func (r *runner) uploadPartWithSimulatedDisconnect(bucket, key, uploadID string, partNumber int32, fullPath string, offset, size, failAfterBytes int64) error {
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	reader := &failingReader{
+		source:    io.NewSectionReader(file, offset, size),
+		failAfter: failAfterBytes,
+		failErr:   errSimulatedDisconnect,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	defer cancel()
+	_, err = r.client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:        &bucket,
+		Key:           &key,
+		UploadId:      &uploadID,
+		PartNumber:    &partNumber,
+		Body:          reader,
+		ContentLength: int64Ptr(size),
+	}, func(o *s3.Options) {
+		o.APIOptions = append(o.APIOptions, awsv4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware)
+		o.RequestChecksumCalculation = aws.RequestChecksumCalculationWhenRequired
+	})
+	return err
+}
+
 func (r *runner) headObject(bucket, key string, timeoutSeconds int) (*s3.HeadObjectOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
@@ -2004,6 +2537,10 @@ func derefInt64(value *int64) int64 {
 }
 
 func int64Ptr(value int64) *int64 {
+	return &value
+}
+
+func int32Ptr(value int32) *int32 {
 	return &value
 }
 

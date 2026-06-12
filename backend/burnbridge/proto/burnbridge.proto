@@ -290,6 +290,8 @@ message CommitJobRequest {
   string udf_volume_label = 2;
   FinalizeManifest finalize_manifest = 3;
   bool close_disc = 4;
+  string committed_etag = 5;
+  int64 committed_content_length = 6;
 }
 
 message CommitJobResponse {

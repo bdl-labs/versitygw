@@ -2069,13 +2069,15 @@ func (x *UploadObjectAck) GetSegmentBurnError() string {
 }
 
 type CommitJobRequest struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	JobId            string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
-	UdfVolumeLabel   string                 `protobuf:"bytes,2,opt,name=udf_volume_label,json=udfVolumeLabel,proto3" json:"udf_volume_label,omitempty"`
-	FinalizeManifest *FinalizeManifest      `protobuf:"bytes,3,opt,name=finalize_manifest,json=finalizeManifest,proto3" json:"finalize_manifest,omitempty"`
-	CloseDisc        bool                   `protobuf:"varint,4,opt,name=close_disc,json=closeDisc,proto3" json:"close_disc,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state                  protoimpl.MessageState `protogen:"open.v1"`
+	JobId                  string                 `protobuf:"bytes,1,opt,name=job_id,json=jobId,proto3" json:"job_id,omitempty"`
+	UdfVolumeLabel         string                 `protobuf:"bytes,2,opt,name=udf_volume_label,json=udfVolumeLabel,proto3" json:"udf_volume_label,omitempty"`
+	FinalizeManifest       *FinalizeManifest      `protobuf:"bytes,3,opt,name=finalize_manifest,json=finalizeManifest,proto3" json:"finalize_manifest,omitempty"`
+	CloseDisc              bool                   `protobuf:"varint,4,opt,name=close_disc,json=closeDisc,proto3" json:"close_disc,omitempty"`
+	CommittedEtag          string                 `protobuf:"bytes,5,opt,name=committed_etag,json=committedEtag,proto3" json:"committed_etag,omitempty"`
+	CommittedContentLength int64                  `protobuf:"varint,6,opt,name=committed_content_length,json=committedContentLength,proto3" json:"committed_content_length,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *CommitJobRequest) Reset() {
@@ -2134,6 +2136,20 @@ func (x *CommitJobRequest) GetCloseDisc() bool {
 		return x.CloseDisc
 	}
 	return false
+}
+
+func (x *CommitJobRequest) GetCommittedEtag() string {
+	if x != nil {
+		return x.CommittedEtag
+	}
+	return ""
+}
+
+func (x *CommitJobRequest) GetCommittedContentLength() int64 {
+	if x != nil {
+		return x.CommittedContentLength
+	}
+	return 0
 }
 
 type CommitJobResponse struct {
@@ -3258,13 +3274,15 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\fchecksum_md5\x18\b \x01(\tR\vchecksumMd5\x12P\n" +
 	"\x13segment_burn_result\x18\t \x01(\x0e2 .burnbridge.v1.SegmentBurnResultR\x11segmentBurnResult\x12,\n" +
 	"\x12segment_burn_error\x18\n" +
-	" \x01(\tR\x10segmentBurnError\"\xc0\x01\n" +
+	" \x01(\tR\x10segmentBurnError\"\xa1\x02\n" +
 	"\x10CommitJobRequest\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12(\n" +
 	"\x10udf_volume_label\x18\x02 \x01(\tR\x0eudfVolumeLabel\x12L\n" +
 	"\x11finalize_manifest\x18\x03 \x01(\v2\x1f.burnbridge.v1.FinalizeManifestR\x10finalizeManifest\x12\x1d\n" +
 	"\n" +
-	"close_disc\x18\x04 \x01(\bR\tcloseDisc\"B\n" +
+	"close_disc\x18\x04 \x01(\bR\tcloseDisc\x12%\n" +
+	"\x0ecommitted_etag\x18\x05 \x01(\tR\rcommittedEtag\x128\n" +
+	"\x18committed_content_length\x18\x06 \x01(\x03R\x16committedContentLength\"B\n" +
 	"\x11CommitJobResponse\x12\x15\n" +
 	"\x06job_id\x18\x01 \x01(\tR\x05jobId\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\",\n" +

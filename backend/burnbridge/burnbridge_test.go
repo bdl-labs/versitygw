@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/versity/versitygw/auth"
+	"github.com/versity/versitygw/backend"
 	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
 	"github.com/versity/versitygw/backend/meta"
 	"github.com/versity/versitygw/s3response"
@@ -800,6 +802,32 @@ func TestEnsureActiveBucketLoadedReprobesAfterNoDiscCooldown(t *testing.T) {
 	}
 }
 
+func TestProbeRecorderDiscAtStartupReturnsSanitizedBucketForBlankDisc(t *testing.T) {
+	client := testBurnBridgeClient{
+		testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+			return &burnbridgev1.TestUnitReadyResponse{
+				Ready:         true,
+				VolumeLabel:   "DISC-BLANK",
+				WritableState: "Blank",
+			}, nil
+		},
+	}
+
+	bucket, rawVolume, resp, err := probeRecorderDiscAtStartup(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bucket != "disc-blank" {
+		t.Fatalf("expected sanitized startup bucket disc-blank for blank disc, got %q", bucket)
+	}
+	if rawVolume != "DISC-BLANK" {
+		t.Fatalf("expected raw volume DISC-BLANK, got %q", rawVolume)
+	}
+	if resp == nil || !resp.GetReady() {
+		t.Fatal("expected ready blank-disc response")
+	}
+}
+
 func TestEnsureImportedBucketStateSingleflightForEmptyBucket(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -1228,6 +1256,135 @@ func TestSyncActiveDiscStatePrefersRecorderImportedBucket(t *testing.T) {
 	}
 }
 
+func TestSyncActiveDiscStateMapsUnboundBlankDiscBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-old", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Status:       "imported",
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+		Size:         123,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var importedCalls int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				atomic.AddInt32(&importedCalls, 1)
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "disc-old",
+				}, nil
+			},
+		},
+		activeBucket:   "disc-old",
+		volumeLabelRaw: "DISC-OLD",
+		udfLabel:       "DISC-OLD",
+		metaDBPath:     dbPath,
+		importedBucketState: map[string]bool{
+			"disc-old": true,
+		},
+		pendingImportedConvergence: map[string]bool{
+			"disc-old": true,
+		},
+	}
+
+	if err := b.syncActiveDiscState(&burnbridgev1.TestUnitReadyResponse{
+		Ready:         true,
+		VolumeLabel:   "DISC-BLANK",
+		WritableState: "Blank",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.TrimSpace(b.activeBucket); got != "disc-blank" {
+		t.Fatalf("expected blank disc to expose sanitized active bucket disc-blank, got %q", got)
+	}
+	if got := strings.TrimSpace(b.volumeLabelRaw); got != "DISC-BLANK" {
+		t.Fatalf("expected raw volume DISC-BLANK, got %q", got)
+	}
+	if got := atomic.LoadInt32(&importedCalls); got != 0 {
+		t.Fatalf("expected no imported-state probe for unbound blank disc, got %d", got)
+	}
+	if _, err := store.GetCommittedObjectSummary("disc-old", "file.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected stale committed metadata to be cleared, got err=%v", err)
+	}
+	if strings.TrimSpace(b.lastNoDiscBackupBucket) != "disc-old" {
+		t.Fatalf("expected backup marker for disc-old, got %q", b.lastNoDiscBackupBucket)
+	}
+	if strings.TrimSpace(b.lastNoDiscBackupPath) == "" {
+		t.Fatal("expected backup path to be recorded for cleared blank-disc state")
+	}
+	binding, err := store.GetBurnbridgeDiscBucketBinding("DISC-BLANK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(binding.Bucket); got != "disc-blank" {
+		t.Fatalf("expected blank-disc binding bucket disc-blank, got %q", got)
+	}
+}
+
+func TestSyncActiveDiscStateRetainsBoundBlankDiscBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: "DISC-BLANK",
+		Bucket:           "disc-blank-bound",
+		UdfVolumeLabel:   "DISC-BLANK",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var importedCalls int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				atomic.AddInt32(&importedCalls, 1)
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: false,
+				}, nil
+			},
+		},
+		activeBucket:               "disc-old",
+		volumeLabelRaw:             "DISC-OLD",
+		udfLabel:                   "DISC-OLD",
+		importedBucketState:        map[string]bool{},
+		pendingImportedConvergence: map[string]bool{},
+	}
+
+	if err := b.syncActiveDiscState(&burnbridgev1.TestUnitReadyResponse{
+		Ready:         true,
+		VolumeLabel:   "DISC-BLANK",
+		WritableState: "Blank",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.TrimSpace(b.activeBucket); got != "disc-blank-bound" {
+		t.Fatalf("expected bound blank disc bucket to be retained, got %q", got)
+	}
+	if got := strings.TrimSpace(b.volumeLabelRaw); got != "DISC-BLANK" {
+		t.Fatalf("expected raw volume DISC-BLANK, got %q", got)
+	}
+	if got := atomic.LoadInt32(&importedCalls); got != 1 {
+		t.Fatalf("expected one imported-state probe for bound blank disc, got %d", got)
+	}
+}
+
 func TestHandleNoDiscStateBacksUpAndClearsActiveBucket(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -1651,36 +1808,41 @@ func TestDiscInfoGetObjectSuppressesStaleFinalizeStateOnMismatchedDisc(t *testin
 					DiscSerialNumberHex:           "SER-002",
 					MediaType:                     "BD-R",
 					TotalCapacityBytes:            1000,
-					FreeCapacityBytes:             1000,
-					UsedCapacityBytes:             0,
-					WritableCapacityBytes:         900,
+					FreeCapacityBytes:             240,
+					UsedCapacityBytes:             760,
+					WritableCapacityBytes:         140,
 					FinalizeReserveBytes:          100,
 					BlockSizeBytes:                2048,
 					TotalBlocks:                   320,
-					FreeBlocks:                    320,
-					RecordableCapacityBlocks:      320,
-					TrackNextWritableAddress:      0,
-					TrackNextWritableAddressValid: false,
-					WritableState:                 "Blank",
+					FreeBlocks:                    70,
+					RecordableCapacityBlocks:      70,
+					TrackNextWritableAddress:      250,
+					TrackNextWritableAddressValid: true,
+					WritableState:                 "Appendable",
 				}, nil
 			},
 			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
 				return &burnbridgev1.GetDiscInfoResponse{
 					Disc: &burnbridgev1.OpticalDiscInfo{
 						ProfileName:                   "BD-R",
-						DiscStatusName:                "empty",
+						DiscStatusName:                "incomplete/appendable",
 						DiscSerialNumberHex:           "SER-002",
 						BlockSizeBytes:                2048,
 						TotalBlocks:                   320,
-						FreeBlocks:                    320,
-						RecordableCapacityBlocks:      320,
-						TrackNextWritableAddress:      0,
-						TrackNextWritableAddressValid: false,
-						WritableState:                 "Blank",
+						FreeBlocks:                    70,
+						RecordableCapacityBlocks:      70,
+						TrackNextWritableAddress:      250,
+						TrackNextWritableAddressValid: true,
+						WritableState:                 "Appendable",
 						MediaCapacity:                 1000,
-						MediaFreeSpace:                1000,
-						MediaUsedSpace:                0,
+						MediaFreeSpace:                240,
+						MediaUsedSpace:                760,
 					},
+				}, nil
+			},
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: false,
 				}, nil
 			},
 		},
@@ -1718,8 +1880,8 @@ func TestDiscInfoGetObjectSuppressesStaleFinalizeStateOnMismatchedDisc(t *testin
 	if doc.LayoutCompletedAtUtc != "" {
 		t.Fatalf("expected stale layoutCompletedAtUtc to be suppressed, got %q", doc.LayoutCompletedAtUtc)
 	}
-	if doc.WritableState != "Blank" {
-		t.Fatalf("expected writableState Blank, got %q", doc.WritableState)
+	if doc.WritableState != "Appendable" {
+		t.Fatalf("expected writableState Appendable, got %q", doc.WritableState)
 	}
 	if doc.VolumeLabel != "DISC002" {
 		t.Fatalf("expected current volume label DISC002, got %q", doc.VolumeLabel)
@@ -2116,6 +2278,134 @@ func TestPutObjectSkipsCommitWhenPayloadAlreadyCommitted(t *testing.T) {
 	}
 }
 
+func TestPutObjectCommitsWhenUncommittedResumeSegmentsAlreadyBurned(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket = "disc-a"
+		key    = "resume-me.bin"
+	)
+	payload := bytes.Repeat([]byte("B"), 2048)
+	digest := bbSegmentMD5Hex(payload)
+
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       burnbridgeImplicitSingleUploadID,
+		Kind:           meta.BurnUploadKindSingle,
+		State:          meta.BurnUploadStateFailed,
+		MediaID:        "DISC-A",
+		ContentLength:  int64(len(payload)),
+		NextPartNumber: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, key, "DISC-A", 0, 0, int64(len(payload)), digest, meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "4288608", FileSize: int64(len(payload))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := &testUploadObjectStream{
+		ackQueue: []*burnbridgev1.UploadObjectAck{
+			{
+				JobId:             "job-new",
+				SegmentIndex:      0,
+				ByteOffset:        0,
+				ByteSize:          int64(len(payload)),
+				UploadComplete:    true,
+				BytesReceived:     int64(len(payload)),
+				SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+			},
+		},
+	}
+
+	commitCalls := 0
+	cancelCalls := 0
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			createJobFn: func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+				return &burnbridgev1.CreateJobResponse{JobId: "job-new"}, nil
+			},
+			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+				return stream, nil
+			},
+			commitJobFn: func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+				commitCalls++
+				return &burnbridgev1.CommitJobResponse{JobId: "job-new", Status: "layout_persisted"}, nil
+			},
+			cancelJobFn: func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error) {
+				cancelCalls++
+				return &burnbridgev1.CancelJobResponse{}, nil
+			},
+		},
+		chunkSize:        len(payload) + 1024,
+		cancelJobTimeout: time.Second,
+		putQueueSem:      make(chan struct{}, 4),
+		activeBucket:     bucket,
+		volumeLabelRaw:   "DISC-A",
+		udfLabel:         "DISC-A",
+	}
+
+	out, err := b.PutObject(context.Background(), s3response.PutObjectInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr(key),
+		Body:          bytes.NewReader(payload),
+		ContentLength: ptr(int64(len(payload))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if commitCalls != 1 {
+		t.Fatalf("expected CommitJob once for resumed uncommitted object, got %d calls", commitCalls)
+	}
+	if cancelCalls != 0 {
+		t.Fatalf("expected no CancelJob cleanup on successful commit, got %d", cancelCalls)
+	}
+	if out.ETag != "\""+digest+"\"" {
+		t.Fatalf("unexpected etag: %q", out.ETag)
+	}
+	if len(stream.sendChunks) != 1 {
+		t.Fatalf("expected one reused chunk send, got %d", len(stream.sendChunks))
+	}
+	if stream.sendChunks[0].GetReusedBurnedBytes() != int64(len(payload)) {
+		t.Fatalf("expected reused bytes %d, got %d", len(payload), stream.sendChunks[0].GetReusedBurnedBytes())
+	}
+
+	committedRec, err := store.GetBurnbridgeCommittedRecord(bucket, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committedRec.Size != int64(len(payload)) {
+		t.Fatalf("unexpected committed size: %d", committedRec.Size)
+	}
+
+	session, err := store.GetBurnUploadSession(bucket, key, burnbridgeImplicitSingleUploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.State != meta.BurnUploadStateCompleted {
+		t.Fatalf("expected session completed, got %s", session.State)
+	}
+
+	parts, err := store.ListBurnUploadParts(bucket, key, burnbridgeImplicitSingleUploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("expected one implicit part row, got %d", len(parts))
+	}
+	if parts[0].State != meta.BurnUploadStateCompleted {
+		t.Fatalf("expected completed implicit part state, got %s", parts[0].State)
+	}
+}
+
 func TestPutObjectComputesChecksumWhenTailAckOmitsFinalChecksum(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -2180,6 +2470,496 @@ func TestPutObjectComputesChecksumWhenTailAckOmitsFinalChecksum(t *testing.T) {
 	}
 	if out.ChecksumMD5 == nil || *out.ChecksumMD5 != objectMD5 {
 		t.Fatalf("unexpected checksum_md5: %#v", out.ChecksumMD5)
+	}
+}
+
+func TestUploadPartRejectsOutOfOrderSerialWrite(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket   = "disc-a"
+		key      = "multipart.bin"
+		uploadID = "upload-001"
+	)
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       uploadID,
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateWriting,
+		MediaID:        "DISC-A",
+		RecorderJobID:  "job-upload-001",
+		BytesReceived:  0,
+		NextPartNumber: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	createCalls := 0
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			createJobFn: func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+				createCalls++
+				return &burnbridgev1.CreateJobResponse{JobId: "unexpected"}, nil
+			},
+		},
+		chunkSize:      4096,
+		putQueueSem:    make(chan struct{}, 4),
+		activeBucket:   bucket,
+		volumeLabelRaw: "DISC-A",
+		udfLabel:       "DISC-A",
+	}
+
+	_, err = b.UploadPart(context.Background(), &s3.UploadPartInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr(key),
+		UploadId:      ptr(uploadID),
+		PartNumber:    ptr(int32(2)),
+		Body:          bytes.NewReader([]byte("out-of-order")),
+		ContentLength: ptr(int64(len("out-of-order"))),
+	})
+	if err == nil || !strings.Contains(err.Error(), "InvalidPartOrder") {
+		t.Fatalf("expected InvalidPartOrder, got %v", err)
+	}
+	if createCalls != 0 {
+		t.Fatalf("expected no CreateJob call, got %d", createCalls)
+	}
+}
+
+func TestUploadPartReusesBurnedBytesForFailedRetry(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket   = "disc-a"
+		key      = "multipart.bin"
+		uploadID = "upload-002"
+	)
+	payload := bytes.Repeat([]byte("P"), 2048)
+	digest := bbSegmentMD5Hex(payload)
+
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       uploadID,
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateFailed,
+		MediaID:        "DISC-A",
+		RecorderJobID:  "job-part",
+		ContentLength:  int64(len(payload)),
+		BytesReceived:  int64(len(payload)),
+		NextPartNumber: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        bucket,
+		ObjectName:    key,
+		UploadID:      uploadID,
+		PartNumber:    1,
+		StartOffset:   0,
+		BytesReceived: int64(len(payload)),
+		PartSize:      int64(len(payload)),
+		ChecksumMD5:   digest,
+		State:         meta.BurnUploadStateFailed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, multipartSessionObjectKey(uploadID), "DISC-A", 0, 0, int64(len(payload)), digest, meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "7000000", FileSize: int64(len(payload))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := &testUploadObjectStream{
+		ackQueue: []*burnbridgev1.UploadObjectAck{
+			{
+				JobId:             "job-part",
+				SegmentIndex:      0,
+				ByteOffset:        0,
+				ByteSize:          int64(len(payload)),
+				UploadComplete:    true,
+				BytesReceived:     int64(len(payload)),
+				SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+			},
+		},
+	}
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+				return stream, nil
+			},
+		},
+		chunkSize:        len(payload) + 1024,
+		cancelJobTimeout: time.Second,
+		putQueueSem:      make(chan struct{}, 4),
+		activeBucket:     bucket,
+		volumeLabelRaw:   "DISC-A",
+		udfLabel:         "DISC-A",
+	}
+
+	out, err := b.UploadPart(context.Background(), &s3.UploadPartInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr(key),
+		UploadId:      ptr(uploadID),
+		PartNumber:    ptr(int32(1)),
+		Body:          bytes.NewReader(payload),
+		ContentLength: ptr(int64(len(payload))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || out.ETag == nil || *out.ETag != quotedETag(digest) {
+		t.Fatalf("unexpected upload part etag: %#v", out)
+	}
+	if len(stream.sendChunks) != 0 {
+		t.Fatalf("expected no recorder replay when failed part bytes are already durable, got %#v", stream.sendChunks)
+	}
+
+	part, err := store.GetBurnUploadPart(bucket, key, uploadID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.State != meta.BurnUploadStateCompleted {
+		t.Fatalf("expected completed part state, got %s", part.State)
+	}
+	if part.BytesReceived != int64(len(payload)) || part.StartOffset != 0 {
+		t.Fatalf("unexpected resumed part offsets: %#v", part)
+	}
+	session, err := store.GetBurnUploadSession(bucket, key, uploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.NextPartNumber != 2 || session.BytesReceived != int64(len(payload)) {
+		t.Fatalf("unexpected session after resumed retry: %#v", session)
+	}
+}
+
+func TestUploadPartAcceptsStreamLocalAckIndicesForLaterParts(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket   = "disc-a"
+		key      = "multipart.bin"
+		uploadID = "upload-003"
+	)
+	part1 := bytes.Repeat([]byte("A"), 8)
+	part2 := bytes.Repeat([]byte("B"), 7)
+	part2MD5 := bbSegmentMD5Hex(part2)
+
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       uploadID,
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateWriting,
+		MediaID:        "DISC-A",
+		RecorderJobID:  "job-part-2",
+		ContentLength:  int64(len(part1)),
+		BytesReceived:  int64(len(part1)),
+		NextPartNumber: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        bucket,
+		ObjectName:    key,
+		UploadID:      uploadID,
+		PartNumber:    1,
+		StartOffset:   0,
+		BytesReceived: int64(len(part1)),
+		PartSize:      int64(len(part1)),
+		ChecksumMD5:   bbSegmentMD5Hex(part1),
+		ETag:          quotedETag(bbSegmentMD5Hex(part1)),
+		State:         meta.BurnUploadStateCompleted,
+		SegmentCount:  2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, multipartSessionObjectKey(uploadID), "DISC-A", 0, 0, 4, bbSegmentMD5Hex(part1[:4]), meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "7000000", FileSize: 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, multipartSessionObjectKey(uploadID), "DISC-A", 1, 4, 4, bbSegmentMD5Hex(part1[4:]), meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "7000004", FileSize: 4},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := &testUploadObjectStream{
+		ackQueue: []*burnbridgev1.UploadObjectAck{
+			{
+				JobId:             "job-part-2",
+				SegmentIndex:      0,
+				ByteOffset:        8,
+				ByteSize:          4,
+				UploadComplete:    false,
+				BytesReceived:     12,
+				SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+			},
+			{
+				JobId:             "job-part-2",
+				SegmentIndex:      1,
+				ByteOffset:        12,
+				ByteSize:          3,
+				UploadComplete:    true,
+				BytesReceived:     15,
+				SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+			},
+		},
+	}
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+				return stream, nil
+			},
+		},
+		chunkSize:        4,
+		cancelJobTimeout: time.Second,
+		putQueueSem:      make(chan struct{}, 4),
+		activeBucket:     bucket,
+		volumeLabelRaw:   "DISC-A",
+		udfLabel:         "DISC-A",
+	}
+
+	out, err := b.UploadPart(context.Background(), &s3.UploadPartInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr(key),
+		UploadId:      ptr(uploadID),
+		PartNumber:    ptr(int32(2)),
+		Body:          bytes.NewReader(part2),
+		ContentLength: ptr(int64(len(part2))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out == nil || out.ETag == nil || *out.ETag != quotedETag(part2MD5) {
+		t.Fatalf("unexpected upload part etag: %#v", out)
+	}
+	if len(stream.sendChunks) != 2 {
+		t.Fatalf("expected two multipart stream sends, got %d", len(stream.sendChunks))
+	}
+	if stream.sendChunks[0].GetOffset() != int64(len(part1)) || stream.sendChunks[1].GetOffset() != int64(len(part1)+4) {
+		t.Fatalf("unexpected multipart send offsets: %#v", stream.sendChunks)
+	}
+
+	part, err := store.GetBurnUploadPart(bucket, key, uploadID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if part.State != meta.BurnUploadStateCompleted || part.StartOffset != int64(len(part1)) || part.SegmentCount != 2 {
+		t.Fatalf("unexpected later multipart part state: %#v", part)
+	}
+	session, err := store.GetBurnUploadSession(bucket, key, uploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.NextPartNumber != 3 || session.BytesReceived != int64(len(part1)+len(part2)) {
+		t.Fatalf("unexpected multipart session after later part upload: %#v", session)
+	}
+	segments, err := store.ListBurnObjectSegments(bucket, multipartSessionObjectKey(uploadID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != 4 {
+		t.Fatalf("expected four shadow multipart segments after second part, got %d", len(segments))
+	}
+	if segments[2].SegmentIndex != 2 || segments[2].ByteOffset != int64(len(part1)) {
+		t.Fatalf("unexpected third segment after second part: %#v", segments[2])
+	}
+	if segments[3].SegmentIndex != 3 || segments[3].ByteOffset != int64(len(part1)+4) {
+		t.Fatalf("unexpected fourth segment after second part: %#v", segments[3])
+	}
+}
+
+func TestCompleteMultipartUploadCommitsMergedManifest(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket   = "disc-a"
+		key      = "multipart-final.bin"
+		uploadID = "upload-003"
+	)
+	part1 := bytes.Repeat([]byte("A"), backend.MinPartSize)
+	part2 := bytes.Repeat([]byte("B"), 2048)
+	digest1 := bbSegmentMD5Hex(part1)
+	digest2 := bbSegmentMD5Hex(part2)
+	etag1 := quotedETag(digest1)
+	etag2 := quotedETag(digest2)
+	totalSize := int64(len(part1) + len(part2))
+
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       uploadID,
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateWriting,
+		MediaID:        "DISC-A",
+		RecorderJobID:  "job-final",
+		ContentLength:  totalSize,
+		BytesReceived:  totalSize,
+		NextPartNumber: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        bucket,
+		ObjectName:    key,
+		UploadID:      uploadID,
+		PartNumber:    1,
+		StartOffset:   0,
+		BytesReceived: int64(len(part1)),
+		PartSize:      int64(len(part1)),
+		ChecksumMD5:   digest1,
+		ETag:          etag1,
+		State:         meta.BurnUploadStateCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        bucket,
+		ObjectName:    key,
+		UploadID:      uploadID,
+		PartNumber:    2,
+		StartOffset:   int64(len(part1)),
+		BytesReceived: int64(len(part2)),
+		PartSize:      int64(len(part2)),
+		ChecksumMD5:   digest2,
+		ETag:          etag2,
+		State:         meta.BurnUploadStateCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, multipartSessionObjectKey(uploadID), "DISC-A", 0, 0, int64(len(part1)), digest1, meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "8000000", FileSize: int64(len(part1))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, multipartSessionObjectKey(uploadID), "DISC-A", 1, int64(len(part1)), int64(len(part2)), digest2, meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "8001024", FileSize: int64(len(part2))},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:             store,
+		chunkSize:        4096,
+		cancelJobTimeout: time.Second,
+		putQueueSem:      make(chan struct{}, 4),
+		activeBucket:     bucket,
+		volumeLabelRaw:   "DISC-A",
+		udfLabel:         "DISC-A",
+	}
+	if err := b.storeMultipartInitState(bucket, key, uploadID, buildMultipartInitState(s3response.CreateMultipartUploadInput{
+		Bucket:      ptr(bucket),
+		Key:         ptr(key),
+		ContentType: ptr("application/x-multipart-test"),
+		Metadata:    map[string]string{"owner": "drive"},
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	var commitReq *burnbridgev1.CommitJobRequest
+	b.grpc = testBurnBridgeClient{
+		commitJobFn: func(_ context.Context, req *burnbridgev1.CommitJobRequest, _ ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+			commitReq = req
+			return &burnbridgev1.CommitJobResponse{JobId: "job-final", Status: "layout_persisted"}, nil
+		},
+	}
+
+	expectedETag, err := backend.GetMultipartMD5([]types.CompletedPart{
+		{PartNumber: ptr(int32(1)), ETag: ptr(etag1)},
+		{PartNumber: ptr(int32(2)), ETag: ptr(etag2)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, _, err := b.CompleteMultipartUpload(context.Background(), &s3.CompleteMultipartUploadInput{
+		Bucket:   ptr(bucket),
+		Key:      ptr(key),
+		UploadId: ptr(uploadID),
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: []types.CompletedPart{
+				{PartNumber: ptr(int32(1)), ETag: ptr(etag1)},
+				{PartNumber: ptr(int32(2)), ETag: ptr(etag2)},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ETag == nil || *res.ETag != expectedETag {
+		t.Fatalf("unexpected complete result etag: %#v", res.ETag)
+	}
+	if commitReq == nil || commitReq.FinalizeManifest == nil || len(commitReq.FinalizeManifest.Files) != 1 {
+		t.Fatalf("unexpected CommitJob request: %#v", commitReq)
+	}
+	if commitReq.GetCommittedEtag() != expectedETag {
+		t.Fatalf("unexpected CommitJob committed etag: got=%q want=%q", commitReq.GetCommittedEtag(), expectedETag)
+	}
+	file := commitReq.FinalizeManifest.Files[0]
+	if file.ObjectKey != key || file.FileSize != totalSize || len(file.Segments) != 2 {
+		t.Fatalf("unexpected finalize file: %#v", file)
+	}
+	if file.Segments[0].ByteOffset != 0 || file.Segments[1].ByteOffset != int64(len(part1)) {
+		t.Fatalf("unexpected merged segment offsets: %#v", file.Segments)
+	}
+
+	committedRec, err := store.GetBurnbridgeCommittedRecord(bucket, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if committedRec.ETag != expectedETag || committedRec.ContentType != "application/x-multipart-test" || committedRec.Metadata["owner"] != "drive" {
+		t.Fatalf("unexpected committed record: %#v", committedRec)
+	}
+	finalSegments, err := store.ListBurnObjectSegments(bucket, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finalSegments) != 2 || finalSegments[1].ByteOffset != int64(len(part1)) {
+		t.Fatalf("unexpected persisted merged segments: %#v", finalSegments)
+	}
+	if _, err := store.GetBurnUploadSession(bucket, key, uploadID); err == nil {
+		t.Fatal("expected multipart session cleanup after complete")
+	}
+	if _, err := store.GetBurnUploadPart(bucket, key, uploadID, 1); err == nil {
+		t.Fatal("expected multipart part cleanup after complete")
+	}
+	mpMeta, err := b.loadMultipartObjectMetadata(bucket, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mpMeta.UploadID != uploadID || mpMeta.ETag != expectedETag || len(mpMeta.Parts) != 2 || mpMeta.Parts[1] != totalSize {
+		t.Fatalf("unexpected multipart object metadata: %#v", mpMeta)
+	}
+	if shadowSegments, err := store.ListBurnObjectSegments(bucket, multipartSessionObjectKey(uploadID)); err != nil {
+		t.Fatal(err)
+	} else if len(shadowSegments) != 0 {
+		t.Fatalf("expected shadow multipart segments to be cleaned up, got %#v", shadowSegments)
 	}
 }
 

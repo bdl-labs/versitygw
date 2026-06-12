@@ -715,12 +715,34 @@ func TestS3ApiController_CreateBucket(t *testing.T) {
 				locals: map[utils.ContextKey]any{
 					utils.ContextKeyAccount: userAcc,
 				},
+				backendName: "Posix",
 			},
 			output: testOutput{
 				response: &Response{
 					MetaOpts: &MetaOptions{},
 				},
 				err: s3err.GetAPIError(s3err.ErrAccessDenied),
+			},
+		},
+		{
+			name: "burnbridge user create bucket allowed",
+			input: testInput{
+				locals: map[utils.ContextKey]any{
+					utils.ContextKeyAccount: userAcc,
+				},
+				bucket:      "disc-blank-bound",
+				backendName: "BurnBridge",
+			},
+			output: testOutput{
+				response: &Response{
+					MetaOpts: &MetaOptions{
+						BucketOwner: userAcc.Access,
+					},
+					Headers: map[string]*string{
+						"Location":         utils.GetStringPtr("/disc-blank-bound"),
+						"x-amz-bucket-arn": utils.GetStringPtr("arn:aws:s3:::disc-blank-bound"),
+					},
+				},
 			},
 		},
 		{
@@ -909,6 +931,12 @@ func TestS3ApiController_CreateBucket(t *testing.T) {
 			be := &BackendMock{
 				CreateBucketFunc: func(contextMoqParam context.Context, createBucketInput *s3.CreateBucketInput, defaultACL []byte) error {
 					return tt.input.beErr
+				},
+				StringFunc: func() string {
+					if tt.input.backendName != "" {
+						return tt.input.backendName
+					}
+					return "Posix"
 				},
 			}
 

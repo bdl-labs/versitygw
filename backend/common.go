@@ -413,6 +413,7 @@ func md5String(data []byte) string {
 // GetObject/HeadObject part-number requests.
 type MpUploadMetadata struct {
 	UploadID string  `json:"uploadId"`
+	ETag     string  `json:"etag,omitempty"`
 	Parts    []int64 `json:"parts"`
 }
 

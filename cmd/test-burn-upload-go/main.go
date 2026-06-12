@@ -30,8 +30,10 @@ type mode string
 const (
 	modeHelp           mode = "help"
 	modeFullFlow       mode = "full-flow"
+	modeMixedFlow      mode = "mixed"
 	modeDownload       mode = "download"
 	modeRemoteDownload mode = "remote-download"
+	modeMultipartFlow  mode = "multipart"
 	modeListObjects    mode = "listobjects"
 	modeDiscInfo       mode = "discinfo"
 	modeFinalize       mode = "finalize"
@@ -39,6 +41,7 @@ const (
 	modeHeadObject     mode = "headobject"
 	modeGetObject      mode = "getobject"
 	modeInterruptRetry mode = "interrupt-retry"
+	modeMultipartRetry mode = "multipart-interrupt-retry"
 )
 
 type cliOptions struct {
@@ -60,6 +63,9 @@ type cliOptions struct {
 	singleObjectKey    string
 	singleObjectOutput string
 	interruptRetryOnly bool
+	multipartRetryOnly bool
+	multipartPartBytes int64
+	multipartThreshold int64
 	failAfterBytes     int64
 }
 
@@ -107,6 +113,14 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parseRemoteDownload(args[1:], false), nil
 	case "remote-download-nomd5":
 		return parseRemoteDownload(args[1:], true), nil
+	case "multipart":
+		return parseMultipartFlow(args[1:], false)
+	case "multipart-nomd5":
+		return parseMultipartFlow(args[1:], true)
+	case "mixed":
+		return parseMixedFlow(args[1:], false)
+	case "mixed-nomd5":
+		return parseMixedFlow(args[1:], true)
 	case "listobjects":
 		return parseBucketOnly(args[1:], modeListObjects), nil
 	case "discinfo":
@@ -123,6 +137,8 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parseGetObject(args[1:], true)
 	case "interrupt-retry":
 		return parseInterruptRetry(args[1:])
+	case "multipart-interrupt-retry":
+		return parseMultipartInterruptRetry(args[1:])
 	default:
 		return parseFullFlow(args), nil
 	}
@@ -175,6 +191,61 @@ func parseRemoteDownload(args []string, skipMD5 bool) cliOptions {
 		skipMD5Verify:    skipMD5,
 		remoteOnly:       true,
 	}
+}
+
+func parseMultipartFlow(args []string, skipMD5 bool) (cliOptions, error) {
+	dataFile := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(dataFile) == "" {
+		return cliOptions{}, errors.New("data file is required")
+	}
+
+	bucket := positionalOrDefault(args, 1, defaultBucket)
+	partSizeMiBRaw := positionalOrDefault(args, 2, "64")
+	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
+	if err != nil || partSizeMiB <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
+	}
+
+	profile, configPath := parseProfileConfig(args, 3, 4)
+	return cliOptions{
+		mode:               modeMultipartFlow,
+		dataDir:            dataFile,
+		bucket:             bucket,
+		awsProfile:         profile,
+		configPath:         resolveConfigPath(configPath),
+		multipartPartBytes: partSizeMiB * 1024 * 1024,
+		skipMD5Verify:      skipMD5,
+	}, nil
+}
+
+func parseMixedFlow(args []string, skipMD5 bool) (cliOptions, error) {
+	dataDir := positionalOrDefault(args, 0, defaultDataDir)
+	bucket := positionalOrDefault(args, 1, defaultBucket)
+
+	thresholdMiBRaw := positionalOrDefault(args, 2, "64")
+	thresholdMiB, err := strconv.ParseInt(strings.TrimSpace(thresholdMiBRaw), 10, 64)
+	if err != nil || thresholdMiB <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid multipartThresholdMiB: %s", thresholdMiBRaw)
+	}
+
+	partSizeMiBRaw := positionalOrDefault(args, 3, "64")
+	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
+	if err != nil || partSizeMiB <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
+	}
+
+	profile, configPath := parseProfileConfig(args, 4, 5)
+	return cliOptions{
+		mode:               modeMixedFlow,
+		dataDir:            dataDir,
+		bucket:             bucket,
+		awsProfile:         profile,
+		configPath:         resolveConfigPath(configPath),
+		skipBucketCreate:   false,
+		skipMD5Verify:      skipMD5,
+		multipartPartBytes: partSizeMiB * 1024 * 1024,
+		multipartThreshold: thresholdMiB * 1024 * 1024,
+	}, nil
 }
 
 func parseBucketOnly(args []string, m mode) cliOptions {
@@ -278,6 +349,38 @@ func parseInterruptRetry(args []string) (cliOptions, error) {
 	}, nil
 }
 
+func parseMultipartInterruptRetry(args []string) (cliOptions, error) {
+	dataFile := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(dataFile) == "" {
+		return cliOptions{}, errors.New("data file is required")
+	}
+
+	bucket := positionalOrDefault(args, 1, defaultBucket)
+	partSizeMiBRaw := positionalOrDefault(args, 2, "32")
+	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
+	if err != nil || partSizeMiB <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
+	}
+
+	failAfterMiBRaw := positionalOrDefault(args, 3, "16")
+	failAfterMiB, err := strconv.ParseInt(strings.TrimSpace(failAfterMiBRaw), 10, 64)
+	if err != nil || failAfterMiB <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid failAfterMiB: %s", failAfterMiBRaw)
+	}
+
+	profile, configPath := parseProfileConfig(args, 4, 5)
+	return cliOptions{
+		mode:               modeMultipartRetry,
+		dataDir:            dataFile,
+		bucket:             bucket,
+		awsProfile:         profile,
+		configPath:         resolveConfigPath(configPath),
+		multipartRetryOnly: true,
+		multipartPartBytes: partSizeMiB * 1024 * 1024,
+		failAfterBytes:     failAfterMiB * 1024 * 1024,
+	}, nil
+}
+
 func positionalOrDefault(args []string, index int, fallback string) string {
 	if len(args) <= index {
 		return fallback
@@ -331,6 +434,10 @@ func printUsage(stream *os.File) {
 	lines := []string{
 		"Usage:",
 		"  test-burn-upload-go.exe [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe mixed [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe mixed-nomd5 [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe multipart [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe multipart-nomd5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe download [DataDir] [Bucket] [AwsProfile] [ConfigPath] [nomd5]",
 		"  test-burn-upload-go.exe download-nomd5 [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe remote-download [Bucket] [AwsProfile] [ConfigPath]",
@@ -343,10 +450,23 @@ func printUsage(stream *os.File) {
 		"  test-burn-upload-go.exe getobject [Bucket] [ObjectKey] [OutputPath] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe getobject-nomd5 [Bucket] [ObjectKey] [OutputPath] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe interrupt-retry [DataFile] [Bucket] [FailAfterMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe multipart-interrupt-retry [DataFile] [Bucket] [PartSizeMiB] [FailAfterMiB] [AwsProfile] [ConfigPath]",
 		"",
 		"Modes:",
 		"  full-flow",
 		"    Upload local files, validate ListObjects and HeadObject, call FinalizeLayout, then download.",
+		"",
+		"  mixed",
+		"    Upload one directory serially with size-based strategy: large files use multipart, small files use PutObject.",
+		"",
+		"  mixed-nomd5",
+		"    Same as mixed, but skip downloaded file MD5 verification.",
+		"",
+		"  multipart",
+		"    Upload one local file through standard S3 multipart APIs, complete it, finalize, then download verify.",
+		"",
+		"  multipart-nomd5",
+		"    Same as multipart, but skip downloaded file MD5 verification.",
 		"",
 		"  download",
 		"    Skip upload, skip finalize, skip bucket creation, use local directory as expected file list.",
@@ -384,14 +504,20 @@ func printUsage(stream *os.File) {
 		"  interrupt-retry",
 		"    Simulate mid-stream disconnect, retry the same key, finalize, and download verify.",
 		"",
+		"  multipart-interrupt-retry",
+		"    Upload part 1 normally, fail part 2 mid-stream, retry the same part, then complete and verify.",
+		"",
 		"Examples:",
 		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe D:\testdata e60102350000000024d104e2`,
+		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe mixed D:\BRS\Publisher\temp\mixed-batch e60102350000000024d104e2 64 64`,
+		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe multipart D:\testdata\10.zip e60102350000000024d104e2 64`,
 		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe download D:\testdata e60102350000000024d104e2`,
 		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe remote-download e60102350000000024d104e2`,
 		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe discinfo e60102350000000024d104e2`,
 		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe headobject e60102350000000024d104e2 docs/chat-export.md`,
 		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe getobject-nomd5 e60102350000000024d104e2 docs/chat-export.md`,
 		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe interrupt-retry D:\testdata\sample.bin e60102350000000024d104e2 16`,
+		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe multipart-interrupt-retry D:\testdata\sample.bin e60102350000000024d104e2 32 16`,
 	}
 
 	for _, line := range lines {
