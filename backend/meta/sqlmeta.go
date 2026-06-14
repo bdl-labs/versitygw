@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -158,19 +159,19 @@ type BurnUploadSessionRecord struct {
 }
 
 type burnbridgeUploadPart struct {
-	Bucket       string    `gorm:"column:bucket;primaryKey"`
-	ObjectName   string    `gorm:"column:object_name;primaryKey;index:idx_bb_upload_part_object"`
-	UploadID     string    `gorm:"column:upload_id;primaryKey;size:128"`
-	PartNumber   int       `gorm:"column:part_number;primaryKey"`
-	StartOffset  int64     `gorm:"column:start_offset;not null;default:0"`
-	BytesReceived int64    `gorm:"column:bytes_received;not null;default:0"`
-	PartSize     int64     `gorm:"column:part_size;not null;default:0"`
-	ChecksumMD5  string    `gorm:"column:checksum_md5;size:32;not null;default:''"`
-	ETag         string    `gorm:"column:etag;size:64;not null;default:''"`
-	State        string    `gorm:"column:state;size:32;not null"`
-	SegmentCount int       `gorm:"column:segment_count;not null;default:0"`
-	CreatedAt    time.Time `gorm:"column:created_at;autoCreateTime"`
-	UpdatedAt    time.Time `gorm:"column:updated_at;autoUpdateTime"`
+	Bucket        string    `gorm:"column:bucket;primaryKey"`
+	ObjectName    string    `gorm:"column:object_name;primaryKey;index:idx_bb_upload_part_object"`
+	UploadID      string    `gorm:"column:upload_id;primaryKey;size:128"`
+	PartNumber    int       `gorm:"column:part_number;primaryKey"`
+	StartOffset   int64     `gorm:"column:start_offset;not null;default:0"`
+	BytesReceived int64     `gorm:"column:bytes_received;not null;default:0"`
+	PartSize      int64     `gorm:"column:part_size;not null;default:0"`
+	ChecksumMD5   string    `gorm:"column:checksum_md5;size:32;not null;default:''"`
+	ETag          string    `gorm:"column:etag;size:64;not null;default:''"`
+	State         string    `gorm:"column:state;size:32;not null"`
+	SegmentCount  int       `gorm:"column:segment_count;not null;default:0"`
+	CreatedAt     time.Time `gorm:"column:created_at;autoCreateTime"`
+	UpdatedAt     time.Time `gorm:"column:updated_at;autoUpdateTime"`
 }
 
 func (burnbridgeUploadPart) TableName() string {
@@ -179,19 +180,19 @@ func (burnbridgeUploadPart) TableName() string {
 
 // BurnUploadPartRecord exposes persisted part-level state for multipart / resumable uploads.
 type BurnUploadPartRecord struct {
-	Bucket       string
-	ObjectName   string
-	UploadID     string
-	PartNumber   int
-	StartOffset  int64
+	Bucket        string
+	ObjectName    string
+	UploadID      string
+	PartNumber    int
+	StartOffset   int64
 	BytesReceived int64
-	PartSize     int64
-	ChecksumMD5  string
-	ETag         string
-	State        BurnUploadState
-	SegmentCount int
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	PartSize      int64
+	ChecksumMD5   string
+	ETag          string
+	State         BurnUploadState
+	SegmentCount  int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type BurnbridgeBucketBackup struct {
@@ -237,18 +238,18 @@ type burnbridgeSessionRow struct {
 }
 
 type burnbridgePartRow struct {
-	ObjectName   string    `json:"objectName"`
-	UploadID     string    `json:"uploadId"`
-	PartNumber   int       `json:"partNumber"`
-	StartOffset  int64     `json:"startOffset"`
-	BytesReceived int64    `json:"bytesReceived"`
-	PartSize     int64     `json:"partSize"`
-	ChecksumMD5  string    `json:"checksumMd5"`
-	ETag         string    `json:"etag"`
-	State        string    `json:"state"`
-	SegmentCount int       `json:"segmentCount"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	ObjectName    string    `json:"objectName"`
+	UploadID      string    `json:"uploadId"`
+	PartNumber    int       `json:"partNumber"`
+	StartOffset   int64     `json:"startOffset"`
+	BytesReceived int64     `json:"bytesReceived"`
+	PartSize      int64     `json:"partSize"`
+	ChecksumMD5   string    `json:"checksumMd5"`
+	ETag          string    `json:"etag"`
+	State         string    `json:"state"`
+	SegmentCount  int       `json:"segmentCount"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 // Burned reports whether this segment is known to have been placed successfully on media.
@@ -643,17 +644,17 @@ func (s SqlMeta) ListBurnUploadSessionsByBucket(bucket string) ([]BurnUploadSess
 // UpsertBurnUploadPart inserts or updates one upload part row.
 func (s SqlMeta) UpsertBurnUploadPart(rec BurnUploadPartRecord) error {
 	row := burnbridgeUploadPart{
-		Bucket:       rec.Bucket,
-		ObjectName:   rec.ObjectName,
-		UploadID:     rec.UploadID,
-		PartNumber:   rec.PartNumber,
-		StartOffset:  rec.StartOffset,
+		Bucket:        rec.Bucket,
+		ObjectName:    rec.ObjectName,
+		UploadID:      rec.UploadID,
+		PartNumber:    rec.PartNumber,
+		StartOffset:   rec.StartOffset,
 		BytesReceived: rec.BytesReceived,
-		PartSize:     rec.PartSize,
-		ChecksumMD5:  rec.ChecksumMD5,
-		ETag:         rec.ETag,
-		State:        string(rec.State),
-		SegmentCount: rec.SegmentCount,
+		PartSize:      rec.PartSize,
+		ChecksumMD5:   rec.ChecksumMD5,
+		ETag:          rec.ETag,
+		State:         string(rec.State),
+		SegmentCount:  rec.SegmentCount,
 	}
 	return s.withDB("upsert burn upload part", func(db *gorm.DB) error {
 		if err := db.Clauses(clause.OnConflict{
@@ -695,19 +696,19 @@ func (s SqlMeta) ListBurnUploadParts(bucket, object, uploadID string) ([]BurnUpl
 		result := make([]BurnUploadPartRecord, 0, len(rows))
 		for _, row := range rows {
 			result = append(result, BurnUploadPartRecord{
-				Bucket:       row.Bucket,
-				ObjectName:   row.ObjectName,
-				UploadID:     row.UploadID,
-				PartNumber:   row.PartNumber,
-				StartOffset:  row.StartOffset,
+				Bucket:        row.Bucket,
+				ObjectName:    row.ObjectName,
+				UploadID:      row.UploadID,
+				PartNumber:    row.PartNumber,
+				StartOffset:   row.StartOffset,
 				BytesReceived: row.BytesReceived,
-				PartSize:     row.PartSize,
-				ChecksumMD5:  row.ChecksumMD5,
-				ETag:         row.ETag,
-				State:        BurnUploadState(row.State),
-				SegmentCount: row.SegmentCount,
-				CreatedAt:    row.CreatedAt,
-				UpdatedAt:    row.UpdatedAt,
+				PartSize:      row.PartSize,
+				ChecksumMD5:   row.ChecksumMD5,
+				ETag:          row.ETag,
+				State:         BurnUploadState(row.State),
+				SegmentCount:  row.SegmentCount,
+				CreatedAt:     row.CreatedAt,
+				UpdatedAt:     row.UpdatedAt,
 			})
 		}
 		out = result
@@ -735,19 +736,19 @@ func (s SqlMeta) GetBurnUploadPart(bucket, object, uploadID string, partNumber i
 			return ErrNoSuchKey
 		}
 		out = &BurnUploadPartRecord{
-			Bucket:       row.Bucket,
-			ObjectName:   row.ObjectName,
-			UploadID:     row.UploadID,
-			PartNumber:   row.PartNumber,
-			StartOffset:  row.StartOffset,
+			Bucket:        row.Bucket,
+			ObjectName:    row.ObjectName,
+			UploadID:      row.UploadID,
+			PartNumber:    row.PartNumber,
+			StartOffset:   row.StartOffset,
 			BytesReceived: row.BytesReceived,
-			PartSize:     row.PartSize,
-			ChecksumMD5:  row.ChecksumMD5,
-			ETag:         row.ETag,
-			State:        BurnUploadState(row.State),
-			SegmentCount: row.SegmentCount,
-			CreatedAt:    row.CreatedAt,
-			UpdatedAt:    row.UpdatedAt,
+			PartSize:      row.PartSize,
+			ChecksumMD5:   row.ChecksumMD5,
+			ETag:          row.ETag,
+			State:         BurnUploadState(row.State),
+			SegmentCount:  row.SegmentCount,
+			CreatedAt:     row.CreatedAt,
+			UpdatedAt:     row.UpdatedAt,
 		}
 		return nil
 	})
@@ -835,18 +836,18 @@ func (s SqlMeta) ExportBurnbridgeBucket(bucket string) (*BurnbridgeBucketBackup,
 		backup.PartRows = make([]burnbridgePartRow, 0, len(partRows))
 		for _, row := range partRows {
 			backup.PartRows = append(backup.PartRows, burnbridgePartRow{
-				ObjectName:   row.ObjectName,
-				UploadID:     row.UploadID,
-				PartNumber:   row.PartNumber,
-				StartOffset:  row.StartOffset,
+				ObjectName:    row.ObjectName,
+				UploadID:      row.UploadID,
+				PartNumber:    row.PartNumber,
+				StartOffset:   row.StartOffset,
 				BytesReceived: row.BytesReceived,
-				PartSize:     row.PartSize,
-				ChecksumMD5:  row.ChecksumMD5,
-				ETag:         row.ETag,
-				State:        row.State,
-				SegmentCount: row.SegmentCount,
-				CreatedAt:    row.CreatedAt,
-				UpdatedAt:    row.UpdatedAt,
+				PartSize:      row.PartSize,
+				ChecksumMD5:   row.ChecksumMD5,
+				ETag:          row.ETag,
+				State:         row.State,
+				SegmentCount:  row.SegmentCount,
+				CreatedAt:     row.CreatedAt,
+				UpdatedAt:     row.UpdatedAt,
 			})
 		}
 		return nil
@@ -856,6 +857,89 @@ func (s SqlMeta) ExportBurnbridgeBucket(bucket string) (*BurnbridgeBucketBackup,
 	}
 
 	return backup, nil
+}
+
+// ListBurnbridgeBuckets returns every bucket with persisted BurnBridge runtime state.
+func (s SqlMeta) ListBurnbridgeBuckets() ([]string, error) {
+	buckets := map[string]struct{}{}
+	err := s.withDB("list burnbridge buckets", func(db *gorm.DB) error {
+		var metadataBuckets []string
+		if err := db.Model(&metadataEntry{}).Distinct("bucket").Pluck("bucket", &metadataBuckets).Error; err != nil {
+			return mapSQLError("list burnbridge metadata buckets", err)
+		}
+		for _, bucket := range metadataBuckets {
+			if trimmed := strings.TrimSpace(bucket); trimmed != "" {
+				buckets[trimmed] = struct{}{}
+			}
+		}
+
+		var segmentBuckets []string
+		if err := db.Model(&burnbridgeObjectSegment{}).Distinct("bucket").Pluck("bucket", &segmentBuckets).Error; err != nil {
+			return mapSQLError("list burnbridge segment buckets", err)
+		}
+		for _, bucket := range segmentBuckets {
+			if trimmed := strings.TrimSpace(bucket); trimmed != "" {
+				buckets[trimmed] = struct{}{}
+			}
+		}
+
+		var sessionBuckets []string
+		if err := db.Model(&burnbridgeUploadSession{}).Distinct("bucket").Pluck("bucket", &sessionBuckets).Error; err != nil {
+			return mapSQLError("list burnbridge session buckets", err)
+		}
+		for _, bucket := range sessionBuckets {
+			if trimmed := strings.TrimSpace(bucket); trimmed != "" {
+				buckets[trimmed] = struct{}{}
+			}
+		}
+
+		var partBuckets []string
+		if err := db.Model(&burnbridgeUploadPart{}).Distinct("bucket").Pluck("bucket", &partBuckets).Error; err != nil {
+			return mapSQLError("list burnbridge part buckets", err)
+		}
+		for _, bucket := range partBuckets {
+			if trimmed := strings.TrimSpace(bucket); trimmed != "" {
+				buckets[trimmed] = struct{}{}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, len(buckets))
+	for bucket := range buckets {
+		out = append(out, bucket)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// DeleteBurnbridgeBucket removes all persisted BurnBridge runtime state for a bucket.
+func (s SqlMeta) DeleteBurnbridgeBucket(bucket string) error {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return fmt.Errorf("delete burnbridge bucket: empty bucket")
+	}
+
+	return s.withDB("delete burnbridge bucket", func(db *gorm.DB) error {
+		return db.Transaction(func(tx *gorm.DB) error {
+			if err := tx.Where("bucket = ?", trimmedBucket).Delete(&metadataEntry{}).Error; err != nil {
+				return mapSQLError("delete burnbridge bucket metadata", err)
+			}
+			if err := tx.Where("bucket = ?", trimmedBucket).Delete(&burnbridgeObjectSegment{}).Error; err != nil {
+				return mapSQLError("delete burnbridge bucket segments", err)
+			}
+			if err := tx.Where("bucket = ?", trimmedBucket).Delete(&burnbridgeUploadSession{}).Error; err != nil {
+				return mapSQLError("delete burnbridge bucket sessions", err)
+			}
+			if err := tx.Where("bucket = ?", trimmedBucket).Delete(&burnbridgeUploadPart{}).Error; err != nil {
+				return mapSQLError("delete burnbridge bucket parts", err)
+			}
+			return nil
+		})
+	})
 }
 
 func (s SqlMeta) RestoreBurnbridgeBucket(backup *BurnbridgeBucketBackup) error {
@@ -954,19 +1038,19 @@ func (s SqlMeta) RestoreBurnbridgeBucket(backup *BurnbridgeBucketBackup) error {
 				now := time.Now().UTC()
 				for _, row := range backup.PartRows {
 					rows = append(rows, burnbridgeUploadPart{
-						Bucket:       trimmedBucket,
-						ObjectName:   row.ObjectName,
-						UploadID:     row.UploadID,
-						PartNumber:   row.PartNumber,
-						StartOffset:  row.StartOffset,
+						Bucket:        trimmedBucket,
+						ObjectName:    row.ObjectName,
+						UploadID:      row.UploadID,
+						PartNumber:    row.PartNumber,
+						StartOffset:   row.StartOffset,
 						BytesReceived: row.BytesReceived,
-						PartSize:     row.PartSize,
-						ChecksumMD5:  row.ChecksumMD5,
-						ETag:         row.ETag,
-						State:        row.State,
-						SegmentCount: row.SegmentCount,
-						CreatedAt:    coalesceTime(row.CreatedAt, now),
-						UpdatedAt:    coalesceTime(row.UpdatedAt, now),
+						PartSize:      row.PartSize,
+						ChecksumMD5:   row.ChecksumMD5,
+						ETag:          row.ETag,
+						State:         row.State,
+						SegmentCount:  row.SegmentCount,
+						CreatedAt:     coalesceTime(row.CreatedAt, now),
+						UpdatedAt:     coalesceTime(row.UpdatedAt, now),
 					})
 				}
 				if err := tx.Create(&rows).Error; err != nil {
@@ -1236,6 +1320,26 @@ func (s SqlMeta) ListBurnbridgeDiscBucketBindings(bucket string) ([]BurnbridgeDi
 	return out, err
 }
 
+// DeleteBurnbridgeDiscBucketBindings removes runtime media bindings for a logical bucket.
+func (s SqlMeta) DeleteBurnbridgeDiscBucketBindings(bucket string) error {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return nil
+	}
+
+	return s.withDB("delete disc bucket bindings", func(db *gorm.DB) error {
+		if err := db.
+			Where("bucket = ? AND attribute = ? AND json_extract(value, '$.bucket') = ?",
+				BurnbridgeRuntimeBindingBucket,
+				BurnbridgeDiscBucketBindingAttribute,
+				trimmedBucket).
+			Delete(&metadataEntry{}).Error; err != nil {
+			return mapSQLError("delete disc bucket bindings", err)
+		}
+		return nil
+	})
+}
+
 // BurnbridgeCommittedRecord is JSON-encoded into metadata_entries under BurnbridgeCommittedAttribute.
 type BurnbridgeCommittedRecord struct {
 	JobID              string            `json:"jobId,omitempty"`
@@ -1363,6 +1467,29 @@ func (s SqlMeta) ListCommittedObjects(bucket string) ([]CommittedObjectSummary, 
 		return nil
 	})
 	return out, err
+}
+
+// PruneBurnbridgeCommitted removes committed object metadata and segment rows not present in keepObjectKeys.
+func (s SqlMeta) PruneBurnbridgeCommitted(bucket string, keepObjectKeys map[string]struct{}) ([]string, error) {
+	existing, err := s.ListCommittedObjects(bucket)
+	if err != nil {
+		return nil, err
+	}
+	var removed []string
+	for _, sum := range existing {
+		key := strings.TrimPrefix(strings.ReplaceAll(sum.ObjectKey, `\`, `/`), "/")
+		if _, keep := keepObjectKeys[key]; keep {
+			continue
+		}
+		if err := s.DeleteAttribute(bucket, sum.ObjectKey, BurnbridgeCommittedAttribute); err != nil && !errors.Is(err, ErrNoSuchKey) {
+			return removed, err
+		}
+		if err := s.DeleteBurnObjectSegments(bucket, sum.ObjectKey); err != nil {
+			return removed, err
+		}
+		removed = append(removed, sum.ObjectKey)
+	}
+	return removed, nil
 }
 
 // GetCommittedObjectSummary loads summary for one object. ErrNoSuchKey if no committed JSON row.

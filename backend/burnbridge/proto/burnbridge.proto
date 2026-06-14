@@ -132,6 +132,7 @@ message GetImportedBucketStateResponse {
   string metadata_db_file_name = 3;
   bool loaded = 4;
   repeated ImportedObjectState objects = 5;
+  repeated ObjectMetadata bucket_metadata = 6;
 }
 
 message ImportedObjectState {

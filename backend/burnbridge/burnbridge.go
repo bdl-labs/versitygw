@@ -321,6 +321,7 @@ type BurnBridge struct {
 	lastNoDiscBackupPath        string
 	lastNoDiscBackupBucket      string
 	lastNoDiscObservedAt        time.Time
+	noDiscLatched               bool
 	lastRecorderReadyBucket     string
 	lastRecorderWritableState   string
 	lastRecorderReadyObservedAt time.Time
@@ -355,12 +356,13 @@ const (
 	burnbridgeMultipartInternalPref  = ".__bbmeta__/multipart/"
 	burnbridgeRecorderETagMetaKey    = "x-burn-etag"
 
-	listDefaultMaxKeys         int32 = 1000
-	defaultPutQueueLimit             = 512
-	burnbridgeACLAttribute           = "acl"
-	noDiscProbeCooldown              = 3 * time.Second
-	recorderReadyRetryAttempts       = 5
-	recorderReadyRetryDelay          = 750 * time.Millisecond
+	listDefaultMaxKeys          int32 = 1000
+	defaultPutQueueLimit              = 512
+	burnbridgeACLAttribute            = "acl"
+	noDiscProbeCooldown               = 3 * time.Second
+	recorderReadyRetryAttempts        = 5
+	recorderReadyRetryDelay           = 750 * time.Millisecond
+	mountedReadFallbackMaxFiles       = 500000
 )
 
 type burnbridgeMultipartInitState struct {
@@ -566,6 +568,36 @@ func persistDiscBucketBinding(metaStore meta.SqlMeta, rawVolume, bucket, udfVolu
 		Bucket:           bucket,
 		UdfVolumeLabel:   udfVolumeLabel,
 	})
+}
+
+func (b *BurnBridge) clearStaleBlankDiscBinding(binding *meta.BurnbridgeDiscBucketBindingDocument) (bool, error) {
+	if binding == nil {
+		return false, nil
+	}
+	bucket := strings.TrimSpace(binding.Bucket)
+	if bucket == "" {
+		return false, nil
+	}
+
+	committed, err := b.meta.ListCommittedObjects(bucket)
+	if err != nil {
+		return false, fmt.Errorf("burnbridge inspect blank-disc binding bucket %s: %w", bucket, err)
+	}
+	if len(committed) == 0 {
+		return false, nil
+	}
+
+	if err := b.meta.DeleteBurnbridgeBucket(bucket); err != nil {
+		return false, fmt.Errorf("burnbridge delete stale blank-disc bucket metadata %s: %w", bucket, err)
+	}
+	if err := b.meta.DeleteBurnbridgeDiscBucketBindings(bucket); err != nil {
+		return false, fmt.Errorf("burnbridge delete stale blank-disc bucket bindings %s: %w", bucket, err)
+	}
+	slog.Info("burnbridge: cleared stale blank-disc bucket binding with committed metadata",
+		"bucket", bucket,
+		"probe_volume_label", strings.TrimSpace(binding.ProbeVolumeLabel),
+		"committed_count", len(committed))
+	return true, nil
 }
 
 func discInfoDocFromProto(
@@ -860,7 +892,10 @@ func New(opts Options) (*BurnBridge, error) {
 		}
 	}
 
-	readMount := strings.TrimSpace(sharedReadMountPath())
+	readMount := strings.TrimSpace(opts.ReadMountPath)
+	if readMount == "" {
+		readMount = strings.TrimSpace(sharedReadMountPath())
+	}
 	if readMount != "" {
 		readMount = filepath.Clean(readMount)
 	}
@@ -1126,24 +1161,37 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	}
 
 	previousBucket := strings.TrimSpace(b.activeBucket)
+	b.clearNoDiscLatch()
 	b.captureReadyDiscIdentity(resp)
 
 	if readyResponseIndicatesBlankWritable(resp) {
 		if binding, ok := loadDiscBucketBinding(b.meta, rawVolume); ok && binding != nil && strings.TrimSpace(binding.Bucket) != "" {
-			b.activeBucket = strings.TrimSpace(binding.Bucket)
-			if strings.TrimSpace(binding.UdfVolumeLabel) != "" {
-				b.udfLabel = strings.TrimSpace(binding.UdfVolumeLabel)
-			} else {
-				b.udfLabel = rawVolume
-			}
-			b.volumeLabelRaw = rawVolume
-			if previousBucket == "" || !strings.EqualFold(previousBucket, b.activeBucket) {
-				b.markImportedBucketConvergencePending(b.activeBucket)
-			}
-			if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
+			cleared, err := b.clearStaleBlankDiscBinding(binding)
+			if err != nil {
 				return err
 			}
-			return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
+			if cleared {
+				previousBucket = ""
+				b.activeBucket = ""
+				b.volumeLabelRaw = rawVolume
+				b.udfLabel = rawVolume
+				b.resetImportedBucketSyncState()
+			} else {
+				b.activeBucket = strings.TrimSpace(binding.Bucket)
+				if strings.TrimSpace(binding.UdfVolumeLabel) != "" {
+					b.udfLabel = strings.TrimSpace(binding.UdfVolumeLabel)
+				} else {
+					b.udfLabel = rawVolume
+				}
+				b.volumeLabelRaw = rawVolume
+				if previousBucket == "" || !strings.EqualFold(previousBucket, b.activeBucket) {
+					b.markImportedBucketConvergencePending(b.activeBucket)
+				}
+				if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
+					return err
+				}
+				return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
+			}
 		}
 
 		sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
@@ -1237,6 +1285,12 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 	if resolvedBucket == "" {
 		return nil
 	}
+	if mountedBucket, ok := b.mountedFallbackBucketHint(); ok && !strings.EqualFold(resolvedBucket, mountedBucket) {
+		slog.Warn("burnbridge: ignoring imported bucket state because mounted disc bucket differs",
+			"imported_bucket", resolvedBucket,
+			"mounted_bucket", mountedBucket)
+		return nil
+	}
 
 	if resolvedBucket != "" {
 		b.activeBucket = resolvedBucket
@@ -1250,11 +1304,20 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 			return err
 		}
 	}
+	if err := b.syncImportedBucketMetadata(resolvedBucket, resp.GetBucketMetadata()); err != nil {
+		return err
+	}
 
+	importedKeys := make(map[string]struct{}, len(resp.GetObjects()))
 	for _, object := range resp.GetObjects() {
 		if object == nil || strings.TrimSpace(object.GetObjectKey()) == "" {
 			continue
 		}
+		objectKey := strings.TrimPrefix(strings.ReplaceAll(object.GetObjectKey(), `\`, `/`), "/")
+		if objectKey == "" {
+			continue
+		}
+		importedKeys[objectKey] = struct{}{}
 		userMetadata := make(map[string]string, len(object.GetMetadata()))
 		for _, kv := range object.GetMetadata() {
 			if kv == nil || strings.TrimSpace(kv.GetKey()) == "" {
@@ -1276,7 +1339,7 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 			Expires:            object.GetExpires(),
 			Metadata:           userMetadata,
 		}
-		if mpMeta, metaErr := b.loadMultipartObjectMetadata(resolvedBucket, object.GetObjectKey()); metaErr == nil && mpMeta != nil {
+		if mpMeta, metaErr := b.loadMultipartObjectMetadata(resolvedBucket, objectKey); metaErr == nil && mpMeta != nil {
 			if strings.TrimSpace(mpMeta.ETag) != "" {
 				rec.ETag = mpMeta.ETag
 			}
@@ -1284,12 +1347,77 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 				rec.Size = mpMeta.Parts[partCount-1]
 			}
 		}
-		if err := b.meta.StoreBurnbridgeCommitted(nil, resolvedBucket, object.GetObjectKey(), rec); err != nil {
-			return fmt.Errorf("burnbridge sync imported object %s/%s: %w", resolvedBucket, object.GetObjectKey(), err)
+		if err := b.meta.StoreBurnbridgeCommitted(nil, resolvedBucket, objectKey, rec); err != nil {
+			return fmt.Errorf("burnbridge sync imported object %s/%s: %w", resolvedBucket, objectKey, err)
 		}
 	}
 
+	if removed, err := b.meta.PruneBurnbridgeCommitted(resolvedBucket, importedKeys); err != nil {
+		return fmt.Errorf("burnbridge prune stale imported metadata for bucket %s: %w", resolvedBucket, err)
+	} else if len(removed) > 0 {
+		slog.Info("burnbridge: pruned stale committed object metadata after imported state sync",
+			"bucket", resolvedBucket,
+			"removed_count", len(removed))
+	}
+
+	if err := b.pruneOtherBurnbridgeBuckets(resolvedBucket); err != nil {
+		return err
+	}
+
 	b.markImportedBucketSynced(resolvedBucket)
+	return nil
+}
+
+func (b *BurnBridge) syncImportedBucketMetadata(bucket string, items []*burnbridgev1.ObjectMetadata) error {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return nil
+	}
+	for _, item := range items {
+		if item == nil {
+			continue
+		}
+		key := strings.TrimSpace(item.GetKey())
+		if key == "" {
+			continue
+		}
+		if !strings.HasPrefix(strings.ToLower(key), "redundancy_") {
+			continue
+		}
+		if err := b.meta.StoreAttribute(nil, trimmedBucket, "", key, []byte(strings.TrimSpace(item.GetValue()))); err != nil {
+			return fmt.Errorf("burnbridge sync imported bucket metadata %s/%s: %w", trimmedBucket, key, err)
+		}
+	}
+	return nil
+}
+
+func (b *BurnBridge) pruneOtherBurnbridgeBuckets(activeBucket string) error {
+	activeBucket = strings.TrimSpace(activeBucket)
+	if activeBucket == "" {
+		return nil
+	}
+
+	buckets, err := b.meta.ListBurnbridgeBuckets()
+	if err != nil {
+		return fmt.Errorf("burnbridge list metadata buckets for prune: %w", err)
+	}
+	for _, bucket := range buckets {
+		trimmed := strings.TrimSpace(bucket)
+		if trimmed == "" ||
+			strings.EqualFold(trimmed, activeBucket) ||
+			strings.EqualFold(trimmed, meta.BurnbridgeRuntimeBindingBucket) {
+			continue
+		}
+		if err := b.meta.DeleteBurnbridgeBucket(trimmed); err != nil {
+			return fmt.Errorf("burnbridge delete stale bucket metadata %s: %w", trimmed, err)
+		}
+		if err := b.meta.DeleteBurnbridgeDiscBucketBindings(trimmed); err != nil {
+			return fmt.Errorf("burnbridge delete stale bucket bindings %s: %w", trimmed, err)
+		}
+		slog.Info("burnbridge: deleted stale bucket metadata after imported state sync",
+			"active_bucket", activeBucket,
+			"deleted_bucket", trimmed)
+	}
 	return nil
 }
 
@@ -1375,6 +1503,26 @@ func (b *BurnBridge) ensureImportedBucketStateWithMode(ctx context.Context, buck
 }
 
 func (b *BurnBridge) ensureActiveBucketLoaded(ctx context.Context) error {
+	if b.noDiscLatchedState() {
+		return nil
+	}
+
+	if mountedBucket, ok := b.mountedFallbackBucketHint(); ok {
+		currentBucket := strings.TrimSpace(b.activeBucket)
+		if currentBucket == "" || !strings.EqualFold(currentBucket, mountedBucket) {
+			if currentBucket != "" {
+				slog.Info("burnbridge: switching active bucket to mounted disc bucket",
+					"previous_bucket", currentBucket,
+					"mounted_bucket", mountedBucket)
+			}
+			b.activeBucket = mountedBucket
+			b.markImportedBucketConvergencePending(mountedBucket)
+		}
+		if b.importedBucketConvergencePending(mountedBucket) {
+			return b.ensureImportedBucketStateForConvergence(ctx, mountedBucket)
+		}
+	}
+
 	if strings.TrimSpace(b.activeBucket) != "" {
 		if b.restoreBucketStateFromMetadata(b.activeBucket) {
 			b.markImportedBucketConvergencePending(b.activeBucket)
@@ -1394,10 +1542,26 @@ func (b *BurnBridge) ensureActiveBucketLoaded(ctx context.Context) error {
 func (b *BurnBridge) noDiscRecentlyObserved() bool {
 	b.stateMu.Lock()
 	defer b.stateMu.Unlock()
+	if b.noDiscLatched {
+		return true
+	}
 	if !b.lastNoDiscObservedAt.IsZero() && time.Since(b.lastNoDiscObservedAt) < noDiscProbeCooldown {
 		return true
 	}
 	return false
+}
+
+func (b *BurnBridge) noDiscLatchedState() bool {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	return b.noDiscLatched
+}
+
+func (b *BurnBridge) clearNoDiscLatch() {
+	b.stateMu.Lock()
+	b.noDiscLatched = false
+	b.lastNoDiscObservedAt = time.Time{}
+	b.stateMu.Unlock()
 }
 
 func (b *BurnBridge) captureReadyDiscIdentity(resp *burnbridgev1.TestUnitReadyResponse) {
@@ -1486,6 +1650,7 @@ func (b *BurnBridge) handleNoDiscState() error {
 	b.volumeLabelRaw = ""
 	b.udfLabel = ""
 	b.lastNoDiscObservedAt = time.Now().UTC()
+	b.noDiscLatched = true
 	b.importedBucketState = make(map[string]bool)
 	b.pendingImportedConvergence = make(map[string]bool)
 	b.clearRecorderReadyStateLocked()
@@ -1691,6 +1856,7 @@ func (b *BurnBridge) maybeRestoreNoDiscBackup(resp *burnbridgev1.TestUnitReadyRe
 	b.lastNoDiscBackupPath = ""
 	b.lastNoDiscBackupBucket = ""
 	b.lastNoDiscObservedAt = time.Time{}
+	b.noDiscLatched = false
 	b.stateMu.Unlock()
 	b.markImportedBucketConvergencePending(currentBucket)
 
@@ -1704,6 +1870,12 @@ func (b *BurnBridge) burnbridgeBucketExists(name string) bool {
 	trimmedName := strings.TrimSpace(name)
 	if trimmedName == "" {
 		return false
+	}
+	if b.noDiscLatchedState() {
+		return false
+	}
+	if mountedBucket, ok := b.mountedFallbackBucketHint(); ok {
+		return strings.EqualFold(trimmedName, mountedBucket)
 	}
 	if trimmedName == strings.TrimSpace(b.activeBucket) {
 		return true
@@ -1774,12 +1946,15 @@ func (b *BurnBridge) bindActiveBucket(bucket, volumeLabel string) error {
 
 func (b *BurnBridge) ListBuckets(ctx context.Context, input s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
 	_ = b.ensureActiveBucketLoaded(ctx)
-	name := strings.TrimSpace(b.activeBucket)
 	result := s3response.ListAllMyBucketsResult{
 		Buckets: s3response.ListAllMyBucketsList{Bucket: []s3response.ListAllMyBucketsEntry{}},
 		Owner:   s3response.CanonicalUser{ID: input.Owner},
 		Prefix:  input.Prefix,
 	}
+	if b.noDiscLatchedState() {
+		return result, nil
+	}
+	name := strings.TrimSpace(b.activeBucket)
 	if name == "" {
 		return result, nil
 	}
@@ -1811,6 +1986,9 @@ func (b *BurnBridge) ListBuckets(ctx context.Context, input s3response.ListBucke
 
 func (b *BurnBridge) ListBucketsAndOwners(ctx context.Context) ([]s3response.Bucket, error) {
 	_ = b.ensureActiveBucketLoaded(ctx)
+	if b.noDiscLatchedState() {
+		return []s3response.Bucket{}, nil
+	}
 	name := strings.TrimSpace(b.activeBucket)
 	if name == "" {
 		return []s3response.Bucket{}, nil
@@ -2620,7 +2798,7 @@ func (b *BurnBridge) CompleteMultipartUpload(ctx context.Context, input *s3.Comp
 	if err := b.meta.StoreBurnbridgeCommitted(nil, bucket, key, committedRec); err != nil {
 		return s3response.CompleteMultipartUploadResult{}, "", err
 	}
-	if err := b.cleanupMultipartUploadState(bucket, key, uploadID, partRows); err != nil {
+	if err := b.cleanupCompletedMultipartObjectState(bucket, key, uploadID, partRows); err != nil {
 		slog.Warn("burnbridge: multipart cleanup after complete failed", "bucket", bucket, "key", key, "uploadId", uploadID, "error", err)
 	}
 	b.invalidateFinalizeLayoutTranscript(bucket)
@@ -3114,7 +3292,7 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 		}
 		if err != nil {
 			if errors.Is(err, meta.ErrNoSuchKey) {
-				return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+				return b.headMountedFallbackObject(ctx, bucket, key)
 			}
 			return nil, err
 		}
@@ -3126,6 +3304,15 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 	}
 	clen := summary.Size
 	lm := summary.LastModified
+	if b.mountedFallbackAvailable(bucket) {
+		obj, err := b.openMountedFallbackObject(bucket, key)
+		if err != nil {
+			return nil, mapOpenError(err)
+		}
+		_ = obj.file.Close()
+		clen = obj.info.Size()
+		lm = obj.info.ModTime().UTC()
+	}
 
 	ct := burnbridgeDefaultContentType
 	out := &s3.HeadObjectOutput{
@@ -3180,6 +3367,31 @@ func bbSafeObjectPath(mountRoot, bucket, key string) (string, error) {
 	return rp, nil
 }
 
+func bbSafeObjectPathUnder(root, key string) (string, error) {
+	root = filepath.Clean(root)
+	if root == "" || root == "." {
+		return "", fmt.Errorf("burnbridge: read mount path invalid")
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	rel := filepath.FromSlash(strings.TrimPrefix(key, "/"))
+	if rel == "" || rel == "." {
+		return "", fmt.Errorf("burnbridge: empty object key")
+	}
+	full := filepath.Join(absRoot, rel)
+	absFull, err := filepath.Abs(full)
+	if err != nil {
+		return "", err
+	}
+	relOut, err := filepath.Rel(absRoot, absFull)
+	if err != nil || relOut == ".." || strings.HasPrefix(relOut, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("burnbridge: object path escapes read mount")
+	}
+	return absFull, nil
+}
+
 func (b *BurnBridge) openCommittedObjectFile(bucket, key string) (*os.File, os.FileInfo, error) {
 	if b.readMount == "" {
 		return nil, nil, errors.New("burnbridge: read mount not configured")
@@ -3202,6 +3414,229 @@ func (b *BurnBridge) openCommittedObjectFile(bucket, key string) (*os.File, os.F
 		return nil, nil, syscall.EISDIR
 	}
 	return f, fi, nil
+}
+
+type mountedFallbackObject struct {
+	file *os.File
+	info os.FileInfo
+	path string
+	root string
+	key  string
+}
+
+func (b *BurnBridge) mountedFallbackRoot(bucket string) (string, bool) {
+	if b.readMount == "" || b.noDiscLatchedState() {
+		return "", false
+	}
+	activeBucket := strings.TrimSpace(b.activeBucket)
+	if activeBucket == "" || !strings.EqualFold(strings.TrimSpace(bucket), activeBucket) {
+		return "", false
+	}
+
+	mountRoot := filepath.Clean(b.readMount)
+	if st, err := os.Stat(mountRoot); err != nil || !st.IsDir() {
+		return "", false
+	}
+
+	if mountedRootHasArchiveMetadata(mountRoot) && b.bucketUsesRedundancy(bucket) {
+		return "", false
+	}
+	if !mountRootHasVisibleEntries(mountRoot) {
+		return "", false
+	}
+	return mountRoot, true
+}
+
+func (b *BurnBridge) bucketUsesRedundancy(bucket string) bool {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return true
+	}
+
+	enabledRaw, err := b.meta.RetrieveAttribute(nil, trimmedBucket, "", "redundancy_enabled")
+	if err != nil {
+		return true
+	}
+	enabledText := strings.TrimSpace(string(enabledRaw))
+	enabled, err := strconv.ParseBool(enabledText)
+	if err != nil {
+		return true
+	}
+	if !enabled {
+		return false
+	}
+
+	parityRaw, err := b.meta.RetrieveAttribute(nil, trimmedBucket, "", "redundancy_parity_block_count")
+	if err != nil {
+		return true
+	}
+	parityCount, err := strconv.Atoi(strings.TrimSpace(string(parityRaw)))
+	if err != nil {
+		return true
+	}
+	return parityCount > 0
+}
+
+func (b *BurnBridge) mountedFallbackBucketHint() (string, bool) {
+	if b.readMount == "" || b.noDiscLatchedState() {
+		return "", false
+	}
+	mountRoot := filepath.Clean(b.readMount)
+	if st, err := os.Stat(mountRoot); err != nil || !st.IsDir() {
+		return "", false
+	}
+
+	entries, err := os.ReadDir(mountRoot)
+	if err != nil {
+		return "", false
+	}
+
+	var bucketHint string
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name())
+		if !entry.IsDir() {
+			if bucket := bucketFromMountedMetadataFileName(name); bucket != "" {
+				if bucketHint != "" && !strings.EqualFold(bucketHint, bucket) {
+					return "", false
+				}
+				bucketHint = bucket
+				continue
+			}
+		}
+		if shouldSkipMountedFallbackEntry(name, entry.IsDir()) {
+			continue
+		}
+	}
+	if bucketHint == "" {
+		return "", false
+	}
+	return bucketHint, true
+}
+
+func bucketFromMountedMetadataFileName(name string) string {
+	trimmed := strings.TrimSpace(name)
+	lower := strings.ToLower(trimmed)
+	if !strings.HasPrefix(lower, "oa") || !strings.HasSuffix(lower, ".sqlite3") {
+		return ""
+	}
+	bucket := trimmed[2 : len(trimmed)-len(".sqlite3")]
+	if isS3BucketNameLike(bucket) {
+		return bucket
+	}
+	return ""
+}
+
+func isS3BucketNameLike(name string) bool {
+	trimmed := strings.TrimSpace(name)
+	if len(trimmed) < 3 || len(trimmed) > 63 {
+		return false
+	}
+	if !isS3BucketNameRune(rune(trimmed[0])) || !isS3BucketNameRune(rune(trimmed[len(trimmed)-1])) {
+		return false
+	}
+	for i, r := range trimmed {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.' {
+			if i > 0 {
+				prev := trimmed[i-1]
+				if (prev == '.' && (r == '.' || r == '-')) || (prev == '-' && r == '.') {
+					return false
+				}
+			}
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isS3BucketNameRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+}
+
+func mountedRootHasArchiveMetadata(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if bucketFromMountedMetadataFileName(entry.Name()) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func mountRootHasVisibleEntries(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if shouldSkipMountedFallbackEntry(entry.Name(), entry.IsDir()) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func (b *BurnBridge) openMountedFallbackObject(bucket, key string) (*mountedFallbackObject, error) {
+	root, ok := b.mountedFallbackRoot(bucket)
+	if !ok {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+	objPath, err := bbSafeObjectPathUnder(root, key)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(objPath)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	if fi.IsDir() {
+		_ = f.Close()
+		return nil, syscall.EISDIR
+	}
+	return &mountedFallbackObject{file: f, info: fi, path: objPath, root: root, key: key}, nil
+}
+
+func (b *BurnBridge) mountedFallbackAvailable(bucket string) bool {
+	_, ok := b.mountedFallbackRoot(bucket)
+	return ok
+}
+
+func mountedFallbackETag(fi os.FileInfo) string {
+	payload := fmt.Sprintf("%s:%d:%d", fi.Name(), fi.Size(), fi.ModTime().UTC().UnixNano())
+	sum := md5.Sum([]byte(payload))
+	return `"` + hex.EncodeToString(sum[:]) + `"`
+}
+
+func (b *BurnBridge) headMountedFallbackObject(ctx context.Context, bucket, key string) (*s3.HeadObjectOutput, error) {
+	_ = b.ensureActiveBucketLoaded(ctx)
+	obj, err := b.openMountedFallbackObject(bucket, key)
+	if err != nil {
+		return nil, mapOpenError(err)
+	}
+	_ = obj.file.Close()
+
+	ct := burnbridgeDefaultContentType
+	etag := mountedFallbackETag(obj.info)
+	clen := obj.info.Size()
+	lm := obj.info.ModTime().UTC()
+	return &s3.HeadObjectOutput{
+		ContentType:   &ct,
+		ETag:          &etag,
+		LastModified:  backend.GetTimePtr(lm),
+		ContentLength: &clen,
+	}, nil
 }
 
 func mapOpenError(err error) error {
@@ -3288,7 +3723,7 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		}
 		if err != nil {
 			if errors.Is(err, meta.ErrNoSuchKey) {
-				return fail(s3err.GetAPIError(s3err.ErrNoSuchKey))
+				return b.getMountedFallbackObject(ctx, bucket, key, backend.GetStringFromPtr(input.Range), wrapBody, fail)
 			}
 			return fail(err)
 		}
@@ -3311,6 +3746,9 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 		if err == nil {
 			objSize = fi.Size()
 		} else if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			if b.mountedFallbackAvailable(bucket) {
+				return b.getMountedFallbackObject(ctx, bucket, key, rangeHdr, wrapBody, fail)
+			}
 			openLocal = false
 		} else if errors.Is(err, syscall.EISDIR) {
 			return fail(s3err.GetAPIError(s3err.ErrNoSuchKey))
@@ -3378,6 +3816,49 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 	}, nil
 }
 
+func (b *BurnBridge) getMountedFallbackObject(
+	ctx context.Context,
+	bucket string,
+	key string,
+	rangeHdr string,
+	wrapBody func(io.ReadCloser) io.ReadCloser,
+	fail func(error) (*s3.GetObjectOutput, error),
+) (*s3.GetObjectOutput, error) {
+	_ = b.ensureActiveBucketLoaded(ctx)
+	obj, err := b.openMountedFallbackObject(bucket, key)
+	if err != nil {
+		return fail(mapOpenError(err))
+	}
+
+	objSize := obj.info.Size()
+	startOffset, length, contentRange, err := parseCommittedGetRange(objSize, rangeHdr)
+	if err != nil {
+		_ = obj.file.Close()
+		return fail(err)
+	}
+
+	var body io.ReadCloser = obj.file
+	if startOffset != 0 || length != objSize {
+		rdr := io.NewSectionReader(obj.file, startOffset, length)
+		body = &backend.FileSectionReadCloser{R: rdr, F: obj.file}
+	}
+
+	ct := burnbridgeDefaultContentType
+	etag := mountedFallbackETag(obj.info)
+	lm := obj.info.ModTime().UTC()
+	clen := length
+	return &s3.GetObjectOutput{
+		Body:          wrapBody(body),
+		AcceptRanges:  backend.GetPtrFromString("bytes"),
+		ETag:          &etag,
+		LastModified:  backend.GetTimePtr(lm),
+		ContentLength: &clen,
+		ContentRange:  contentRange,
+		StorageClass:  types.StorageClassStandard,
+		ContentType:   &ct,
+	}, nil
+}
+
 func (b *BurnBridge) prepareCommittedListing(ctx context.Context, bucket string) (fstest.MapFS, map[string]meta.CommittedObjectSummary, error) {
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
@@ -3387,13 +3868,80 @@ func (b *BurnBridge) prepareCommittedListing(ctx context.Context, bucket string)
 		return nil, nil, err
 	}
 	if len(byKey) > 0 {
-		return fsys, byKey, nil
+		return b.mergeMountedFallbackListing(ctx, bucket, fsys, byKey)
 	}
 
 	if err := b.ensureImportedBucketState(ctx, bucket); err != nil {
 		return nil, nil, err
 	}
-	return b.committedMapFSAndSummaries(bucket)
+	fsys, byKey, err = b.committedMapFSAndSummaries(bucket)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(byKey) > 0 {
+		return b.mergeMountedFallbackListing(ctx, bucket, fsys, byKey)
+	}
+	return b.mountedFallbackMapFSAndSummaries(ctx, bucket)
+}
+
+func (b *BurnBridge) mergeMountedFallbackListing(
+	ctx context.Context,
+	bucket string,
+	baseFS fstest.MapFS,
+	baseByKey map[string]meta.CommittedObjectSummary,
+) (fstest.MapFS, map[string]meta.CommittedObjectSummary, error) {
+	mountFS, mountByKey, err := b.mountedFallbackMapFSAndSummaries(ctx, bucket)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(mountByKey) == 0 {
+		return baseFS, baseByKey, nil
+	}
+
+	mergedFS := fstest.MapFS{}
+	mergedByKey := make(map[string]meta.CommittedObjectSummary, len(mountByKey))
+	for key, sum := range baseByKey {
+		if _, existsOnDisc := mountByKey[key]; !existsOnDisc {
+			continue
+		}
+		addMapFSPath(mergedFS, key)
+		mergedByKey[key] = sum
+	}
+
+	for path, file := range mountFS {
+		if _, exists := mergedFS[path]; !exists {
+			mergedFS[path] = file
+		}
+	}
+	for key, sum := range mountByKey {
+		if _, exists := mergedByKey[key]; exists {
+			continue
+		}
+		mergedByKey[key] = sum
+	}
+	return mergedFS, mergedByKey, nil
+}
+
+func addMapFSPath(fsys fstest.MapFS, key string) {
+	k := strings.TrimPrefix(strings.ReplaceAll(key, `\`, `/`), "/")
+	if k == "" || k == "." {
+		return
+	}
+	parts := strings.Split(k, "/")
+	path := ""
+	for i, seg := range parts {
+		if i > 0 {
+			path += "/"
+		}
+		path += seg
+		if i < len(parts)-1 {
+			if _, ok := fsys[path]; !ok {
+				fsys[path] = &fstest.MapFile{Mode: fs.ModeDir | 0o755}
+			}
+		} else if _, ok := fsys[path]; !ok {
+			fsys[path] = &fstest.MapFile{Mode: 0o644}
+		}
+	}
 }
 
 func (b *BurnBridge) walkObjectMeta(bucket string, byKey map[string]meta.CommittedObjectSummary) backend.GetObjFunc {
@@ -3433,23 +3981,99 @@ func (b *BurnBridge) committedMapFSAndSummaries(bucket string) (fstest.MapFS, ma
 	for _, sum := range summaries {
 		k := strings.TrimPrefix(strings.ReplaceAll(sum.ObjectKey, `\`, `/`), "/")
 		byKey[k] = sum
-		parts := strings.Split(k, "/")
-		path := ""
-		for i, seg := range parts {
-			if i > 0 {
-				path += "/"
-			}
-			path += seg
-			if i < len(parts)-1 {
-				if _, ok := fsys[path]; !ok {
-					fsys[path] = &fstest.MapFile{Mode: fs.ModeDir | 0o755}
-				}
-			} else {
-				fsys[path] = &fstest.MapFile{Mode: 0o644}
-			}
-		}
+		addMapFSPath(fsys, k)
 	}
 	return fsys, byKey, nil
+}
+
+func (b *BurnBridge) mountedFallbackMapFSAndSummaries(ctx context.Context, bucket string) (fstest.MapFS, map[string]meta.CommittedObjectSummary, error) {
+	_ = b.ensureActiveBucketLoaded(ctx)
+	root, ok := b.mountedFallbackRoot(bucket)
+	if !ok {
+		return fstest.MapFS{}, map[string]meta.CommittedObjectSummary{}, nil
+	}
+
+	fsys := fstest.MapFS{}
+	byKey := map[string]meta.CommittedObjectSummary{}
+	count := 0
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == root {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() && strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(bucket)) {
+			return filepath.SkipDir
+		}
+		if shouldSkipMountedFallbackEntry(name, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		key := filepath.ToSlash(rel)
+		key = strings.TrimPrefix(key, "/")
+		if key == "" || key == "." {
+			return nil
+		}
+
+		if d.IsDir() {
+			fsys[key] = &fstest.MapFile{Mode: fs.ModeDir | 0o755}
+			return nil
+		}
+
+		if count >= mountedReadFallbackMaxFiles {
+			return fmt.Errorf("burnbridge: mounted read fallback exceeded max file count %d", mountedReadFallbackMaxFiles)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		count++
+		fsys[key] = &fstest.MapFile{Mode: 0o644}
+		byKey[key] = meta.CommittedObjectSummary{
+			ObjectKey:    key,
+			Size:         info.Size(),
+			LastModified: info.ModTime().UTC(),
+			ETag:         mountedFallbackETag(info),
+			ContentType:  burnbridgeDefaultContentType,
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	return fsys, byKey, nil
+}
+
+func shouldSkipMountedFallbackEntry(name string, isDir bool) bool {
+	trimmed := strings.TrimSpace(name)
+	lower := strings.ToLower(trimmed)
+	if trimmed == "" {
+		return true
+	}
+	if isDir {
+		return strings.EqualFold(trimmed, "__MACOSX") || strings.EqualFold(trimmed, strings.Trim(burnbridgeControlNamespacePrefix, "/"))
+	}
+	if strings.EqualFold(trimmed, ".DS_Store") {
+		return true
+	}
+	if strings.HasPrefix(lower, "oa") && strings.HasSuffix(lower, ".sqlite3") {
+		return true
+	}
+	switch lower {
+	case "oa.sqlite3", "metadata.sqlite3", "archive.sqlite3", "thumbs.db", "desktop.ini":
+		return true
+	default:
+		return false
+	}
 }
 
 func listObjectsV2RequestTokens(input *s3.ListObjectsV2Input) (startAfter, contTok string) {
@@ -4092,6 +4716,60 @@ func (b *BurnBridge) cleanupMultipartUploadState(bucket, key, uploadID string, p
 		errs = append(errs, err)
 	}
 	if err := b.deleteMultipartInitState(bucket, key, uploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func (b *BurnBridge) cleanupCompletedMultipartObjectState(bucket, key, uploadID string, parts []meta.BurnUploadPartRecord) error {
+	var errs []error
+	uploadIDs := map[string]struct{}{}
+	addUploadID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			uploadIDs[id] = struct{}{}
+		}
+	}
+	addUploadID(uploadID)
+	for _, part := range parts {
+		addUploadID(part.UploadID)
+	}
+
+	sessions, err := b.meta.ListBurnUploadSessions(bucket, key)
+	if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	for _, session := range sessions {
+		if session.Kind == meta.BurnUploadKindMultipart {
+			addUploadID(session.UploadID)
+		}
+	}
+
+	attrs, err := b.meta.ListAttributes(bucket, key)
+	if err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	for _, attr := range attrs {
+		if strings.HasPrefix(attr, burnbridgeMultipartInitAttrPref) {
+			addUploadID(strings.TrimPrefix(attr, burnbridgeMultipartInitAttrPref))
+		}
+	}
+
+	for id := range uploadIDs {
+		if err := b.meta.DeleteBurnObjectSegments(bucket, multipartSessionObjectKey(id)); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			errs = append(errs, err)
+		}
+		if err := b.deleteMultipartInitState(bucket, key, id); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			errs = append(errs, err)
+		}
+	}
+	if err := b.meta.DeleteBurnUploadParts(bucket, key, ""); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if err := b.meta.DeleteBurnUploadSession(bucket, key, ""); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
 		errs = append(errs, err)
 	}
 	if len(errs) > 0 {

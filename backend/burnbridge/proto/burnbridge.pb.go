@@ -689,6 +689,7 @@ type GetImportedBucketStateResponse struct {
 	MetadataDbFileName string                 `protobuf:"bytes,3,opt,name=metadata_db_file_name,json=metadataDbFileName,proto3" json:"metadata_db_file_name,omitempty"`
 	Loaded             bool                   `protobuf:"varint,4,opt,name=loaded,proto3" json:"loaded,omitempty"`
 	Objects            []*ImportedObjectState `protobuf:"bytes,5,rep,name=objects,proto3" json:"objects,omitempty"`
+	BucketMetadata     []*ObjectMetadata      `protobuf:"bytes,6,rep,name=bucket_metadata,json=bucketMetadata,proto3" json:"bucket_metadata,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -754,6 +755,13 @@ func (x *GetImportedBucketStateResponse) GetLoaded() bool {
 func (x *GetImportedBucketStateResponse) GetObjects() []*ImportedObjectState {
 	if x != nil {
 		return x.Objects
+	}
+	return nil
+}
+
+func (x *GetImportedBucketStateResponse) GetBucketMetadata() []*ObjectMetadata {
+	if x != nil {
+		return x.BucketMetadata
 	}
 	return nil
 }
@@ -3148,13 +3156,14 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\x05drive\x18\x01 \x01(\v2#.burnbridge.v1.OpticalDriveIdentityR\x05drive\x122\n" +
 	"\x04disc\x18\x02 \x01(\v2\x1e.burnbridge.v1.OpticalDiscInfoR\x04disc\"7\n" +
 	"\x1dGetImportedBucketStateRequest\x12\x16\n" +
-	"\x06bucket\x18\x01 \x01(\tR\x06bucket\"\xeb\x01\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\"\xb3\x02\n" +
 	"\x1eGetImportedBucketStateResponse\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12(\n" +
 	"\x10udf_volume_label\x18\x02 \x01(\tR\x0eudfVolumeLabel\x121\n" +
 	"\x15metadata_db_file_name\x18\x03 \x01(\tR\x12metadataDbFileName\x12\x16\n" +
 	"\x06loaded\x18\x04 \x01(\bR\x06loaded\x12<\n" +
-	"\aobjects\x18\x05 \x03(\v2\".burnbridge.v1.ImportedObjectStateR\aobjects\"\xac\x03\n" +
+	"\aobjects\x18\x05 \x03(\v2\".burnbridge.v1.ImportedObjectStateR\aobjects\x12F\n" +
+	"\x0fbucket_metadata\x18\x06 \x03(\v2\x1d.burnbridge.v1.ObjectMetadataR\x0ebucketMetadata\"\xac\x03\n" +
 	"\x13ImportedObjectState\x12\x1d\n" +
 	"\n" +
 	"object_key\x18\x01 \x01(\tR\tobjectKey\x12\x12\n" +
@@ -3442,55 +3451,56 @@ var file_burnbridge_proto_depIdxs = []int32{
 	12, // 1: burnbridge.v1.GetDiscInfoResponse.drive:type_name -> burnbridge.v1.OpticalDriveIdentity
 	13, // 2: burnbridge.v1.GetDiscInfoResponse.disc:type_name -> burnbridge.v1.OpticalDiscInfo
 	11, // 3: burnbridge.v1.GetImportedBucketStateResponse.objects:type_name -> burnbridge.v1.ImportedObjectState
-	22, // 4: burnbridge.v1.ImportedObjectState.metadata:type_name -> burnbridge.v1.ObjectMetadata
-	14, // 5: burnbridge.v1.OpticalDiscInfo.rw_speeds:type_name -> burnbridge.v1.DiscRwSpeedDescriptor
-	15, // 6: burnbridge.v1.OpticalDiscInfo.session_disc_id:type_name -> burnbridge.v1.SessionDiscId
-	16, // 7: burnbridge.v1.S3ObjectPullSource.credentials:type_name -> burnbridge.v1.S3PullCredentials
-	17, // 8: burnbridge.v1.RegisterS3ObjectPullSourceRequest.source:type_name -> burnbridge.v1.S3ObjectPullSource
-	22, // 9: burnbridge.v1.CreateJobRequest.metadata:type_name -> burnbridge.v1.ObjectMetadata
-	26, // 10: burnbridge.v1.UploadObjectAck.disc_extents:type_name -> burnbridge.v1.DiscExtent
-	0,  // 11: burnbridge.v1.UploadObjectAck.segment_burn_result:type_name -> burnbridge.v1.SegmentBurnResult
-	42, // 12: burnbridge.v1.CommitJobRequest.finalize_manifest:type_name -> burnbridge.v1.FinalizeManifest
-	43, // 13: burnbridge.v1.FinalizeManifest.files:type_name -> burnbridge.v1.FinalizeFile
-	44, // 14: burnbridge.v1.FinalizeFile.segments:type_name -> burnbridge.v1.SegmentLayout
-	26, // 15: burnbridge.v1.SegmentLayout.disc_extents:type_name -> burnbridge.v1.DiscExtent
-	1,  // 16: burnbridge.v1.BurnBridge.GetVersion:input_type -> burnbridge.v1.GetVersionRequest
-	23, // 17: burnbridge.v1.BurnBridge.CreateJob:input_type -> burnbridge.v1.CreateJobRequest
-	25, // 18: burnbridge.v1.BurnBridge.UploadObject:input_type -> burnbridge.v1.UploadObjectChunk
-	28, // 19: burnbridge.v1.BurnBridge.CommitJob:input_type -> burnbridge.v1.CommitJobRequest
-	30, // 20: burnbridge.v1.BurnBridge.GetJobStatus:input_type -> burnbridge.v1.GetJobStatusRequest
-	32, // 21: burnbridge.v1.BurnBridge.CancelJob:input_type -> burnbridge.v1.CancelJobRequest
-	20, // 22: burnbridge.v1.BurnBridge.ReadObject:input_type -> burnbridge.v1.ReadObjectRequest
-	18, // 23: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:input_type -> burnbridge.v1.RegisterS3ObjectPullSourceRequest
-	3,  // 24: burnbridge.v1.BurnBridge.TestUnitReady:input_type -> burnbridge.v1.TestUnitReadyRequest
-	4,  // 25: burnbridge.v1.BurnBridge.WatchUnitStatus:input_type -> burnbridge.v1.WatchUnitStatusRequest
-	7,  // 26: burnbridge.v1.BurnBridge.GetDiscInfo:input_type -> burnbridge.v1.GetDiscInfoRequest
-	9,  // 27: burnbridge.v1.BurnBridge.GetImportedBucketState:input_type -> burnbridge.v1.GetImportedBucketStateRequest
-	34, // 28: burnbridge.v1.BurnBridge.FinalizeLayout:input_type -> burnbridge.v1.FinalizeLayoutRequest
-	36, // 29: burnbridge.v1.BurnBridge.UpdateLicense:input_type -> burnbridge.v1.UpdateLicenseRequest
-	38, // 30: burnbridge.v1.BurnBridge.UploadUpgradePackage:input_type -> burnbridge.v1.UploadUpgradePackageChunk
-	40, // 31: burnbridge.v1.BurnBridge.ApplyUpgrade:input_type -> burnbridge.v1.ApplyUpgradeRequest
-	2,  // 32: burnbridge.v1.BurnBridge.GetVersion:output_type -> burnbridge.v1.GetVersionResponse
-	24, // 33: burnbridge.v1.BurnBridge.CreateJob:output_type -> burnbridge.v1.CreateJobResponse
-	27, // 34: burnbridge.v1.BurnBridge.UploadObject:output_type -> burnbridge.v1.UploadObjectAck
-	29, // 35: burnbridge.v1.BurnBridge.CommitJob:output_type -> burnbridge.v1.CommitJobResponse
-	31, // 36: burnbridge.v1.BurnBridge.GetJobStatus:output_type -> burnbridge.v1.GetJobStatusResponse
-	33, // 37: burnbridge.v1.BurnBridge.CancelJob:output_type -> burnbridge.v1.CancelJobResponse
-	21, // 38: burnbridge.v1.BurnBridge.ReadObject:output_type -> burnbridge.v1.ReadObjectChunk
-	19, // 39: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:output_type -> burnbridge.v1.RegisterS3ObjectPullSourceResponse
-	5,  // 40: burnbridge.v1.BurnBridge.TestUnitReady:output_type -> burnbridge.v1.TestUnitReadyResponse
-	6,  // 41: burnbridge.v1.BurnBridge.WatchUnitStatus:output_type -> burnbridge.v1.UnitStatusEvent
-	8,  // 42: burnbridge.v1.BurnBridge.GetDiscInfo:output_type -> burnbridge.v1.GetDiscInfoResponse
-	10, // 43: burnbridge.v1.BurnBridge.GetImportedBucketState:output_type -> burnbridge.v1.GetImportedBucketStateResponse
-	35, // 44: burnbridge.v1.BurnBridge.FinalizeLayout:output_type -> burnbridge.v1.FinalizeLayoutResponse
-	37, // 45: burnbridge.v1.BurnBridge.UpdateLicense:output_type -> burnbridge.v1.UpdateLicenseResponse
-	39, // 46: burnbridge.v1.BurnBridge.UploadUpgradePackage:output_type -> burnbridge.v1.UploadUpgradePackageResponse
-	41, // 47: burnbridge.v1.BurnBridge.ApplyUpgrade:output_type -> burnbridge.v1.ApplyUpgradeResponse
-	32, // [32:48] is the sub-list for method output_type
-	16, // [16:32] is the sub-list for method input_type
-	16, // [16:16] is the sub-list for extension type_name
-	16, // [16:16] is the sub-list for extension extendee
-	0,  // [0:16] is the sub-list for field type_name
+	22, // 4: burnbridge.v1.GetImportedBucketStateResponse.bucket_metadata:type_name -> burnbridge.v1.ObjectMetadata
+	22, // 5: burnbridge.v1.ImportedObjectState.metadata:type_name -> burnbridge.v1.ObjectMetadata
+	14, // 6: burnbridge.v1.OpticalDiscInfo.rw_speeds:type_name -> burnbridge.v1.DiscRwSpeedDescriptor
+	15, // 7: burnbridge.v1.OpticalDiscInfo.session_disc_id:type_name -> burnbridge.v1.SessionDiscId
+	16, // 8: burnbridge.v1.S3ObjectPullSource.credentials:type_name -> burnbridge.v1.S3PullCredentials
+	17, // 9: burnbridge.v1.RegisterS3ObjectPullSourceRequest.source:type_name -> burnbridge.v1.S3ObjectPullSource
+	22, // 10: burnbridge.v1.CreateJobRequest.metadata:type_name -> burnbridge.v1.ObjectMetadata
+	26, // 11: burnbridge.v1.UploadObjectAck.disc_extents:type_name -> burnbridge.v1.DiscExtent
+	0,  // 12: burnbridge.v1.UploadObjectAck.segment_burn_result:type_name -> burnbridge.v1.SegmentBurnResult
+	42, // 13: burnbridge.v1.CommitJobRequest.finalize_manifest:type_name -> burnbridge.v1.FinalizeManifest
+	43, // 14: burnbridge.v1.FinalizeManifest.files:type_name -> burnbridge.v1.FinalizeFile
+	44, // 15: burnbridge.v1.FinalizeFile.segments:type_name -> burnbridge.v1.SegmentLayout
+	26, // 16: burnbridge.v1.SegmentLayout.disc_extents:type_name -> burnbridge.v1.DiscExtent
+	1,  // 17: burnbridge.v1.BurnBridge.GetVersion:input_type -> burnbridge.v1.GetVersionRequest
+	23, // 18: burnbridge.v1.BurnBridge.CreateJob:input_type -> burnbridge.v1.CreateJobRequest
+	25, // 19: burnbridge.v1.BurnBridge.UploadObject:input_type -> burnbridge.v1.UploadObjectChunk
+	28, // 20: burnbridge.v1.BurnBridge.CommitJob:input_type -> burnbridge.v1.CommitJobRequest
+	30, // 21: burnbridge.v1.BurnBridge.GetJobStatus:input_type -> burnbridge.v1.GetJobStatusRequest
+	32, // 22: burnbridge.v1.BurnBridge.CancelJob:input_type -> burnbridge.v1.CancelJobRequest
+	20, // 23: burnbridge.v1.BurnBridge.ReadObject:input_type -> burnbridge.v1.ReadObjectRequest
+	18, // 24: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:input_type -> burnbridge.v1.RegisterS3ObjectPullSourceRequest
+	3,  // 25: burnbridge.v1.BurnBridge.TestUnitReady:input_type -> burnbridge.v1.TestUnitReadyRequest
+	4,  // 26: burnbridge.v1.BurnBridge.WatchUnitStatus:input_type -> burnbridge.v1.WatchUnitStatusRequest
+	7,  // 27: burnbridge.v1.BurnBridge.GetDiscInfo:input_type -> burnbridge.v1.GetDiscInfoRequest
+	9,  // 28: burnbridge.v1.BurnBridge.GetImportedBucketState:input_type -> burnbridge.v1.GetImportedBucketStateRequest
+	34, // 29: burnbridge.v1.BurnBridge.FinalizeLayout:input_type -> burnbridge.v1.FinalizeLayoutRequest
+	36, // 30: burnbridge.v1.BurnBridge.UpdateLicense:input_type -> burnbridge.v1.UpdateLicenseRequest
+	38, // 31: burnbridge.v1.BurnBridge.UploadUpgradePackage:input_type -> burnbridge.v1.UploadUpgradePackageChunk
+	40, // 32: burnbridge.v1.BurnBridge.ApplyUpgrade:input_type -> burnbridge.v1.ApplyUpgradeRequest
+	2,  // 33: burnbridge.v1.BurnBridge.GetVersion:output_type -> burnbridge.v1.GetVersionResponse
+	24, // 34: burnbridge.v1.BurnBridge.CreateJob:output_type -> burnbridge.v1.CreateJobResponse
+	27, // 35: burnbridge.v1.BurnBridge.UploadObject:output_type -> burnbridge.v1.UploadObjectAck
+	29, // 36: burnbridge.v1.BurnBridge.CommitJob:output_type -> burnbridge.v1.CommitJobResponse
+	31, // 37: burnbridge.v1.BurnBridge.GetJobStatus:output_type -> burnbridge.v1.GetJobStatusResponse
+	33, // 38: burnbridge.v1.BurnBridge.CancelJob:output_type -> burnbridge.v1.CancelJobResponse
+	21, // 39: burnbridge.v1.BurnBridge.ReadObject:output_type -> burnbridge.v1.ReadObjectChunk
+	19, // 40: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:output_type -> burnbridge.v1.RegisterS3ObjectPullSourceResponse
+	5,  // 41: burnbridge.v1.BurnBridge.TestUnitReady:output_type -> burnbridge.v1.TestUnitReadyResponse
+	6,  // 42: burnbridge.v1.BurnBridge.WatchUnitStatus:output_type -> burnbridge.v1.UnitStatusEvent
+	8,  // 43: burnbridge.v1.BurnBridge.GetDiscInfo:output_type -> burnbridge.v1.GetDiscInfoResponse
+	10, // 44: burnbridge.v1.BurnBridge.GetImportedBucketState:output_type -> burnbridge.v1.GetImportedBucketStateResponse
+	35, // 45: burnbridge.v1.BurnBridge.FinalizeLayout:output_type -> burnbridge.v1.FinalizeLayoutResponse
+	37, // 46: burnbridge.v1.BurnBridge.UpdateLicense:output_type -> burnbridge.v1.UpdateLicenseResponse
+	39, // 47: burnbridge.v1.BurnBridge.UploadUpgradePackage:output_type -> burnbridge.v1.UploadUpgradePackageResponse
+	41, // 48: burnbridge.v1.BurnBridge.ApplyUpgrade:output_type -> burnbridge.v1.ApplyUpgradeResponse
+	33, // [33:49] is the sub-list for method output_type
+	17, // [17:33] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_burnbridge_proto_init() }

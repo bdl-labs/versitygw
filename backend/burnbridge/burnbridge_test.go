@@ -43,6 +43,29 @@ type testBurnBridgeClient struct {
 	watchUnitStatusFn     func(context.Context, *burnbridgev1.WatchUnitStatusRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.UnitStatusEvent], error)
 }
 
+type testReadObjectStream struct {
+	grpc.ClientStream
+	chunks [][]byte
+	idx    int
+}
+
+func newTestReadObjectStream(chunks ...[]byte) *testReadObjectStream {
+	return &testReadObjectStream{chunks: chunks}
+}
+
+func (s *testReadObjectStream) Recv() (*burnbridgev1.ReadObjectChunk, error) {
+	if s.idx >= len(s.chunks) {
+		return nil, io.EOF
+	}
+	data := s.chunks[s.idx]
+	s.idx++
+	return &burnbridgev1.ReadObjectChunk{Data: data}, nil
+}
+
+func (s *testReadObjectStream) CloseSend() error {
+	return nil
+}
+
 func (c testBurnBridgeClient) CreateJob(ctx context.Context, req *burnbridgev1.CreateJobRequest, opts ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
 	if c.createJobFn != nil {
 		return c.createJobFn(ctx, req, opts...)
@@ -600,6 +623,237 @@ func TestHeadAndListUseMetadataOnly(t *testing.T) {
 	}
 }
 
+func TestMountedReadFallbackListsAndGetsPlainDiscFiles(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(readMount, "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "dir", "file.txt"), []byte("hello mounted disc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		readMount:    readMount,
+		activeBucket: "disc-a",
+	}
+
+	list, err := b.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		Bucket: ptr("disc-a"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Contents) != 1 || list.Contents[0].Key == nil || *list.Contents[0].Key != "dir/file.txt" {
+		t.Fatalf("expected only mounted user file in listing, got %#v", list.Contents)
+	}
+
+	head, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: ptr("disc-a"),
+		Key:    ptr("dir/file.txt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.ContentLength == nil || *head.ContentLength != int64(len("hello mounted disc")) {
+		t.Fatalf("unexpected fallback head: %#v", head)
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("disc-a"),
+		Key:    ptr("dir/file.txt"),
+		Range:  ptr("bytes=6-12"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	body, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "mounted" {
+		t.Fatalf("unexpected fallback get body %q", string(body))
+	}
+}
+
+func TestMountedReadFallbackMergesWithCommittedListing(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Date(2026, 6, 14, 8, 0, 0, 0, time.UTC)
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "db-only.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"db\"",
+		LastModified: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "smoke/mounted.bin", &meta.BurnbridgeCommittedRecord{
+		Size:         99,
+		ETag:         "\"db-mounted\"",
+		LastModified: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	readMount := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(readMount, "smoke"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "smoke", "mounted.bin"), []byte("mounted"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		readMount:    readMount,
+		activeBucket: "disc-a",
+	}
+
+	list, err := b.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		Bucket: ptr("disc-a"),
+		Prefix: ptr("smoke/"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Contents) != 1 || list.Contents[0].Key == nil || *list.Contents[0].Key != "smoke/mounted.bin" {
+		t.Fatalf("expected mounted fallback object to merge into listing, got %#v", list.Contents)
+	}
+	if list.Contents[0].Size == nil || *list.Contents[0].Size != 99 {
+		t.Fatalf("expected DB metadata to win for mounted object, got %#v", list.Contents[0].Size)
+	}
+
+	rootList, err := b.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		Bucket: ptr("disc-a"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, obj := range rootList.Contents {
+		if obj.Key != nil && *obj.Key == "db-only.txt" {
+			t.Fatalf("DB-only object should be filtered when mounted disc is visible: %#v", rootList.Contents)
+		}
+	}
+
+	if _, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: ptr("disc-a"),
+		Key:    ptr("db-only.txt"),
+	}); err == nil {
+		t.Fatal("expected HeadObject to hide DB-only object when mounted disc is visible")
+	}
+	if _, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("disc-a"),
+		Key:    ptr("db-only.txt"),
+	}); err == nil {
+		t.Fatal("expected GetObject to hide DB-only object when mounted disc is visible")
+	}
+
+	head, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
+		Bucket: ptr("disc-a"),
+		Key:    ptr("smoke/mounted.bin"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head.ContentLength == nil || *head.ContentLength != int64(len("mounted")) {
+		t.Fatalf("expected HeadObject size to follow mounted file, got %#v", head.ContentLength)
+	}
+}
+
+func TestMountedReadFallbackUsesDiscRootAndSkipsBucketDirectory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(readMount, "disc-a"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "disc-a", "file.txt"), []byte("bucket layout"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "root.txt"), []byte("plain root"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		grpc:         testBurnBridgeClient{},
+		readMount:    readMount,
+		activeBucket: "disc-a",
+	}
+
+	list, err := b.ListObjects(context.Background(), &s3.ListObjectsInput{
+		Bucket: ptr("disc-a"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Contents) != 1 || list.Contents[0].Key == nil || *list.Contents[0].Key != "root.txt" {
+		t.Fatalf("expected disc root listing only, got %#v", list.Contents)
+	}
+}
+
+func TestMountedReadFallbackDisabledWhenNoDiscLatched(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.WriteFile(filepath.Join(readMount, "file.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:           store,
+		grpc:           testBurnBridgeClient{},
+		readMount:      readMount,
+		activeBucket:   "disc-a",
+		noDiscLatched:  true,
+		volumeLabelRaw: "DISC-A",
+	}
+
+	list, err := b.ListBuckets(context.Background(), s3response.ListBucketsInput{
+		Owner:      "owner",
+		MaxBuckets: 1000,
+		IsAdmin:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Buckets.Bucket) != 0 {
+		t.Fatalf("expected no buckets while no-disc is latched, got %#v", list.Buckets.Bucket)
+	}
+
+	if _, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("disc-a"),
+		Key:    ptr("file.txt"),
+	}); err == nil {
+		t.Fatal("expected no-disc latch to block stale mounted fallback object")
+	}
+}
+
 func TestMetadataHotPathsDoNotProbeRecorder(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -726,7 +980,7 @@ func TestEnsureActiveBucketLoadedSingleflight(t *testing.T) {
 	}
 }
 
-func TestEnsureActiveBucketLoadedSkipsProbeDuringRecentNoDiscWindow(t *testing.T) {
+func TestEnsureActiveBucketLoadedSkipsProbeWhileNoDiscLatched(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
 	if err != nil {
@@ -746,7 +1000,8 @@ func TestEnsureActiveBucketLoadedSkipsProbeDuringRecentNoDiscWindow(t *testing.T
 				}, nil
 			},
 		},
-		lastNoDiscObservedAt: time.Now().UTC(),
+		lastNoDiscObservedAt: time.Now().UTC().Add(-time.Hour),
+		noDiscLatched:        true,
 		importedBucketState:  map[string]bool{},
 	}
 
@@ -754,14 +1009,14 @@ func TestEnsureActiveBucketLoadedSkipsProbeDuringRecentNoDiscWindow(t *testing.T
 		t.Fatal(err)
 	}
 	if got := atomic.LoadInt32(&readyCalls); got != 0 {
-		t.Fatalf("expected no TestUnitReady call during no-disc cooldown, got %d", got)
+		t.Fatalf("expected no TestUnitReady call while no-disc is latched, got %d", got)
 	}
 	if strings.TrimSpace(b.activeBucket) != "" {
-		t.Fatalf("expected active bucket to remain empty during no-disc cooldown, got %q", b.activeBucket)
+		t.Fatalf("expected active bucket to remain empty while no-disc is latched, got %q", b.activeBucket)
 	}
 }
 
-func TestEnsureActiveBucketLoadedReprobesAfterNoDiscCooldown(t *testing.T) {
+func TestSyncActiveDiscStateClearsNoDiscLatchOnReady(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
 	if err != nil {
@@ -769,17 +1024,9 @@ func TestEnsureActiveBucketLoadedReprobesAfterNoDiscCooldown(t *testing.T) {
 	}
 	defer func() { _ = store.Close() }()
 
-	var readyCalls int32
 	b := &BurnBridge{
 		meta: store,
 		grpc: testBurnBridgeClient{
-			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
-				atomic.AddInt32(&readyCalls, 1)
-				return &burnbridgev1.TestUnitReadyResponse{
-					Ready:       true,
-					VolumeLabel: "DISC-A",
-				}, nil
-			},
 			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
 				return &burnbridgev1.GetImportedBucketStateResponse{
 					Loaded: true,
@@ -787,18 +1034,22 @@ func TestEnsureActiveBucketLoadedReprobesAfterNoDiscCooldown(t *testing.T) {
 				}, nil
 			},
 		},
-		lastNoDiscObservedAt: time.Now().UTC().Add(-(noDiscProbeCooldown + time.Second)),
+		lastNoDiscObservedAt: time.Now().UTC().Add(-time.Hour),
+		noDiscLatched:        true,
 		importedBucketState:  map[string]bool{},
 	}
 
-	if err := b.ensureActiveBucketLoaded(context.Background()); err != nil {
+	if err := b.syncActiveDiscState(&burnbridgev1.TestUnitReadyResponse{
+		Ready:       true,
+		VolumeLabel: "DISC-A",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := atomic.LoadInt32(&readyCalls); got != 1 {
-		t.Fatalf("expected one TestUnitReady reprobe after no-disc cooldown, got %d", got)
+	if b.noDiscLatchedState() {
+		t.Fatal("expected ready state to clear no-disc latch")
 	}
 	if got := strings.TrimSpace(b.activeBucket); got != "disc-a" {
-		t.Fatalf("expected reprobe to restore active bucket disc-a, got %q", got)
+		t.Fatalf("expected ready state to restore active bucket disc-a, got %q", got)
 	}
 }
 
@@ -894,6 +1145,462 @@ func TestEnsureImportedBucketStateSingleflightForEmptyBucket(t *testing.T) {
 	}
 }
 
+func TestSyncImportedBucketStatePrunesStaleCommittedObjects(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Date(2026, 6, 14, 9, 0, 0, 0, time.UTC)
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "stale.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"stale\"",
+		LastModified: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-a", "keep.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         1,
+		ETag:         "\"old\"",
+		LastModified: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "disc-a",
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "disc-a",
+					Objects: []*burnbridgev1.ImportedObjectState{
+						{
+							ObjectKey:       "keep.txt",
+							Size:            42,
+							Etag:            "\"fresh\"",
+							LastModifiedUtc: now.Add(time.Minute).Format(time.RFC3339Nano),
+						},
+					},
+				}, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	if err := b.syncImportedBucketState(context.Background(), "disc-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetCommittedObjectSummary("disc-a", "stale.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected stale committed object to be pruned, got err=%v", err)
+	}
+	sum, err := store.GetCommittedObjectSummary("disc-a", "keep.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.Size != 42 || sum.ETag != "\"fresh\"" {
+		t.Fatalf("expected imported object to be refreshed, got %#v", sum)
+	}
+}
+
+func TestSyncImportedBucketStateDeletesOtherBucketMetadata(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	now := time.Date(2026, 6, 14, 9, 30, 0, 0, time.UTC)
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-old", "ghost.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		LastModified: now.Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:        "disc-old",
+		ObjectName:    "ghost.txt",
+		UploadID:      "upload-old",
+		Kind:          meta.BurnUploadKindMultipart,
+		State:         meta.BurnUploadStateWriting,
+		RecorderJobID: "job-old",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        "disc-old",
+		ObjectName:    "ghost.txt",
+		UploadID:      "upload-old",
+		PartNumber:    1,
+		BytesReceived: 1,
+		State:         meta.BurnUploadStateWriting,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: "OLD-DISC",
+		Bucket:           "disc-old",
+		UdfVolumeLabel:   "OLD-DISC",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "disc-new",
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "disc-new",
+					Objects: []*burnbridgev1.ImportedObjectState{
+						{
+							ObjectKey:       "current.txt",
+							Size:            42,
+							LastModifiedUtc: now.Format(time.RFC3339Nano),
+						},
+					},
+				}, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	if err := b.syncImportedBucketState(context.Background(), "disc-new"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := store.GetCommittedObjectSummary("disc-old", "ghost.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected old committed metadata to be deleted, got %v", err)
+	}
+	if _, err := store.GetBurnUploadSession("disc-old", "ghost.txt", "upload-old"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected old upload session to be deleted, got %v", err)
+	}
+	if _, err := store.GetBurnUploadPart("disc-old", "ghost.txt", "upload-old", 1); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected old upload part to be deleted, got %v", err)
+	}
+	if bindings, err := store.ListBurnbridgeDiscBucketBindings("disc-old"); err != nil {
+		t.Fatal(err)
+	} else if len(bindings) != 0 {
+		t.Fatalf("expected old runtime bindings to be deleted, got %#v", bindings)
+	}
+	if _, err := store.GetCommittedObjectSummary("disc-new", "current.txt"); err != nil {
+		t.Fatalf("expected current imported object to remain, got %v", err)
+	}
+}
+
+func TestSyncImportedBucketStateIgnoresBucketMismatchedWithMountedDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(readMount, "disc-current"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "OAdisc-current.sqlite3"), []byte("metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		readMount:    readMount,
+		activeBucket: "disc-current",
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "disc-old",
+					Objects: []*burnbridgev1.ImportedObjectState{
+						{ObjectKey: "ghost.txt", Size: 1},
+					},
+				}, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	if err := b.syncImportedBucketState(context.Background(), "disc-current"); err != nil {
+		t.Fatal(err)
+	}
+	if b.activeBucket != "disc-current" {
+		t.Fatalf("expected active bucket to remain mounted bucket, got %q", b.activeBucket)
+	}
+	if _, err := store.GetCommittedObjectSummary("disc-old", "ghost.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected mismatched imported object to be ignored, got err=%v", err)
+	}
+}
+
+func TestEnsureActiveBucketLoadedSwitchesToMountedDiscBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(readMount, "disc-current"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "OAdisc-current.sqlite3"), []byte("metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "disc-current", "file.txt"), []byte("current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		readMount:    readMount,
+		activeBucket: "disc-old",
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded: true,
+					Bucket: "disc-old",
+				}, nil
+			},
+		},
+		importedBucketState:        map[string]bool{},
+		pendingImportedConvergence: map[string]bool{},
+	}
+
+	list, err := b.ListBuckets(context.Background(), s3response.ListBucketsInput{
+		Owner:      "owner",
+		MaxBuckets: 1000,
+		IsAdmin:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.activeBucket != "disc-current" {
+		t.Fatalf("expected active bucket to switch to mounted bucket, got %q", b.activeBucket)
+	}
+	if len(list.Buckets.Bucket) != 1 || list.Buckets.Bucket[0].Name != "disc-current" {
+		t.Fatalf("expected mounted bucket listing, got %#v", list.Buckets.Bucket)
+	}
+}
+
+func TestMountedDiscBucketHintBlocksHistoricalBucketAccess(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-old", "ghost.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         1,
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	readMount := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(readMount, "disc-current"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "OAdisc-current.sqlite3"), []byte("metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "disc-current", "file.txt"), []byte("current"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		readMount:    readMount,
+		activeBucket: "disc-current",
+		grpc:         testBurnBridgeClient{},
+	}
+
+	if _, err := b.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{
+		Bucket: ptr("disc-old"),
+	}); err == nil {
+		t.Fatal("expected historical bucket access to fail while a different mounted disc bucket is visible")
+	}
+}
+
+func TestGetObjectFallsBackToMountedRootWhenCommittedBucketPathMissing(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.WriteFile(filepath.Join(readMount, "root-file.txt"), []byte("root-layout"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-current", "root-file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         int64(len("root-layout")),
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		readMount:    readMount,
+		activeBucket: "disc-current",
+		grpc:         testBurnBridgeClient{},
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("disc-current"),
+		Key:    ptr("root-file.txt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "root-layout" {
+		t.Fatalf("expected mounted root file content, got %q", string(raw))
+	}
+}
+
+func TestGetObjectUsesRecorderWhenMountedRootHasArchiveMetadata(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.WriteFile(filepath.Join(readMount, "OAdisc-current.sqlite3"), []byte("metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "root-file.txt"), []byte("mounted-root-layout"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-current", "root-file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         int64(len("recorder-layout")),
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, "disc-current", "", "redundancy_enabled", []byte("true")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, "disc-current", "", "redundancy_parity_block_count", []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+
+	var readCalls int32
+	b := &BurnBridge{
+		meta:         store,
+		readMount:    readMount,
+		activeBucket: "disc-current",
+		grpc: testBurnBridgeClient{
+			readObjectFn: func(_ context.Context, req *burnbridgev1.ReadObjectRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error) {
+				atomic.AddInt32(&readCalls, 1)
+				if req.GetBucket() != "disc-current" || req.GetObjectKey() != "root-file.txt" {
+					t.Fatalf("unexpected recorder read request: %#v", req)
+				}
+				return newTestReadObjectStream([]byte("recorder-layout")), nil
+			},
+		},
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("disc-current"),
+		Key:    ptr("root-file.txt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "recorder-layout" {
+		t.Fatalf("expected recorder content when archive metadata exists, got %q", string(raw))
+	}
+	if got := atomic.LoadInt32(&readCalls); got != 1 {
+		t.Fatalf("expected one recorder read, got %d", got)
+	}
+}
+
+func TestGetObjectUsesMountedRootWhenArchiveMetadataHasRedundancyDisabled(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	readMount := t.TempDir()
+	if err := os.WriteFile(filepath.Join(readMount, "OAdisc-current.sqlite3"), []byte("metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(readMount, "root-file.txt"), []byte("mounted-root-layout"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-current", "root-file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         int64(len("recorder-layout")),
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, "disc-current", "", "redundancy_enabled", []byte("false")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, "disc-current", "", "redundancy_parity_block_count", []byte("0")); err != nil {
+		t.Fatal(err)
+	}
+
+	var readCalls int32
+	b := &BurnBridge{
+		meta:         store,
+		readMount:    readMount,
+		activeBucket: "disc-current",
+		grpc: testBurnBridgeClient{
+			readObjectFn: func(_ context.Context, _ *burnbridgev1.ReadObjectRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error) {
+				atomic.AddInt32(&readCalls, 1)
+				return newTestReadObjectStream([]byte("recorder-layout")), nil
+			},
+		},
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("disc-current"),
+		Key:    ptr("root-file.txt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != "mounted-root-layout" {
+		t.Fatalf("expected mounted content when redundancy is disabled, got %q", string(raw))
+	}
+	if got := atomic.LoadInt32(&readCalls); got != 0 {
+		t.Fatalf("expected no recorder read when redundancy disabled, got %d", got)
+	}
+}
+
 func TestApplyRecorderStatusEventClearsBucketOnNoDisc(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -953,6 +1660,11 @@ func TestSyncActiveDiscStateImportsCommittedObjectsFromRecorder(t *testing.T) {
 					Bucket:         "disc-a",
 					UdfVolumeLabel: "DISC-A",
 					Loaded:         true,
+					BucketMetadata: []*burnbridgev1.ObjectMetadata{
+						{Key: "redundancy_enabled", Value: "true"},
+						{Key: "redundancy_parity_block_count", Value: "2"},
+						{Key: "ignored_non_redundancy", Value: "skip"},
+					},
 					Objects: []*burnbridgev1.ImportedObjectState{
 						{
 							ObjectKey:       "dir/file.txt",
@@ -989,6 +1701,23 @@ func TestSyncActiveDiscStateImportsCommittedObjectsFromRecorder(t *testing.T) {
 	}
 	if got := sum.Metadata["owner"]; got != "qa" {
 		t.Fatalf("expected imported metadata owner=qa, got %q", got)
+	}
+	rawEnabled, err := store.RetrieveAttribute(nil, "disc-a", "", "redundancy_enabled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(rawEnabled); got != "true" {
+		t.Fatalf("expected imported redundancy_enabled=true, got %q", got)
+	}
+	rawParity, err := store.RetrieveAttribute(nil, "disc-a", "", "redundancy_parity_block_count")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(rawParity); got != "2" {
+		t.Fatalf("expected imported redundancy_parity_block_count=2, got %q", got)
+	}
+	if _, err := store.RetrieveAttribute(nil, "disc-a", "", "ignored_non_redundancy"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected non-redundancy metadata to be ignored, got %v", err)
 	}
 }
 
@@ -1382,6 +2111,83 @@ func TestSyncActiveDiscStateRetainsBoundBlankDiscBucket(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&importedCalls); got != 1 {
 		t.Fatalf("expected one imported-state probe for bound blank disc, got %d", got)
+	}
+}
+
+func TestSyncActiveDiscStateClearsStaleCommittedBlankDiscBinding(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: "DISC-BLANK",
+		Bucket:           "disc-old",
+		UdfVolumeLabel:   "DISC-OLD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: "DISC-OLD",
+		Bucket:           "disc-old",
+		UdfVolumeLabel:   "DISC-OLD",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "disc-old", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var importedCalls int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				atomic.AddInt32(&importedCalls, 1)
+				return &burnbridgev1.GetImportedBucketStateResponse{Loaded: false}, nil
+			},
+		},
+		activeBucket:               "disc-old",
+		volumeLabelRaw:             "DISC-OLD",
+		udfLabel:                   "DISC-OLD",
+		importedBucketState:        map[string]bool{"disc-old": true},
+		pendingImportedConvergence: map[string]bool{"disc-old": true},
+	}
+
+	if err := b.syncActiveDiscState(&burnbridgev1.TestUnitReadyResponse{
+		Ready:         true,
+		VolumeLabel:   "DISC-BLANK",
+		WritableState: "Blank",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.TrimSpace(b.activeBucket); got != "disc-blank" {
+		t.Fatalf("expected blank disc to use sanitized bucket disc-blank after stale binding cleanup, got %q", got)
+	}
+	if got := atomic.LoadInt32(&importedCalls); got != 0 {
+		t.Fatalf("expected no imported-state probe after stale blank binding cleanup, got %d", got)
+	}
+	if _, err := store.GetCommittedObjectSummary("disc-old", "file.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected stale committed metadata to be deleted, got err=%v", err)
+	}
+	if bindings, err := store.ListBurnbridgeDiscBucketBindings("disc-old"); err != nil {
+		t.Fatal(err)
+	} else if len(bindings) != 0 {
+		t.Fatalf("expected stale disc-old bindings to be deleted, got %d", len(bindings))
+	}
+	binding, err := store.GetBurnbridgeDiscBucketBinding("DISC-BLANK")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(binding.Bucket); got != "disc-blank" {
+		t.Fatalf("expected replacement blank-disc binding bucket disc-blank, got %q", got)
 	}
 }
 
@@ -2863,6 +3669,39 @@ func TestCompleteMultipartUploadCommitsMergedManifest(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:         bucket,
+		ObjectName:     key,
+		UploadID:       "stale-upload",
+		Kind:           meta.BurnUploadKindMultipart,
+		State:          meta.BurnUploadStateFailed,
+		MediaID:        "DISC-A",
+		RecorderJobID:  "job-stale",
+		ContentLength:  int64(len(part1)),
+		BytesReceived:  int64(len(part1)),
+		NextPartNumber: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        bucket,
+		ObjectName:    key,
+		UploadID:      "stale-upload",
+		PartNumber:    1,
+		StartOffset:   0,
+		BytesReceived: int64(len(part1)),
+		PartSize:      int64(len(part1)),
+		ChecksumMD5:   digest1,
+		ETag:          etag1,
+		State:         meta.BurnUploadStateCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment(bucket, multipartSessionObjectKey("stale-upload"), "DISC-A", 0, 0, int64(len(part1)), digest1, meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "7000000", FileSize: int64(len(part1))},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	b := &BurnBridge{
 		meta:             store,
@@ -2878,6 +3717,12 @@ func TestCompleteMultipartUploadCommitsMergedManifest(t *testing.T) {
 		Key:         ptr(key),
 		ContentType: ptr("application/x-multipart-test"),
 		Metadata:    map[string]string{"owner": "drive"},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.storeMultipartInitState(bucket, key, "stale-upload", buildMultipartInitState(s3response.CreateMultipartUploadInput{
+		Bucket: ptr(bucket),
+		Key:    ptr(key),
 	})); err != nil {
 		t.Fatal(err)
 	}
@@ -2949,6 +3794,15 @@ func TestCompleteMultipartUploadCommitsMergedManifest(t *testing.T) {
 	if _, err := store.GetBurnUploadPart(bucket, key, uploadID, 1); err == nil {
 		t.Fatal("expected multipart part cleanup after complete")
 	}
+	if _, err := store.GetBurnUploadSession(bucket, key, "stale-upload"); err == nil {
+		t.Fatal("expected stale multipart session cleanup after complete")
+	}
+	if _, err := store.GetBurnUploadPart(bucket, key, "stale-upload", 1); err == nil {
+		t.Fatal("expected stale multipart part cleanup after complete")
+	}
+	if _, err := b.loadMultipartInitState(bucket, key, "stale-upload"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected stale multipart init cleanup after complete, got %v", err)
+	}
 	mpMeta, err := b.loadMultipartObjectMetadata(bucket, key)
 	if err != nil {
 		t.Fatal(err)
@@ -2960,6 +3814,11 @@ func TestCompleteMultipartUploadCommitsMergedManifest(t *testing.T) {
 		t.Fatal(err)
 	} else if len(shadowSegments) != 0 {
 		t.Fatalf("expected shadow multipart segments to be cleaned up, got %#v", shadowSegments)
+	}
+	if shadowSegments, err := store.ListBurnObjectSegments(bucket, multipartSessionObjectKey("stale-upload")); err != nil {
+		t.Fatal(err)
+	} else if len(shadowSegments) != 0 {
+		t.Fatalf("expected stale shadow multipart segments to be cleaned up, got %#v", shadowSegments)
 	}
 }
 
