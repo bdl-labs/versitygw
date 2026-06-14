@@ -86,7 +86,7 @@ func getMD5(text string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// getObjSkipDirs mimics the POSIX backend's FileToObj behavior for implicitly
+// getObjSkipDirs mimics filesystem-style FileToObj behavior for implicitly
 // created directories: it returns ErrSkipObj so that directories which exist
 // only as filesystem artefacts of slash-separated paths are not surfaced as
 // S3 objects. This is necessary when testing non-"/" delimiters where
@@ -106,7 +106,7 @@ func TestWalk(t *testing.T) {
 			// https://docs.aws.amazon.com/AmazonS3/latest/userguide/using-prefixes.html
 			// All directories in this fsys are implicit filesystem artefacts (no S3
 			// object was explicitly PUT at any directory path), so getObjSkipDirs is
-			// used to mirror the real POSIX backend behaviour.
+			// used to mirror the real filesystem backend behaviour.
 			fsys: fstest.MapFS{
 				"sample.jpg":                       {},
 				"photos/2006/January/sample.jpg":   {},
@@ -171,7 +171,7 @@ func TestWalk(t *testing.T) {
 			// non-standard delimiter
 			// fstest.MapFS implicitly creates filesystem directories for each
 			// "/"-separated path component (e.g. "photo|s", "200|6", ...) even
-			// though these are not S3 objects.  On a real POSIX filesystem the
+			// though these are not S3 objects.  On a real filesystem the
 			// backend's FileToObj returns ErrSkipObj for such implicit
 			// directories (they have no stored etag), so we use getObjSkipDirs
 			// here to reproduce that behaviour.
@@ -645,7 +645,7 @@ func TestWalkDirectoryErrSkipObjContinues(t *testing.T) {
 // the "." should come before "/" in the lexicographic ordering:
 // a.b/, a/
 //
-// getObjSkipDirs is used to mirror the real POSIX backend's behaviour:
+// getObjSkipDirs is used to mirror filesystem backend behaviour:
 // all directories here are implicit filesystem artefacts (no S3 object
 // was explicitly PUT at any of these paths), so FileToObj returns
 // ErrSkipObj for them. The ordering is still exercised through the leaf
@@ -726,7 +726,7 @@ func TestOrderWalk(t *testing.T) {
 			// delimiter but "/" is the filesystem separator, so fstest
 			// creates implicit real directories (dir|1, dir|1/a, …) that
 			// should not appear as S3 objects.  Use getObjSkipDirs to
-			// mirror the POSIX backend's behaviour.
+			// mirror filesystem backend behaviour.
 			fsys: fstest.MapFS{
 				"dir|1/a/file1":   {},
 				"dir|1/a/file2":   {},
@@ -832,7 +832,7 @@ func TestMarker(t *testing.T) {
 	tests := []markerTest{
 		{
 			// dir is an implicit filesystem directory; use getObjSkipDirs to
-			// match the real POSIX backend (no etag stored → ErrSkipObj).
+			// match filesystem backend behavior (no etag stored -> ErrSkipObj).
 			fsys: fstest.MapFS{
 				"dir/sample2.jpg": {},
 				"dir/sample3.jpg": {},
@@ -874,7 +874,7 @@ func TestMarker(t *testing.T) {
 		},
 		{
 			// dir1 is an implicit filesystem directory; use getObjSkipDirs to
-			// match the real POSIX backend (no etag stored → ErrSkipObj).
+			// match filesystem backend behavior (no etag stored -> ErrSkipObj).
 			fsys: fstest.MapFS{
 				"dir1/subdir/file.txt": {},
 				"dir1/subdir.ext":      {},

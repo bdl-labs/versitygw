@@ -7,8 +7,8 @@ nameOverride: ""
 fullnameOverride: ""
 
 # Number of pod replicas for the deployment
-# Note that when using the "posix" backend with a PVC,
-# you can only increase the number of replicas if you have a "ReadWriteMany" volume!
+# Bridge deployments keep local SQLite/IAM state on the configured volume.
+# Use a shared ReadWriteMany volume before scaling replicas beyond one.
 replicaCount: 1
 
 # This section defines which image to use and how to pull it.
@@ -123,13 +123,11 @@ auth:
 gateway:
   # -- Backend configuration --
   backend:
-    # The storage backend to use. Supported values: posix, burnbridge, plugin
+    # The storage backend to use. Only burnbridge is supported in this build.
     # This maps to the VGW_BACKEND environment variable used by the container entrypoint.
-    type: posix
+    type: burnbridge
     # Additional arguments passed to the backend
-    args: "/mnt/data"
-    # for burnbridge backend (example):
-    # args: "--grpc-addr recorder:50051 --meta-db /mnt/data/burnbridge-meta.sqlite"
+    args: "--db-path /mnt/data/burnbridge-meta.sqlite --grpc-addr recorder:50051"
 
   # The port versitygw listens on for S3 API requests.
   port: 7070
@@ -274,7 +272,7 @@ certificate:
   #   name: "letsencrypt-production"
 
 # --- Persistence ---
-# Storage for the S3 gateway backend data (required for posix backend).
+# Storage for gateway metadata, IAM files, and bridge runtime data.
 # By default, an emptyDir (ephemeral) volume is used.
 persistence:
   # If disabled, an emptyDir (ephemeral!) will be used instead of a PVC.

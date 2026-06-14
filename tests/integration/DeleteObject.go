@@ -241,8 +241,8 @@ func DeleteObject_directory_not_empty(s *S3Conf) error {
 			Key:    &obj,
 		})
 		cancel()
-		// object servers will return no error, but the posix backend returns
-		// a non-standard directory not empty. This test is a posix only test
+		// Some filesystem backends return a non-standard directory-not-empty
+		// error here; object servers usually return no error.
 		// to validate the specific error response.
 		if err := checkApiErr(err, s3err.GetAPIError(s3err.ErrDirectoryNotEmpty)); err != nil {
 			return err

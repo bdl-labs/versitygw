@@ -285,7 +285,7 @@ func WalkVersions(ctx context.Context, fileSystem fs.FS, prefix, delimiter, keyM
 		// Note: No objects are included past the common prefix since
 		// these are all rolled up into the common prefix.
 		// Note: The delimiter can be anything, so we have to operate on
-		// the full path without any assumptions on posix directory hierarchy
+		// the full path without any assumptions on filesystem directory hierarchy
 		// here.  Usually the delimiter will be "/", but thats not required.
 		suffix := strings.TrimPrefix(path, prefix)
 		before, _, found := strings.Cut(suffix, delimiter)

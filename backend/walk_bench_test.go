@@ -259,7 +259,7 @@ func setupLargeBenchDir(b *testing.B) {
 	})
 }
 
-// benchGetObj is a lightweight GetObjFunc that mimics what the POSIX backend
+// benchGetObj is a lightweight GetObjFunc that mimics what filesystem backends
 // does: stat the entry and populate the minimum Object fields, returning
 // ErrSkipObj for bare directories (no stored etag = no explicit S3 PUT).
 func benchGetObj(path string, d fs.DirEntry) (s3response.Object, error) {

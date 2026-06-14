@@ -125,19 +125,6 @@ func initTestCommands() []*cli.Command {
 			},
 		},
 		{
-			Name:   "posix",
-			Usage:  "Tests posix specific features",
-			Action: getAction(integration.TestPosix),
-			Flags: []cli.Flag{
-				&cli.BoolFlag{
-					Name:        "versioning-enabled",
-					Usage:       "Test posix when versioning is enabled",
-					Destination: &versioningEnabled,
-					Aliases:     []string{"vs"},
-				},
-			},
-		},
-		{
 			Name:   "iam",
 			Usage:  "Tests iam service",
 			Action: getAction(integration.TestIAM),

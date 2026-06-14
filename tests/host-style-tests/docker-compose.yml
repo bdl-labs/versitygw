@@ -25,7 +25,7 @@ services:
     depends_on:
       dnsmasq:
         condition: service_healthy
-    command: ["-a", "user", "-s", "pass", "--virtual-domain", "dev:7070", "--health", "/health", "--iam-dir", "/tmp/vgw", "posix", "/tmp/vgw"]
+    command: ["-a", "user", "-s", "pass", "--virtual-domain", "dev:7070", "--health", "/health", "--iam-dir", "/tmp/vgw", "burnbridge", "--db-path", "/tmp/vgw/burnbridge-meta.sqlite", "--grpc-addr", "127.0.0.1:50051", "--grpc-skip-ping"]
     dns:
       - 172.20.0.53
     healthcheck:

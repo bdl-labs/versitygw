@@ -1,12 +1,12 @@
 # versitygw Helm Chart
 
-Versity is an S3-compatible storage gateway that proxies S3 API requests to a variety of backend storage systems.
+Versity is an S3-compatible storage gateway that proxies S3 API requests to the BurnBridge optical archive backend.
 
 > **Note**: the chart is currently in development state and breaking changes (with regards to the Helm values structure or the chart behavior) may occur until we reach a 1.0 release of the Helm chart.
 
 ## Overview
 
-[versitygw](https://github.com/versity/versitygw) is an S3-compatible gateway that fronts POSIX filesystems, S3, Azure Blob Storage, or custom plugin backends. This chart deploys versitygw on Kubernetes as a Deployment and Service, with optional support for TLS termination, Ingress, HTTPRoutes, certificate provisioning (via `cert-manager` CRDs), IAM, an Admin API, a browser-based WebUI, persistent storage, and NetworkPolicy.
+[versitygw](https://github.com/versity/versitygw) is an S3-compatible gateway for the BurnBridge optical recorder backend. This chart deploys versitygw on Kubernetes as a Deployment and Service, with optional support for TLS termination, Ingress, HTTPRoutes, certificate provisioning (via `cert-manager` CRDs), IAM, an Admin API, a browser-based WebUI, persistent storage, and NetworkPolicy.
 
 ## Prerequisites
 
@@ -16,13 +16,14 @@ Versity is an S3-compatible storage gateway that proxies S3 API requests to a va
 
 ## Installation
 
-Basic installation (single user mode) with [posix backend](https://github.com/versity/versitygw/wiki/POSIX-Backend):
+Basic installation (single user mode) with the BurnBridge backend:
 
 ```bash
 helm install my-versitygw oci://ghcr.io/versity/versitygw/charts/versitygw \
   --set auth.accessKey=myaccesskey \
   --set auth.secretKey=mysecretkey \
-  --set gateway.backend.type=posix \
+  --set gateway.backend.type=burnbridge \
+  --set-string gateway.backend.args="--db-path /mnt/data/burnbridge-meta.sqlite --grpc-addr recorder:50051" \
   --set persistence.enabled=true
 ```
 
@@ -63,13 +64,11 @@ You can find the list of available Helm chart versions in the [GitHub packages p
 
 ## Backend Storage
 
-The `gateway.backend.type` value selects the storage backend. Use `gateway.backend.args` to pass backend-specific arguments.
+The `gateway.backend.type` value is fixed to `burnbridge` in this build. Use `gateway.backend.args` to pass BurnBridge-specific arguments.
 
 | Backend | Description | Example `gateway.backend.args` |
 |---------|-------------|--------------------------------|
-| [posix](https://github.com/versity/versitygw/wiki/POSIX-Backend) | POSIX-compatible local or network filesystem (default) | `/mnt/data` |
-| burnbridge | Optical recorder bridge (gRPC + SQLite meta) | `--grpc-addr recorder:50051 --meta-db /data/meta.sqlite` |
-| [plugin](https://github.com/versity/versitygw/wiki/Plugin-Backend) | Custom backend via shared library plugin | `/path/to/plugin.so` |
+| burnbridge | Optical recorder bridge (gRPC + SQLite meta) | `--db-path /mnt/data/burnbridge-meta.sqlite --grpc-addr recorder:50051` |
 
 ## Optional Features
 
@@ -95,12 +94,10 @@ Special care must be taken particularly when using multiple replicas with such a
 
 ### Horizontal Scaling (replicas > 1)
 
-When scaling `versitygw` horizontally by setting `replicaCount` greater than 1, special care must be taken regarding the storage backend:
+When scaling `versitygw` horizontally by setting `replicaCount` greater than 1, special care must be taken because BurnBridge metadata and optional internal IAM data are local state:
 
-- **POSIX or Internal IAM**: These backends store state locally on the filesystem.
-    - Using **ReadWriteOnce (RWO)**: All replicas must be scheduled on the **same Kubernetes node** to share the same volume. This is useful for process-level concurrency (e.g., when using high-performance local block storage) but limits high availability across nodes.
-    - Using **ReadWriteMany (RWX)**: Replicas can be distributed across **multiple nodes** in the cluster. This is the recommended approach for true horizontal scaling and high availability. When using RWX, it is also recommended to use pod anti-affinity (via `affinity` in `values.yaml`) to ensure pods are distributed across nodes/zones.
-- **Stateless Backends (S3, Azure)**: If you are using a stateless storage backend (e.g. proxying to another S3 store) **and** you are either not using IAM or using an external IAM provider (e.g. LDAP, Vault), persistence can be safely disabled by setting `persistence.enabled=false`.
+- Using **ReadWriteOnce (RWO)**: All replicas must be scheduled on the **same Kubernetes node** to share the same volume. This is useful for process-level concurrency but limits high availability across nodes.
+- Using **ReadWriteMany (RWX)**: Replicas can be distributed across **multiple nodes** in the cluster. This is the recommended approach for true horizontal scaling and high availability. When using RWX, it is also recommended to use pod anti-affinity (via `affinity` in `values.yaml`) to ensure pods are distributed across nodes/zones.
 
 ## Configuration
 

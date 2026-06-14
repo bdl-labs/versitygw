@@ -880,26 +880,6 @@ func TestFullFlow(ts *TestState) {
 	TestServer(ts)
 }
 
-func TestPosix(ts *TestState) {
-	ts.Run(PutObject_overwrite_dir_obj)
-	ts.Run(PutObject_overwrite_file_obj)
-	ts.Run(PutObject_overwrite_file_obj_with_nested_obj)
-	ts.Run(PutObject_dir_obj_with_data)
-	ts.Run(PutObject_with_slashes)
-	ts.Run(CreateMultipartUpload_dir_obj)
-	ts.Run(PutObject_name_too_long)
-	ts.Run(HeadObject_name_too_long)
-	ts.Run(DeleteObject_name_too_long)
-	ts.Run(CopyObject_overwrite_same_dir_object)
-	ts.Run(CopyObject_overwrite_same_file_object)
-	ts.Run(DeleteObject_directory_not_empty)
-	ts.Run(PutObject_race_with_delete)
-	// posix specific versioning tests
-	if !ts.conf.versioningEnabled {
-		TestVersioningDisabled(ts)
-	}
-}
-
 func TestIAM(ts *TestState) {
 	ts.Run(IAM_user_access_denied)
 	ts.Run(IAM_userplus_access_denied)
@@ -1220,7 +1200,6 @@ func GetIntTests() IntTests {
 		"PresignedAuth_incorrect_secret_key":                                       PresignedAuth_incorrect_secret_key,
 		"PresignedAuth_PutObject_success":                                          PresignedAuth_PutObject_success,
 		"PutObject_missing_object_lock_retention_config":                           PutObject_missing_object_lock_retention_config,
-		"PutObject_name_too_long":                                                  PutObject_name_too_long,
 		"PutObject_with_object_lock":                                               PutObject_with_object_lock,
 		"PutObject_missing_bucket_lock":                                            PutObject_missing_bucket_lock,
 		"PutObject_invalid_legal_hold":                                             PutObject_invalid_legal_hold,
@@ -1312,7 +1291,6 @@ func GetIntTests() IntTests {
 		"HeadObject_invalid_part_number":                                           HeadObject_invalid_part_number,
 		"HeadObject_directory_object_noslash":                                      HeadObject_directory_object_noslash,
 		"HeadObject_non_existing_dir_object":                                       HeadObject_non_existing_dir_object,
-		"HeadObject_name_too_long":                                                 HeadObject_name_too_long,
 		"HeadObject_invalid_parent_dir":                                            HeadObject_invalid_parent_dir,
 		"HeadObject_with_range":                                                    HeadObject_with_range,
 		"HeadObject_by_range_resp_status":                                          HeadObject_by_range_resp_status,
@@ -1406,9 +1384,6 @@ func GetIntTests() IntTests {
 		"DeleteObject_directory_object_noslash":                                    DeleteObject_directory_object_noslash,
 		"DeleteObject_non_empty_dir_obj":                                           DeleteObject_non_empty_dir_obj,
 		"DeleteObject_conditional_writes":                                          DeleteObject_conditional_writes,
-		"DeleteObject_name_too_long":                                               DeleteObject_name_too_long,
-		"CopyObject_overwrite_same_dir_object":                                     CopyObject_overwrite_same_dir_object,
-		"CopyObject_overwrite_same_file_object":                                    CopyObject_overwrite_same_file_object,
 		"DeleteObject_non_existing_dir_object":                                     DeleteObject_non_existing_dir_object,
 		"DeleteObject_directory_object":                                            DeleteObject_directory_object,
 		"DeleteObject_success":                                                     DeleteObject_success,
@@ -1745,13 +1720,6 @@ func GetIntTests() IntTests {
 		"WORMProtection_object_lock_retention_governance_bypass_delete_mul":        WORMProtection_object_lock_retention_governance_bypass_delete_mul,
 		"WORMProtection_object_lock_legal_hold_locked":                             WORMProtection_object_lock_legal_hold_locked,
 		"WORMProtection_root_bypass_governance_retention_delete_object":            WORMProtection_root_bypass_governance_retention_delete_object,
-		"PutObject_overwrite_dir_obj":                                              PutObject_overwrite_dir_obj,
-		"PutObject_overwrite_file_obj":                                             PutObject_overwrite_file_obj,
-		"PutObject_overwrite_file_obj_with_nested_obj":                             PutObject_overwrite_file_obj_with_nested_obj,
-		"PutObject_dir_obj_with_data":                                              PutObject_dir_obj_with_data,
-		"PutObject_with_slashes":                                                   PutObject_with_slashes,
-		"PutObject_race_with_delete":                                               PutObject_race_with_delete,
-		"CreateMultipartUpload_dir_obj":                                            CreateMultipartUpload_dir_obj,
 		"IAM_user_access_denied":                                                   IAM_user_access_denied,
 		"IAM_userplus_access_denied":                                               IAM_userplus_access_denied,
 		"IAM_userplus_CreateBucket":                                                IAM_userplus_CreateBucket,

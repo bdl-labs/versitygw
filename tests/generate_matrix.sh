@@ -91,7 +91,7 @@ matrix_json=$(
                 RUN_SET: $files[$i],
                 AWS_REGION: $regions[$i],
                 IAM_TYPE: $iam_types[$i],
-                BACKEND: "posix",
+                BACKEND: "burnbridge",
                 RECREATE_BUCKETS: "true",
                 DELETE_BUCKETS_AFTER_TEST: "true"
               },
@@ -100,7 +100,7 @@ matrix_json=$(
                 RUN_SET: $files[$i],
                 AWS_REGION: $regions[$i],
                 IAM_TYPE: $iam_types[$i],
-                BACKEND: "posix",
+                BACKEND: "burnbridge",
                 RECREATE_BUCKETS: "false",
                 DELETE_BUCKETS_AFTER_TEST: "false"
               }

@@ -223,7 +223,7 @@ func runBurnbridge(ctx *cli.Context) error {
 		RecorderS3SessionToken:    burnbridgeRecorderS3SessionToken,
 		RecorderS3ForcePathStyle:  burnbridgeRecorderS3ForcePathStyle,
 		RecorderS3PresignedGetURL: burnbridgeRecorderS3PresignedGetURL,
-	AllowCreateBucketBinding:  true,
+		AllowCreateBucketBinding:  true,
 	}
 
 	if flashEmmcOptimized {

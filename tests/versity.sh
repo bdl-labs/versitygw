@@ -63,8 +63,8 @@ build_run_and_log_command() {
   fi
 }
 
-run_versity_app_posix() {
-  if ! check_param_count "run_versity_app_posix" "access ID, secret key, versityid app index" 3 $#; then
+run_versity_app_burnbridge() {
+  if ! check_param_count "run_versity_app_burnbridge" "access ID, secret key, versityid app index" 3 $#; then
     return 1
   fi
   base_command=("$VERSITY_EXE" --access="$1" --secret="$2" --region="$AWS_REGION")
@@ -79,11 +79,12 @@ run_versity_app_posix() {
   if [ -n "$PORT" ]; then
     base_command+=(--port ":$PORT")
   fi
-  base_command+=(posix)
-  if [ -n "$VERSIONING_DIR" ]; then
-    base_command+=(--versioning-dir "$VERSIONING_DIR")
+  local db_path="${VGW_BURNBRIDGE_DB_PATH:-$LOCAL_FOLDER/burnbridge-meta.sqlite}"
+  local grpc_addr="${VGW_BURNBRIDGE_GRPC_ADDR:-127.0.0.1:50051}"
+  base_command+=(burnbridge --db-path "$db_path" --grpc-addr "$grpc_addr")
+  if [ -n "$VGW_BURNBRIDGE_GRPC_SKIP_PING" ]; then
+    base_command+=(--grpc-skip-ping)
   fi
-  base_command+=("$LOCAL_FOLDER")
   export base_command
 
   start_versity_process "$3"
@@ -111,10 +112,10 @@ run_versity_app_s3() {
 }
 
 run_versity_app() {
-  if [[ $BACKEND == 'posix' ]]; then
-    run_versity_app_posix "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "1"
+  if [[ $BACKEND == 'burnbridge' ]]; then
+    run_versity_app_burnbridge "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "1"
   elif [[ $BACKEND == 's3' ]]; then
-    run_versity_app_posix "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "1"
+    run_versity_app_burnbridge "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" "1"
     run_versity_app_s3 "2"
   else
     log 1 "unrecognized backend type $BACKEND"

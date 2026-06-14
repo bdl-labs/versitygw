@@ -15,11 +15,9 @@ Download [latest release](https://github.com/versity/versitygw/releases)
  |    ✔️    |  ✔️  |   ✔️   |  ✔️   |  ✔️   |  ✔️   |
 
 ### Use Cases
-* Turn your local filesystem into an S3 server with a single command!
-* Proxy S3 requests to S3 storage
-* Simple to deploy S3 server with a single command
-* Protocol compatibility in `posix` allows common access to files via posix or S3
-* Simplified interface for adding new storage system support
+* Expose the BurnBridge optical archive workflow through an S3-compatible API.
+* Upload and download objects through the gateway while recorder work is coordinated by the bridge backend.
+* Use the built-in admin API and WebUI around the bridge deployment.
 
 ### WebGUI
 Get more details about the new (optional) WebGUI management/explorer here: [https://github.com/versity/versitygw/wiki/WebGUI](https://github.com/versity/versitygw/wiki/WebGUI)
@@ -45,7 +43,7 @@ Versity Gateway, a simple to use tool for seamless inline translation between AW
 
 The server translates incoming S3 API requests and transforms them into equivalent operations to the backend service. By leveraging this gateway server, applications can interact with the S3-compatible API on top of already existing storage systems. This project enables leveraging existing infrastructure investments while seamlessly integrating with S3-compatible systems, offering increased flexibility and compatibility in managing data storage.
 
-The Versity Gateway is focused on performance, simplicity, and expandability. The Versity Gateway is designed with modularity in mind, enabling future extensions to support additional backend storage systems. At present, the Versity Gateway supports any generic POSIX file backend storage, Azure Blob Storage, and other S3 servers.
+The Versity Gateway is focused on performance and simplicity for the BurnBridge optical archive deployment.
 
 The gateway is completely stateless. Multiple Versity Gateway instances may be deployed in a cluster to increase aggregate throughput. The Versity Gateway’s stateless architecture allows any request to be serviced by any gateway thereby distributing workloads and enhancing performance. Load balancers may be used to evenly distribute requests across the cluster of gateways for optimal performance.
 
@@ -54,13 +52,13 @@ The S3 HTTP(S) server and routing is implemented using the [Fiber](https://gofib
 ## Getting Started
 See the [Quickstart](https://github.com/versity/versitygw/wiki/Quickstart) documentation.
 
-### Run the gateway with posix backend:
+### Run the gateway with BurnBridge backend:
 
 ```
-mkdir /tmp/vgw /tmp/vers
-ROOT_ACCESS_KEY="testuser" ROOT_SECRET_KEY="secret" ./versitygw --port :10000 --iam-dir /tmp/vgw posix --versioning-dir /tmp/vers /tmp/vgw
+mkdir /tmp/vgw
+ROOT_ACCESS_KEY="testuser" ROOT_SECRET_KEY="secret" ./versitygw --port :10000 --iam-dir /tmp/vgw burnbridge --db-path /tmp/vgw/burnbridge-meta.sqlite --grpc-addr 127.0.0.1:50051
 ```
-This will enable an S3 server on the current host listening on port 10000 and hosting the directory `/tmp/vgw` with older object versions in `/tmp/vers`. It's fine if both of these directories are within the same filesystem. The `--iam-dir` option enables simple JSON flat file accounts for testing.
+This will enable an S3 server on the current host listening on port 10000 and connecting to the recorder bridge gRPC service at `127.0.0.1:50051`. The `--iam-dir` option enables simple JSON flat file accounts for testing.
 
 To get the usage output, run the following:
 
@@ -84,15 +82,15 @@ VersityGW is **battle-tested and production-ready**. Every pull request must pas
 Our multi-layered testing strategy includes:
 
 - **Go Unit Test Files** - Extensive unit tests with race detection and code coverage analysis covering core functionality, edge cases, and error handling.
-- **Integration Test Scripts** - Real-world scenario testing across multiple backends (POSIX, S3, Azure) and configurations.
-- **Functional/Regression Tests** - End-to-end SDK tests validating complete workflows including full-flow operations, POSIX-specific behavior, and IAM functionality populated with regression tests as issues are addressed.
+- **Integration Test Scripts** - Real-world scenario testing for the S3-compatible gateway and bridge workflow.
+- **Functional/Regression Tests** - End-to-end SDK tests validating complete workflows including full-flow operations and IAM functionality populated with regression tests as issues are addressed.
 - **Static Analysis** - Static Analysis checks using [staticcheck](https://staticcheck.dev).
 - **System Tests** - Protocol-level validation using industry-standard S3 clients:
   - AWS CLI - Official AWS command-line tools
   - s3cmd - Popular S3 client
   - Direct REST API testing with curl for request/response validation
 - **Security Testing** - Both HTTP and HTTPS configurations tested. Vulnerability scanning with govulncheck. And regular dependency updates with dependabot.
-- **Compatibility Testing** - Multiple backends, versioning scenarios, static bucket modes, and various authentication methods.
+- **Compatibility Testing** - Bridge workflow scenarios, static bucket modes, and various authentication methods.
 
 ### Run the gateway in Docker
 

@@ -9,7 +9,7 @@ services:
       dockerfile: tests/Dockerfile_test_bats
       args:
         - CONFIG_FILE=tests/.env.static
-  posix_backend:
+  burnbridge_backend:
     build:
       dockerfile: tests/Dockerfile_test_bats
       args:

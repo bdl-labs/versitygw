@@ -58,7 +58,7 @@ services:
     depends_on:
       - telegraf
     command: >
-      posix /tmp/vgw
+      burnbridge --db-path /tmp/vgw/burnbridge-meta.sqlite --grpc-addr 127.0.0.1:50051 --grpc-skip-ping
 
 volumes:
   influxdb_data: {}

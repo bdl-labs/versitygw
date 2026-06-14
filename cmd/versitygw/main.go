@@ -127,9 +127,7 @@ func main() {
 	app := initApp()
 
 	app.Commands = []*cli.Command{
-		posixCommand(),
 		burnbridgeCommand(),
-		pluginCommand(),
 		adminCommand(),
 		testCommand(),
 		utilsCommand(),
@@ -166,8 +164,8 @@ documentation can be found in the GitHub wiki.`,
 			webuiAdminGateways = ctx.StringSlice("webui-admin-gateways")
 			webuiPathPrefix = ctx.String("webui-path-prefix")
 
-			// Resolve relative UNIX socket paths to absolute before any backend
-			// (e.g. posix) can change the working directory via os.Chdir.
+			// Resolve relative UNIX socket paths to absolute before backend
+			// initialization can change process state.
 			var err error
 			if ports, err = utils.AbsSocketPaths(ports); err != nil {
 				return err

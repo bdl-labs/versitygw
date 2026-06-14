@@ -1,8 +1,11 @@
 {{- /* Safety check: multiple replicas with local state must have persistence enabled */}}
 {{- if and (gt (int .Values.replicaCount) 1) (not .Values.persistence.enabled) }}
-  {{- if or (eq .Values.gateway.backend.type "posix") (and .Values.iam.enabled (eq .Values.iam.type "internal")) }}
-    {{- fail "Multiple replicas with POSIX backend or Internal IAM require persistence.enabled=true to prevent data loss and inconsistency across pods. If using a stateless backend and external IAM, set persistence.enabled=false." }}
+  {{- if or (eq .Values.gateway.backend.type "burnbridge") (and .Values.iam.enabled (eq .Values.iam.type "internal")) }}
+    {{- fail "Multiple replicas with BurnBridge backend or Internal IAM require persistence.enabled=true to prevent data loss and inconsistency across pods." }}
   {{- end }}
+{{- end }}
+{{- if ne .Values.gateway.backend.type "burnbridge" }}
+  {{- fail "Only gateway.backend.type=burnbridge is supported in this build" }}
 {{- end }}
 {{- if and .Values.persistence.enabled (not .Values.persistence.create) (not .Values.persistence.claimName) (not .Values.persistence.hostPath) }}
   {{- fail "persistence.claimName or persistence.hostPath is required when persistence.create is false" }}

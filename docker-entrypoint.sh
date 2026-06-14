@@ -17,17 +17,17 @@ backend="${VGW_BACKEND:-}"
 if [ -z "$backend" ]; then
     cat >&2 <<'EOF'
 No command arguments were provided and VGW_BACKEND is unset.
-Set VGW_BACKEND to one of: posix, burnbridge, plugin
+Set VGW_BACKEND to: burnbridge
 or pass explicit arguments to the container to run the versitygw command directly.
 EOF
     exit 1
 fi
 
 case "$backend" in
-    posix|burnbridge|plugin)
+    burnbridge)
         ;;
     *)
-        echo "VGW_BACKEND invalid backend (was '$backend')." >&2
+        echo "VGW_BACKEND invalid backend (was '$backend'); only burnbridge is supported." >&2
         exit 1
         ;;
 esac

@@ -226,7 +226,7 @@ check_versity_vars() {
   fi
   if [ ! -d "$LOCAL_FOLDER" ]; then
     if ! error=$(mkdir -p "$LOCAL_FOLDER"); then
-      log 2 "error creating local posix folder: $error"
+      log 2 "error creating local bridge folder: $error"
       exit 1
     fi
   fi
