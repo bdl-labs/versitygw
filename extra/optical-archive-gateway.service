@@ -5,9 +5,10 @@ After=network-online.target optical-archive-recorder.service
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/optical-archive/gateway
-Environment=OPTICAL_ARCHIVE_CONFIG_PATH=/etc/optical-archive/optical-archive.config.json
-ExecStart=/usr/bin/versitygw burnbridge
+User=root
+EnvironmentFile=-/etc/optical-archive/optical-archive.env
+WorkingDirectory=/opt/burnbridge/versitygw
+ExecStart=/opt/burnbridge/scripts/optical-archive-start.sh gateway
 Restart=always
 RestartSec=5
 LimitNOFILE=65536

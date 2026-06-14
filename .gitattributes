@@ -1,0 +1,3 @@
+extra/*.sh text eol=lf
+extra/*.service text eol=lf
+extra/*.env.example text eol=lf
