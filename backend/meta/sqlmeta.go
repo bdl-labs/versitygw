@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"os"
 	"sort"
@@ -29,6 +30,7 @@ import (
 	"github.com/versity/versitygw/s3err"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"gorm.io/gorm/logger"
 )
 
 // SqlMeta is a MetadataStorer backed by SQLite using GORM.
@@ -88,6 +90,8 @@ type burnbridgeObjectSegment struct {
 func (burnbridgeObjectSegment) TableName() string {
 	return "burnbridge_object_segments"
 }
+
+const burnbridgeRestoreBatchSize = 50
 
 // BurnObjectSegment is returned by GetBurnObjectSegment for BurnBridge chunk lookups.
 type BurnObjectSegment struct {
@@ -272,6 +276,12 @@ func NewSqlMeta(dbPath string, opts ...SqlMetaOption) (SqlMeta, error) {
 
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		SkipDefaultTransaction: true,
+		Logger: logger.New(
+			log.New(os.Stdout, "", log.LstdFlags),
+			logger.Config{
+				IgnoreRecordNotFoundError: true,
+				LogLevel:                  logger.Warn,
+			}),
 	})
 	if err != nil {
 		return SqlMeta{}, fmt.Errorf("open sqlite: %w", err)
@@ -981,7 +991,7 @@ func (s SqlMeta) RestoreBurnbridgeBucket(backup *BurnbridgeBucketBackup) error {
 						UpdatedAt:  now,
 					})
 				}
-				if err := tx.Create(&rows).Error; err != nil {
+				if err := tx.CreateInBatches(&rows, burnbridgeRestoreBatchSize).Error; err != nil {
 					return mapSQLError("restore burnbridge bucket metadata insert", err)
 				}
 			}
@@ -1004,7 +1014,7 @@ func (s SqlMeta) RestoreBurnbridgeBucket(backup *BurnbridgeBucketBackup) error {
 						UpdatedAt:    coalesceTime(row.UpdatedAt, now),
 					})
 				}
-				if err := tx.Create(&rows).Error; err != nil {
+				if err := tx.CreateInBatches(&rows, burnbridgeRestoreBatchSize).Error; err != nil {
 					return mapSQLError("restore burnbridge bucket segments insert", err)
 				}
 			}
@@ -1028,7 +1038,7 @@ func (s SqlMeta) RestoreBurnbridgeBucket(backup *BurnbridgeBucketBackup) error {
 						UpdatedAt:      coalesceTime(row.UpdatedAt, now),
 					})
 				}
-				if err := tx.Create(&rows).Error; err != nil {
+				if err := tx.CreateInBatches(&rows, burnbridgeRestoreBatchSize).Error; err != nil {
 					return mapSQLError("restore burnbridge bucket sessions insert", err)
 				}
 			}
@@ -1053,7 +1063,7 @@ func (s SqlMeta) RestoreBurnbridgeBucket(backup *BurnbridgeBucketBackup) error {
 						UpdatedAt:     coalesceTime(row.UpdatedAt, now),
 					})
 				}
-				if err := tx.Create(&rows).Error; err != nil {
+				if err := tx.CreateInBatches(&rows, burnbridgeRestoreBatchSize).Error; err != nil {
 					return mapSQLError("restore burnbridge bucket parts insert", err)
 				}
 			}

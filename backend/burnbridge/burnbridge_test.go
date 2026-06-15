@@ -1616,6 +1616,38 @@ func TestApplyRecorderStatusEventClearsBucketOnNoDisc(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: "DISC-A",
+		Bucket:           "disc-a",
+		UdfVolumeLabel:   "DISC-A",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:        "disc-a",
+		ObjectName:    "file.txt",
+		UploadID:      burnbridgeImplicitSingleUploadID,
+		Kind:          meta.BurnUploadKindSingle,
+		State:         meta.BurnUploadStateCompleted,
+		MediaID:       "DISC-A",
+		ContentLength: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:        "disc-a",
+		ObjectName:    "file.txt",
+		UploadID:      burnbridgeImplicitSingleUploadID,
+		PartNumber:    1,
+		BytesReceived: 7,
+		PartSize:      7,
+		State:         meta.BurnUploadStateCompleted,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnObjectSegment("disc-a", "file.txt", "DISC-A", 0, 0, 7, "d41d8cd98f00b204e9800998ecf8427e", meta.BurnSegmentSucceeded, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	b := &BurnBridge{
 		meta:           store,
@@ -2225,6 +2257,26 @@ func TestHandleNoDiscStateBacksUpAndClearsActiveBucket(t *testing.T) {
 	if _, err := store.GetCommittedObjectSummary("disc-a", "file.txt"); err == nil {
 		t.Fatal("expected committed object metadata to be cleared after no-disc state")
 	}
+	if bindings, err := store.ListBurnbridgeDiscBucketBindings("disc-a"); err != nil {
+		t.Fatal(err)
+	} else if len(bindings) != 0 {
+		t.Fatalf("expected disc-a bindings to be cleared after no-disc state, got %d", len(bindings))
+	}
+	if sessions, err := store.ListBurnUploadSessions("disc-a", "file.txt"); err != nil {
+		t.Fatal(err)
+	} else if len(sessions) != 0 {
+		t.Fatalf("expected upload sessions to be cleared after no-disc state, got %d", len(sessions))
+	}
+	if parts, err := store.ListBurnUploadParts("disc-a", "file.txt", burnbridgeImplicitSingleUploadID); err != nil {
+		t.Fatal(err)
+	} else if len(parts) != 0 {
+		t.Fatalf("expected upload parts to be cleared after no-disc state, got %d", len(parts))
+	}
+	if segments, err := store.ListBurnObjectSegments("disc-a", "file.txt"); err != nil {
+		t.Fatal(err)
+	} else if len(segments) != 0 {
+		t.Fatalf("expected object segments to be cleared after no-disc state, got %d", len(segments))
+	}
 	if strings.TrimSpace(b.lastNoDiscBackupPath) == "" {
 		t.Fatal("expected no-disc backup path to be recorded")
 	}
@@ -2247,6 +2299,22 @@ func TestMaybeRestoreNoDiscBackupRestoresSameDiscBucket(t *testing.T) {
 		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
 		t.Fatal(err)
+	}
+	const segmentCount = 160
+	for i := 0; i < segmentCount; i++ {
+		if err := store.UpsertBurnObjectSegment(
+			"disc-a",
+			"file.txt",
+			"DISC-A",
+			i,
+			int64(i*1024),
+			1024,
+			fmt.Sprintf("%032d", i),
+			meta.BurnSegmentSucceeded,
+			[]meta.BurnDiscExtent{{DiscAddress: fmt.Sprintf("%d", 1000+i), FileSize: 1024}},
+		); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
 		Bucket:                        "disc-a",
@@ -2294,6 +2362,13 @@ func TestMaybeRestoreNoDiscBackupRestoresSameDiscBucket(t *testing.T) {
 	}
 	if sum.Size != 7 {
 		t.Fatalf("expected restored size 7, got %d", sum.Size)
+	}
+	segments, err := store.ListBurnObjectSegments("disc-a", "file.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(segments) != segmentCount {
+		t.Fatalf("expected %d restored segments, got %d", segmentCount, len(segments))
 	}
 }
 
@@ -3192,23 +3267,13 @@ func TestPutObjectCommitsWhenUncommittedResumeSegmentsAlreadyBurned(t *testing.T
 		t.Fatalf("unexpected committed size: %d", committedRec.Size)
 	}
 
-	session, err := store.GetBurnUploadSession(bucket, key, burnbridgeImplicitSingleUploadID)
-	if err != nil {
+	if _, err := store.GetBurnUploadSession(bucket, key, burnbridgeImplicitSingleUploadID); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected completed implicit session cleanup, got %v", err)
+	}
+	if parts, err := store.ListBurnUploadParts(bucket, key, burnbridgeImplicitSingleUploadID); err != nil {
 		t.Fatal(err)
-	}
-	if session.State != meta.BurnUploadStateCompleted {
-		t.Fatalf("expected session completed, got %s", session.State)
-	}
-
-	parts, err := store.ListBurnUploadParts(bucket, key, burnbridgeImplicitSingleUploadID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(parts) != 1 {
-		t.Fatalf("expected one implicit part row, got %d", len(parts))
-	}
-	if parts[0].State != meta.BurnUploadStateCompleted {
-		t.Fatalf("expected completed implicit part state, got %s", parts[0].State)
+	} else if len(parts) != 0 {
+		t.Fatalf("expected completed implicit part cleanup, got %d rows", len(parts))
 	}
 }
 

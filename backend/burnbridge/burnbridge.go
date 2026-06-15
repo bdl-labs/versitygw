@@ -1684,11 +1684,11 @@ func (b *BurnBridge) backupAndClearBucketMetadata(bucket string) error {
 		return fmt.Errorf("burnbridge: write no-disc bucket backup: %w", err)
 	}
 
-	if err := b.meta.DeleteAttributes(trimmedBucket, ""); err != nil {
-		return fmt.Errorf("burnbridge: clear metadata for no-disc state: %w", err)
+	if err := b.meta.DeleteBurnbridgeBucket(trimmedBucket); err != nil {
+		return fmt.Errorf("burnbridge: clear bucket state for no-disc state: %w", err)
 	}
-	if err := b.meta.DeleteBurnObjectSegments(trimmedBucket, ""); err != nil {
-		return fmt.Errorf("burnbridge: clear segments for no-disc state: %w", err)
+	if err := b.meta.DeleteBurnbridgeDiscBucketBindings(trimmedBucket); err != nil {
+		return fmt.Errorf("burnbridge: clear disc bucket binding for no-disc state: %w", err)
 	}
 
 	b.stateMu.Lock()
@@ -4724,6 +4724,20 @@ func (b *BurnBridge) cleanupMultipartUploadState(bucket, key, uploadID string, p
 	return nil
 }
 
+func (b *BurnBridge) cleanupCompletedSingleUploadState(bucket, key string) error {
+	var errs []error
+	if err := b.meta.DeleteBurnUploadParts(bucket, key, burnbridgeImplicitSingleUploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if err := b.meta.DeleteBurnUploadSession(bucket, key, burnbridgeImplicitSingleUploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		errs = append(errs, err)
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 func (b *BurnBridge) cleanupCompletedMultipartObjectState(bucket, key, uploadID string, parts []meta.BurnUploadPartRecord) error {
 	var errs []error
 	uploadIDs := map[string]struct{}{}
@@ -5507,6 +5521,9 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 					State:        meta.BurnUploadStateCompleted,
 					SegmentCount: int(stats.TotalSegments),
 				})
+				if err := b.cleanupCompletedSingleUploadState(bucket, key); err != nil {
+					return s3response.PutObjectOutput{}, err
+				}
 				slog.Info("burnbridge: object already committed on media; skipping CommitJob for idempotent PutObject retry",
 					"bucket", bucket, "key", key, "jobId", jobID, "bytes", offset)
 
@@ -5582,6 +5599,9 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		State:        meta.BurnUploadStateCompleted,
 		SegmentCount: int(stats.TotalSegments),
 	}); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
+	if err := b.cleanupCompletedSingleUploadState(bucket, key); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
 	b.invalidateFinalizeLayoutTranscript(bucket)
