@@ -336,6 +336,11 @@ func (s SqlMeta) Close() error {
 	return sqlDB.Close()
 }
 
+// IsOpen reports whether this SqlMeta has an initialized database handle.
+func (s SqlMeta) IsOpen() bool {
+	return s.db != nil
+}
+
 func parseDiscExtentsJSON(s string) ([]BurnDiscExtent, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1099,10 +1104,16 @@ type CommittedObjectSummary struct {
 const BurnbridgeCommittedAttribute = "burnbridge-committed"
 
 // BurnbridgeDiscInfoObjectKey is the internal metadata object slot used to persist burnbridge disc JSON.
-const BurnbridgeDiscInfoObjectKey = ".__bbctl__/state/disc-info"
+const BurnbridgeDiscInfoObjectKey = "v1/state/disc-info"
+
+// BurnbridgeDriveInfoObjectKey is the internal metadata object slot used to persist burnbridge drive JSON.
+const BurnbridgeDriveInfoObjectKey = "v1/state/drive-info"
 
 // BurnbridgeDiscInfoAttribute stores JSON for BurnbridgeDiscInfoDocument (not a committed object; not listed).
 const BurnbridgeDiscInfoAttribute = "burnbridge-disc-info"
+
+// BurnbridgeDriveInfoAttribute stores JSON for BurnbridgeDriveInfoDocument (not a committed object; not listed).
+const BurnbridgeDriveInfoAttribute = "burnbridge-drive-info"
 
 // BurnbridgeDiscInfoDocument is the persisted recorder/gateway disc snapshot.
 type BurnbridgeDiscInfoDocument struct {
@@ -1132,6 +1143,18 @@ type BurnbridgeDiscInfoDocument struct {
 	LayoutCloseDisc               bool   `json:"layoutCloseDisc,omitempty"`
 }
 
+// BurnbridgeDriveInfoDocument is the persisted recorder/gateway drive identity snapshot.
+type BurnbridgeDriveInfoDocument struct {
+	Bucket          string `json:"bucket"`
+	ControlBucket   string `json:"controlBucket"`
+	UpdatedAt       string `json:"updatedAt"` // RFC3339Nano
+	VendorID        string `json:"vendorId,omitempty"`
+	ProductID       string `json:"productId,omitempty"`
+	ProductRevision string `json:"productRevision,omitempty"`
+	SerialNumber    string `json:"serialNumber,omitempty"`
+	IsMMCUnit       bool   `json:"isMmcUnit,omitempty"`
+}
+
 // StoreBurnbridgeDiscInfo upserts disc JSON into the internal burnbridge control slot.
 func (s SqlMeta) StoreBurnbridgeDiscInfo(doc *BurnbridgeDiscInfoDocument) error {
 	if doc == nil {
@@ -1147,19 +1170,61 @@ func (s SqlMeta) StoreBurnbridgeDiscInfo(doc *BurnbridgeDiscInfoDocument) error 
 	return s.StoreAttribute(nil, doc.Bucket, BurnbridgeDiscInfoObjectKey, BurnbridgeDiscInfoAttribute, b)
 }
 
+// StoreBurnbridgeDriveInfo upserts drive JSON into the internal burnbridge control slot.
+func (s SqlMeta) StoreBurnbridgeDriveInfo(doc *BurnbridgeDriveInfoDocument) error {
+	if doc == nil {
+		return nil
+	}
+	if strings.TrimSpace(doc.ControlBucket) == "" {
+		return fmt.Errorf("burnbridge drive info: empty control bucket")
+	}
+	bucket := strings.TrimSpace(doc.Bucket)
+	if bucket == "" {
+		bucket = strings.TrimSpace(doc.ControlBucket)
+	}
+	b, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("encode burnbridge drive info: %w", err)
+	}
+	return s.StoreAttribute(nil, bucket, BurnbridgeDriveInfoObjectKey, BurnbridgeDriveInfoAttribute, b)
+}
+
+// GetBurnbridgeDriveInfoJSON returns raw persisted drive JSON.
+func (s SqlMeta) GetBurnbridgeDriveInfoJSON(bucket string) ([]byte, error) {
+	return s.RetrieveAttribute(nil, bucket, BurnbridgeDriveInfoObjectKey, BurnbridgeDriveInfoAttribute)
+}
+
 // GetBurnbridgeDiscInfoJSON returns raw persisted disc JSON.
 func (s SqlMeta) GetBurnbridgeDiscInfoJSON(bucket string) ([]byte, error) {
 	return s.RetrieveAttribute(nil, bucket, BurnbridgeDiscInfoObjectKey, BurnbridgeDiscInfoAttribute)
 }
 
 // BurnbridgeFinalizeLayoutObjectKey is the internal metadata object slot for finalize transcript caching.
-const BurnbridgeFinalizeLayoutObjectKey = ".__bbctl__/state/finalize-layout"
+const BurnbridgeFinalizeLayoutObjectKey = "v1/state/finalize-layout"
 
 // BurnbridgeCloseDiscObjectKey is the internal metadata object slot for close-disc transcript caching.
-const BurnbridgeCloseDiscObjectKey = ".__bbctl__/state/close-disc"
+const BurnbridgeCloseDiscObjectKey = "v1/state/close-disc"
+
+// BurnbridgeMediaRemovedObjectKey is the internal metadata object slot for media removal transcript caching.
+const BurnbridgeMediaRemovedObjectKey = "v1/state/media-removed"
+
+// BurnbridgeMediaInsertedObjectKey is the internal metadata object slot for media insertion transcript caching.
+const BurnbridgeMediaInsertedObjectKey = "v1/state/media-inserted"
+
+// BurnbridgeTrayOpenObjectKey is the internal metadata object slot for tray-open transcript caching.
+const BurnbridgeTrayOpenObjectKey = "v1/state/tray-open"
+
+// BurnbridgeTrayCloseObjectKey is the internal metadata object slot for tray-close transcript caching.
+const BurnbridgeTrayCloseObjectKey = "v1/state/tray-close"
 
 // BurnbridgeFinalizeLayoutAttributePrefix holds JSON documenting the last finalize-style gRPC invocation.
 const BurnbridgeFinalizeLayoutAttributePrefix = "burnbridge-finalize-layout"
+
+// BurnbridgeMediaChangeAttributePrefix holds JSON documenting the last media-change gRPC invocation.
+const BurnbridgeMediaChangeAttributePrefix = "burnbridge-media-change"
+
+// BurnbridgeTrayAttributePrefix holds JSON documenting the last tray-control gRPC invocation.
+const BurnbridgeTrayAttributePrefix = "burnbridge-tray"
 
 // BurnbridgeFinalizeLayoutDocument captures the outcome of invoking the recorder finalize RPC (from gateway).
 type BurnbridgeFinalizeLayoutDocument struct {
@@ -1170,6 +1235,40 @@ type BurnbridgeFinalizeLayoutDocument struct {
 	RecorderMessage string `json:"recorderMessage,omitempty"`
 	CloseDisc       bool   `json:"closeDisc,omitempty"`
 	CompletedAtUtc  string `json:"completedAtUtc"` // RFC3339Nano when the gateway persisted this record
+	GrpcOK          bool   `json:"grpcOk"`
+	GrpcCode        string `json:"grpcCode,omitempty"`
+	GrpcDetails     string `json:"grpcDetails,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// BurnbridgeMediaChangeDocument captures the outcome of invoking the recorder media-change RPC (from gateway).
+type BurnbridgeMediaChangeDocument struct {
+	Bucket          string `json:"bucket"`
+	RequestID       string `json:"requestId,omitempty"`
+	RequestTime     int64  `json:"requestTime,omitempty"`
+	Action          string `json:"action"`
+	RecorderStatus  string `json:"recorderStatus"`
+	RecorderMessage string `json:"recorderMessage,omitempty"`
+	ImportedBucket  string `json:"importedBucket,omitempty"`
+	Ready           bool   `json:"ready,omitempty"`
+	VolumeLabel     string `json:"volumeLabel,omitempty"`
+	WritableState   string `json:"writableState,omitempty"`
+	CompletedAtUtc  string `json:"completedAtUtc"`
+	GrpcOK          bool   `json:"grpcOk"`
+	GrpcCode        string `json:"grpcCode,omitempty"`
+	GrpcDetails     string `json:"grpcDetails,omitempty"`
+	Error           string `json:"error,omitempty"`
+}
+
+// BurnbridgeTrayDocument captures the outcome of invoking the recorder tray RPC (from gateway).
+type BurnbridgeTrayDocument struct {
+	Bucket          string `json:"bucket"`
+	RequestID       string `json:"requestId,omitempty"`
+	RequestTime     int64  `json:"requestTime,omitempty"`
+	Action          string `json:"action"`
+	RecorderStatus  string `json:"recorderStatus"`
+	RecorderMessage string `json:"recorderMessage,omitempty"`
+	CompletedAtUtc  string `json:"completedAtUtc"`
 	GrpcOK          bool   `json:"grpcOk"`
 	GrpcCode        string `json:"grpcCode,omitempty"`
 	GrpcDetails     string `json:"grpcDetails,omitempty"`
@@ -1201,6 +1300,28 @@ func burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey string) (string, er
 	}
 }
 
+func burnbridgeMediaChangeAttributeForObjectKey(objectKey string) (string, error) {
+	switch strings.TrimSpace(objectKey) {
+	case BurnbridgeMediaRemovedObjectKey:
+		return BurnbridgeMediaChangeAttributePrefix + "-removed", nil
+	case BurnbridgeMediaInsertedObjectKey:
+		return BurnbridgeMediaChangeAttributePrefix + "-inserted", nil
+	default:
+		return "", fmt.Errorf("media change: unsupported object key %q", objectKey)
+	}
+}
+
+func burnbridgeTrayAttributeForObjectKey(objectKey string) (string, error) {
+	switch strings.TrimSpace(objectKey) {
+	case BurnbridgeTrayOpenObjectKey:
+		return BurnbridgeTrayAttributePrefix + "-open", nil
+	case BurnbridgeTrayCloseObjectKey:
+		return BurnbridgeTrayAttributePrefix + "-close", nil
+	default:
+		return "", fmt.Errorf("tray control: unsupported object key %q", objectKey)
+	}
+}
+
 // StoreBurnbridgeFinalizeLayoutJSON saves the finalize outcome for an internal finalize-style control slot.
 func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, objectKey string, payload []byte) error {
 	if strings.TrimSpace(bucket) == "" {
@@ -1214,6 +1335,48 @@ func (s SqlMeta) StoreBurnbridgeFinalizeLayoutJSON(bucket string, objectKey stri
 		return fmt.Errorf("finalize layout: empty payload")
 	}
 	return s.StoreAttribute(nil, bucket, objectKey, attr, payload)
+}
+
+// StoreBurnbridgeMediaChangeJSON saves the media-change outcome for an internal control slot.
+func (s SqlMeta) StoreBurnbridgeMediaChangeJSON(bucket string, objectKey string, payload []byte) error {
+	if strings.TrimSpace(bucket) == "" {
+		return fmt.Errorf("media change: empty bucket")
+	}
+	attr, err := burnbridgeMediaChangeAttributeForObjectKey(objectKey)
+	if err != nil {
+		return err
+	}
+	return s.StoreAttribute(nil, bucket, objectKey, attr, payload)
+}
+
+// GetBurnbridgeMediaChangeJSON returns cached media-change JSON for a control slot.
+func (s SqlMeta) GetBurnbridgeMediaChangeJSON(bucket string, objectKey string) ([]byte, error) {
+	attr, err := burnbridgeMediaChangeAttributeForObjectKey(objectKey)
+	if err != nil {
+		return nil, err
+	}
+	return s.RetrieveAttribute(nil, bucket, objectKey, attr)
+}
+
+// StoreBurnbridgeTrayJSON saves the tray-control outcome for an internal control slot.
+func (s SqlMeta) StoreBurnbridgeTrayJSON(bucket string, objectKey string, payload []byte) error {
+	if strings.TrimSpace(bucket) == "" {
+		return fmt.Errorf("tray control: empty bucket")
+	}
+	attr, err := burnbridgeTrayAttributeForObjectKey(objectKey)
+	if err != nil {
+		return err
+	}
+	return s.StoreAttribute(nil, bucket, objectKey, attr, payload)
+}
+
+// GetBurnbridgeTrayJSON returns cached tray-control JSON for a control slot.
+func (s SqlMeta) GetBurnbridgeTrayJSON(bucket string, objectKey string) ([]byte, error) {
+	attr, err := burnbridgeTrayAttributeForObjectKey(objectKey)
+	if err != nil {
+		return nil, err
+	}
+	return s.RetrieveAttribute(nil, bucket, objectKey, attr)
 }
 
 // GetBurnbridgeFinalizeLayoutJSON returns raw JSON persisted for an internal finalize-style control slot.

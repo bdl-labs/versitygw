@@ -19,7 +19,6 @@ if [[ -x "${START_SCRIPT}" ]]; then
 fi
 
 pkill -f '/opt/burnbridge/versitygw/versitygw' 2>/dev/null || true
-pkill -f '/opt/burnbridge/burnserver/BurnServer' 2>/dev/null || true
-pkill -f 'BurnServer.dll' 2>/dev/null || true
+pkill -f '/opt/burnbridge/optical-recorder/optical-recorder' 2>/dev/null || true
 
 echo "Stopped."

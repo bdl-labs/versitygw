@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	defaultConfigFileName         = "optical-archive.config.json"
 	defaultConfigPath             = `D:\BRS\Publisher\config\optical-archive.config.json`
 	defaultDataDir                = `D:\testdata`
 	defaultBucket                 = "archive-test"
@@ -35,9 +36,14 @@ const (
 	modeRemoteDownload mode = "remote-download"
 	modeMultipartFlow  mode = "multipart"
 	modeListObjects    mode = "listobjects"
+	modeDriveInfo      mode = "driveinfo"
 	modeDiscInfo       mode = "discinfo"
 	modeFinalize       mode = "finalize"
 	modeCloseDisc      mode = "closedisc"
+	modeMediaRemoved   mode = "media-removed"
+	modeMediaInserted  mode = "media-inserted"
+	modeTrayOpen       mode = "tray-open"
+	modeTrayClose      mode = "tray-close"
 	modeHeadObject     mode = "headobject"
 	modeGetObject      mode = "getobject"
 	modeInterruptRetry mode = "interrupt-retry"
@@ -56,10 +62,15 @@ type cliOptions struct {
 	skipMD5Verify      bool
 	remoteOnly         bool
 	listObjectsOnly    bool
+	driveInfoOnly      bool
 	headObjectOnly     bool
 	discInfoOnly       bool
 	finalizeOnly       bool
 	closeDiscOnly      bool
+	mediaRemovedOnly   bool
+	mediaInsertedOnly  bool
+	trayOpenOnly       bool
+	trayCloseOnly      bool
 	singleObjectKey    string
 	singleObjectOutput string
 	interruptRetryOnly bool
@@ -103,38 +114,54 @@ func parseInvocation(args []string) (cliOptions, error) {
 	switch normalizeArg(args[0]) {
 	case "help", "--help", "/?":
 		return cliOptions{mode: modeHelp}, nil
-	case "download":
+	case "download", "dl":
 		return parseDownload(args[1:]), nil
-	case "download-nomd5":
+	case "download-nomd5", "dl-nomd5":
 		opts := parseDownload(args[1:])
 		opts.skipMD5Verify = true
 		return opts, nil
-	case "remote-download":
+	case "remote-download", "rdl":
 		return parseRemoteDownload(args[1:], false), nil
-	case "remote-download-nomd5":
+	case "remote-download-nomd5", "rdl-nomd5":
 		return parseRemoteDownload(args[1:], true), nil
-	case "multipart":
+	case "multipart", "mp":
 		return parseMultipartFlow(args[1:], false)
-	case "multipart-nomd5":
+	case "multipart-nomd5", "mp-nomd5":
 		return parseMultipartFlow(args[1:], true)
-	case "mixed":
+	case "mixed", "mix":
 		return parseMixedFlow(args[1:], false)
-	case "mixed-nomd5":
+	case "mixed-nomd5", "mix-nomd5":
 		return parseMixedFlow(args[1:], true)
-	case "listobjects":
+	case "listobjects", "ls", "list":
 		return parseBucketOnly(args[1:], modeListObjects), nil
-	case "discinfo":
+	case "driveinfo", "drive-info", "drive":
+		return parseBucketOnly(args[1:], modeDriveInfo), nil
+	case "discinfo", "disc-info", "disc":
 		return parseBucketOnly(args[1:], modeDiscInfo), nil
-	case "finalize":
+	case "finalize", "final":
 		return parseBucketOnly(args[1:], modeFinalize), nil
-	case "closedisc":
+	case "closedisc", "close-disc":
 		return parseBucketOnly(args[1:], modeCloseDisc), nil
+	case "media-removed", "mediaremoved", "unmount", "removed":
+		return parseBucketOnly(args[1:], modeMediaRemoved), nil
+	case "media-inserted", "mediainserted", "mount", "inserted":
+		return parseBucketOnly(args[1:], modeMediaInserted), nil
+	case "tray-open", "trayopen", "open-tray", "opentray", "eject", "open":
+		return parseBucketOnly(args[1:], modeTrayOpen), nil
+	case "tray-close", "trayclose", "close-tray", "closetray", "close":
+		return parseBucketOnly(args[1:], modeTrayClose), nil
 	case "headobject":
 		return parseHeadObject(args[1:])
+	case "head":
+		return parseShortHeadObject(args[1:])
 	case "getobject":
 		return parseGetObject(args[1:], false)
+	case "get":
+		return parseShortGetObject(args[1:], false)
 	case "getobject-nomd5":
 		return parseGetObject(args[1:], true)
+	case "get-nomd5":
+		return parseShortGetObject(args[1:], true)
 	case "interrupt-retry":
 		return parseInterruptRetry(args[1:])
 	case "multipart-interrupt-retry":
@@ -266,6 +293,9 @@ func parseBucketOnly(args []string, m mode) cliOptions {
 	case modeListObjects:
 		opts.skipFinalize = true
 		opts.listObjectsOnly = true
+	case modeDriveInfo:
+		opts.skipFinalize = true
+		opts.driveInfoOnly = true
 	case modeDiscInfo:
 		opts.skipFinalize = true
 		opts.discInfoOnly = true
@@ -273,6 +303,14 @@ func parseBucketOnly(args []string, m mode) cliOptions {
 		opts.finalizeOnly = true
 	case modeCloseDisc:
 		opts.closeDiscOnly = true
+	case modeMediaRemoved:
+		opts.mediaRemovedOnly = true
+	case modeMediaInserted:
+		opts.mediaInsertedOnly = true
+	case modeTrayOpen:
+		opts.trayOpenOnly = true
+	case modeTrayClose:
+		opts.trayCloseOnly = true
 	}
 
 	return opts
@@ -300,6 +338,27 @@ func parseHeadObject(args []string) (cliOptions, error) {
 	}, nil
 }
 
+func parseShortHeadObject(args []string) (cliOptions, error) {
+	key := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(key) == "" {
+		return cliOptions{}, errors.New("object key is required")
+	}
+
+	profile, configPath := parseProfileConfig(args, 1, 2)
+	return cliOptions{
+		mode:             modeHeadObject,
+		dataDir:          ".",
+		bucket:           defaultBucket,
+		awsProfile:       profile,
+		configPath:       resolveConfigPath(configPath),
+		skipUpload:       true,
+		skipFinalize:     true,
+		skipBucketCreate: true,
+		headObjectOnly:   true,
+		singleObjectKey:  key,
+	}, nil
+}
+
 func parseGetObject(args []string, skipMD5 bool) (cliOptions, error) {
 	bucket := positionalOrDefault(args, 0, defaultBucket)
 	key := positionalOrDefault(args, 1, "")
@@ -313,6 +372,29 @@ func parseGetObject(args []string, skipMD5 bool) (cliOptions, error) {
 		mode:               modeGetObject,
 		dataDir:            ".",
 		bucket:             bucket,
+		awsProfile:         profile,
+		configPath:         resolveConfigPath(configPath),
+		skipUpload:         true,
+		skipFinalize:       true,
+		skipBucketCreate:   true,
+		skipMD5Verify:      skipMD5,
+		singleObjectKey:    key,
+		singleObjectOutput: output,
+	}, nil
+}
+
+func parseShortGetObject(args []string, skipMD5 bool) (cliOptions, error) {
+	key := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(key) == "" {
+		return cliOptions{}, errors.New("object key is required")
+	}
+
+	output := positionalOrDefault(args, 1, "")
+	profile, configPath := parseProfileConfig(args, 2, 3)
+	return cliOptions{
+		mode:               modeGetObject,
+		dataDir:            ".",
+		bucket:             defaultBucket,
 		awsProfile:         profile,
 		configPath:         resolveConfigPath(configPath),
 		skipUpload:         true,
@@ -423,6 +505,13 @@ func resolveConfigPath(configPath string) string {
 		return env
 	}
 
+	if executablePath, err := os.Executable(); err == nil {
+		siblingConfigPath := filepath.Join(filepath.Dir(executablePath), defaultConfigFileName)
+		if _, statErr := os.Stat(siblingConfigPath); statErr == nil {
+			return siblingConfigPath
+		}
+	}
+
 	return defaultConfigPath
 }
 
@@ -433,6 +522,16 @@ func normalizeArg(value string) string {
 func printUsage(stream *os.File) {
 	lines := []string{
 		"Usage:",
+		"  test-burn-upload-go.exe ls",
+		"  test-burn-upload-go.exe drive",
+		"  test-burn-upload-go.exe disc",
+		"  test-burn-upload-go.exe open",
+		"  test-burn-upload-go.exe close",
+		"  test-burn-upload-go.exe mount",
+		"  test-burn-upload-go.exe unmount",
+		"  test-burn-upload-go.exe get [ObjectKey] [OutputPath]",
+		"",
+		"Compatibility usage:",
 		"  test-burn-upload-go.exe [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe mixed [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe mixed-nomd5 [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
@@ -443,14 +542,29 @@ func printUsage(stream *os.File) {
 		"  test-burn-upload-go.exe remote-download [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe remote-download-nomd5 [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe listobjects [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe driveinfo [ControlBucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe discinfo [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe finalize [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe closedisc [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe media-removed [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe media-inserted [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe tray-open [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe tray-close [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe headobject [Bucket] [ObjectKey] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe getobject [Bucket] [ObjectKey] [OutputPath] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe getobject-nomd5 [Bucket] [ObjectKey] [OutputPath] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe interrupt-retry [DataFile] [Bucket] [FailAfterMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart-interrupt-retry [DataFile] [Bucket] [PartSizeMiB] [FailAfterMiB] [AwsProfile] [ConfigPath]",
+		"",
+		"Short aliases:",
+		"  ls=listobjects, drive=driveinfo, disc=discinfo, open=tray-open, close=tray-close",
+		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, mp=multipart, mix=mixed",
+		"",
+		"Config resolution:",
+		"  1. explicit ConfigPath argument",
+		"  2. OPTICAL_ARCHIVE_CONFIG_PATH",
+		"  3. optical-archive.config.json next to this exe",
+		"  4. D:\\BRS\\Publisher\\config\\optical-archive.config.json",
 		"",
 		"Modes:",
 		"  full-flow",
@@ -483,6 +597,9 @@ func printUsage(stream *os.File) {
 		"  listobjects",
 		"    List all objects in the bucket and print key and size.",
 		"",
+		"  driveinfo",
+		"    Generate a burnbridge control key for drive-info and print the virtual control bucket.",
+		"",
 		"  discinfo",
 		"    Generate a burnbridge control key for disc-info and print the returned JSON fields.",
 		"",
@@ -491,6 +608,18 @@ func printUsage(stream *os.File) {
 		"",
 		"  closedisc",
 		"    Generate a burnbridge control key for close-disc and request disc close/finalize on recorder.",
+		"",
+		"  media-removed",
+		"    Generate a burnbridge control key for media-removed and notify recorder that media was removed.",
+		"",
+		"  media-inserted",
+		"    Generate a burnbridge control key for media-inserted and notify recorder that media was inserted.",
+		"",
+		"  tray-open",
+		"    Generate a burnbridge control key for tray-open and request the recorder tray to open.",
+		"",
+		"  tray-close",
+		"    Generate a burnbridge control key for tray-close and request the recorder tray to close.",
 		"",
 		"  headobject",
 		"    Print one object's metadata without downloading the object body.",
@@ -508,16 +637,14 @@ func printUsage(stream *os.File) {
 		"    Upload part 1 normally, fail part 2 mid-stream, retry the same part, then complete and verify.",
 		"",
 		"Examples:",
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe D:\testdata e60102350000000024d104e2`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe mixed D:\BRS\Publisher\temp\mixed-batch e60102350000000024d104e2 64 64`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe multipart D:\testdata\10.zip e60102350000000024d104e2 64`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe download D:\testdata e60102350000000024d104e2`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe remote-download e60102350000000024d104e2`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe discinfo e60102350000000024d104e2`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe headobject e60102350000000024d104e2 docs/chat-export.md`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe getobject-nomd5 e60102350000000024d104e2 docs/chat-export.md`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe interrupt-retry D:\testdata\sample.bin e60102350000000024d104e2 16`,
-		`  D:\BRS\Publisher\scripts\test-burn-upload-go.exe multipart-interrupt-retry D:\testdata\sample.bin e60102350000000024d104e2 32 16`,
+		`  .\test-burn-upload-go.exe ls`,
+		`  .\test-burn-upload-go.exe drive`,
+		`  .\test-burn-upload-go.exe open`,
+		`  .\test-burn-upload-go.exe close`,
+		`  .\test-burn-upload-go.exe mix D:\BRS\Publisher\temp\mixed-batch archive-test 64 64`,
+		`  .\test-burn-upload-go.exe mp D:\testdata\10.zip archive-test 64`,
+		`  .\test-burn-upload-go.exe rdl`,
+		`  .\test-burn-upload-go.exe get docs/chat-export.md`,
 	}
 
 	for _, line := range lines {

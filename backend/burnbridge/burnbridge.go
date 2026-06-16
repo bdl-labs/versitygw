@@ -55,17 +55,24 @@ import (
 )
 
 const (
-	burnbridgeControlNamespacePrefix = ".__bbctl__/"
-	burnbridgeControlKeyPrefix       = ".__bbctl__/v1/"
-	burnbridgeControlAPIVersion      = "v1"
+	burnbridgeControlAPIVersion   = "v1"
+	burnbridgeBucketTypeTagKey    = "burnbridge:bucket-type"
+	burnbridgeBucketTypeControl   = "control"
+	burnbridgeBucketTypeData      = "data"
+	burnbridgeControlBucketTagKey = "burnbridge:control-bucket"
 )
 
 type burnbridgeControlAction string
 
 const (
+	burnbridgeControlActionDriveInfo      burnbridgeControlAction = "drive-info"
 	burnbridgeControlActionDiscInfo       burnbridgeControlAction = "disc-info"
 	burnbridgeControlActionFinalizeLayout burnbridgeControlAction = "finalize-layout"
 	burnbridgeControlActionCloseDisc      burnbridgeControlAction = "close-disc"
+	burnbridgeControlActionMediaRemoved   burnbridgeControlAction = "media-removed"
+	burnbridgeControlActionMediaInserted  burnbridgeControlAction = "media-inserted"
+	burnbridgeControlActionTrayOpen       burnbridgeControlAction = "tray-open"
+	burnbridgeControlActionTrayClose      burnbridgeControlAction = "tray-close"
 )
 
 type burnbridgeControlRequest struct {
@@ -192,70 +199,58 @@ func burnbridgeInvalidRequest(message string) error {
 	return apiErr
 }
 
-func isBurnbridgeControlNamespace(key string) bool {
-	return strings.HasPrefix(strings.TrimSpace(key), burnbridgeControlNamespacePrefix)
+func burnbridgeControlActionFromString(value string) (burnbridgeControlAction, bool) {
+	switch strings.TrimSpace(value) {
+	case string(burnbridgeControlActionDriveInfo):
+		return burnbridgeControlActionDriveInfo, true
+	case string(burnbridgeControlActionDiscInfo):
+		return burnbridgeControlActionDiscInfo, true
+	case string(burnbridgeControlActionFinalizeLayout):
+		return burnbridgeControlActionFinalizeLayout, true
+	case string(burnbridgeControlActionCloseDisc):
+		return burnbridgeControlActionCloseDisc, true
+	case string(burnbridgeControlActionMediaRemoved):
+		return burnbridgeControlActionMediaRemoved, true
+	case string(burnbridgeControlActionMediaInserted):
+		return burnbridgeControlActionMediaInserted, true
+	case string(burnbridgeControlActionTrayOpen):
+		return burnbridgeControlActionTrayOpen, true
+	case string(burnbridgeControlActionTrayClose):
+		return burnbridgeControlActionTrayClose, true
+	default:
+		return "", false
+	}
 }
 
-func isBurnbridgeUUIDText(value string) bool {
-	if len(value) != 36 {
-		return false
-	}
-	for idx, ch := range value {
-		switch idx {
-		case 8, 13, 18, 23:
-			if ch != '-' {
-				return false
-			}
-		default:
-			switch {
-			case ch >= '0' && ch <= '9':
-			case ch >= 'a' && ch <= 'f':
-			case ch >= 'A' && ch <= 'F':
-			default:
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func parseBurnbridgeControlRequest(key string) (*burnbridgeControlRequest, bool, error) {
-	trimmed := strings.TrimSpace(key)
-	if !isBurnbridgeControlNamespace(trimmed) {
+func (b *BurnBridge) parseControlRequestForBucket(bucket, key string) (*burnbridgeControlRequest, bool, error) {
+	trimmed := strings.Trim(strings.TrimSpace(key), "/")
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 || parts[0] != burnbridgeControlAPIVersion {
 		return nil, false, nil
 	}
-
-	parts := strings.Split(trimmed, "/")
-	if len(parts) != 5 || parts[0] != ".__bbctl__" || parts[1] != burnbridgeControlAPIVersion {
-		return nil, true, burnbridgeInvalidRequest("invalid burnbridge control key format; expected .__bbctl__/v1/<action>/<unixMs>/<uuid>")
+	if !b.isDriveControlBucket(bucket) {
+		return nil, false, nil
 	}
-
-	var action burnbridgeControlAction
-	switch parts[2] {
-	case string(burnbridgeControlActionDiscInfo):
-		action = burnbridgeControlActionDiscInfo
-	case string(burnbridgeControlActionFinalizeLayout):
-		action = burnbridgeControlActionFinalizeLayout
-	case string(burnbridgeControlActionCloseDisc):
-		action = burnbridgeControlActionCloseDisc
-	default:
-		return nil, true, burnbridgeInvalidRequest(fmt.Sprintf("unsupported burnbridge control action %q", parts[2]))
+	action, ok := burnbridgeControlActionFromString(parts[1])
+	if !ok {
+		return nil, true, burnbridgeInvalidRequest(fmt.Sprintf("unsupported burnbridge control action %q", parts[1]))
 	}
-
-	requestTime, err := strconv.ParseInt(parts[3], 10, 64)
-	if err != nil || requestTime <= 0 {
-		return nil, true, burnbridgeInvalidRequest(fmt.Sprintf("invalid burnbridge control timestamp %q", parts[3]))
-	}
-	if !isBurnbridgeUUIDText(parts[4]) {
-		return nil, true, burnbridgeInvalidRequest(fmt.Sprintf("invalid burnbridge control request id %q", parts[4]))
-	}
-
 	return &burnbridgeControlRequest{
 		Action:      action,
-		RequestTime: requestTime,
-		RequestID:   parts[4],
+		RequestTime: time.Now().UTC().UnixMilli(),
+		RequestID:   uuid.NewString(),
 		Key:         trimmed,
 	}, true, nil
+}
+
+func burnbridgeControlRequiresExistingBucket(action burnbridgeControlAction) bool {
+	switch action {
+	case burnbridgeControlActionDriveInfo, burnbridgeControlActionMediaRemoved, burnbridgeControlActionMediaInserted,
+		burnbridgeControlActionTrayOpen, burnbridgeControlActionTrayClose:
+		return false
+	default:
+		return true
+	}
 }
 
 func buildBurnbridgeControlPayload(req *burnbridgeControlRequest, bucket string, ok bool, data any, controlErr *burnbridgeControlError, lastModified time.Time) (burnbridgeControlPayload, error) {
@@ -325,6 +320,13 @@ type BurnBridge struct {
 	lastRecorderReadyBucket     string
 	lastRecorderWritableState   string
 	lastRecorderReadyObservedAt time.Time
+	lastDriveControlBucket      string
+	lastDriveSerialNumber       string
+	lastDriveVendorID           string
+	lastDriveProductID          string
+	lastDriveProductRevision    string
+	lastDriveIsMMCUnit          bool
+	lastDriveObservedAt         time.Time
 	importedBucketState         map[string]bool
 	pendingImportedConvergence  map[string]bool
 	statusWatchCancel           context.CancelFunc
@@ -389,6 +391,12 @@ var burnbridgeMultipartUnsupported = s3err.APIError{
 	HTTPStatusCode: http.StatusNotImplemented,
 }
 
+var burnbridgeControlBucketReadOnly = s3err.APIError{
+	Code:           "MethodNotAllowed",
+	Description:    "BurnBridge drive control bucket is read-only and only exposes v1 control objects.",
+	HTTPStatusCode: http.StatusMethodNotAllowed,
+}
+
 func isS3BucketAlnum(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
 }
@@ -432,6 +440,22 @@ func sanitizeS3BucketFromVolumeLabel(raw string) (string, error) {
 
 func volumeLabelFromBucketName(bucket string) string {
 	return strings.TrimSpace(strings.ToUpper(bucket))
+}
+
+func sanitizeDriveControlBucketFromSerial(serial string) (string, error) {
+	trimmed := strings.TrimSpace(serial)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty drive serial number")
+	}
+	name, err := sanitizeS3BucketFromVolumeLabel(trimmed)
+	if err == nil {
+		return name, nil
+	}
+	prefixed, prefixedErr := sanitizeS3BucketFromVolumeLabel("drive-" + trimmed)
+	if prefixedErr != nil {
+		return "", err
+	}
+	return prefixed, nil
 }
 
 func defaultBucketACL(owner string) auth.ACL {
@@ -686,6 +710,30 @@ func discInfoDocFromProto(
 	return doc
 }
 
+func driveInfoDocFromProto(bucket string, drive *burnbridgev1.OpticalDriveIdentity) *meta.BurnbridgeDriveInfoDocument {
+	if drive == nil {
+		return nil
+	}
+	serial := strings.TrimSpace(drive.GetSerialNumber())
+	if serial == "" {
+		return nil
+	}
+	controlBucket, err := sanitizeDriveControlBucketFromSerial(serial)
+	if err != nil {
+		return nil
+	}
+	return &meta.BurnbridgeDriveInfoDocument{
+		Bucket:          strings.TrimSpace(bucket),
+		ControlBucket:   controlBucket,
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339Nano),
+		VendorID:        strings.TrimSpace(drive.GetVendorId()),
+		ProductID:       strings.TrimSpace(drive.GetProductId()),
+		ProductRevision: strings.TrimSpace(drive.GetProductRevision()),
+		SerialNumber:    serial,
+		IsMMCUnit:       drive.GetIsMmcUnit(),
+	}
+}
+
 func readFinalizeLayoutTranscript(metaStore meta.SqlMeta, bucket string, objectKey string) *meta.BurnbridgeFinalizeLayoutDocument {
 	raw, err := metaStore.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey)
 	if err != nil || len(raw) == 0 {
@@ -697,6 +745,188 @@ func readFinalizeLayoutTranscript(metaStore meta.SqlMeta, bucket string, objectK
 		return nil
 	}
 	return &doc
+}
+
+func (b *BurnBridge) cacheDriveInfo(doc *meta.BurnbridgeDriveInfoDocument) {
+	if doc == nil {
+		return
+	}
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	b.lastDriveControlBucket = strings.TrimSpace(doc.ControlBucket)
+	b.lastDriveSerialNumber = strings.TrimSpace(doc.SerialNumber)
+	b.lastDriveVendorID = strings.TrimSpace(doc.VendorID)
+	b.lastDriveProductID = strings.TrimSpace(doc.ProductID)
+	b.lastDriveProductRevision = strings.TrimSpace(doc.ProductRevision)
+	b.lastDriveIsMMCUnit = doc.IsMMCUnit
+	if strings.TrimSpace(doc.UpdatedAt) != "" {
+		if t, err := time.Parse(time.RFC3339Nano, doc.UpdatedAt); err == nil {
+			b.lastDriveObservedAt = t.UTC()
+		} else if t, err := time.Parse(time.RFC3339, doc.UpdatedAt); err == nil {
+			b.lastDriveObservedAt = t.UTC()
+		} else {
+			b.lastDriveObservedAt = time.Now().UTC()
+		}
+	} else {
+		b.lastDriveObservedAt = time.Now().UTC()
+	}
+}
+
+func (b *BurnBridge) cachedDriveInfoDoc() *meta.BurnbridgeDriveInfoDocument {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	if strings.TrimSpace(b.lastDriveControlBucket) == "" {
+		return nil
+	}
+	updatedAt := b.lastDriveObservedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+	return &meta.BurnbridgeDriveInfoDocument{
+		Bucket:          strings.TrimSpace(b.lastDriveControlBucket),
+		ControlBucket:   strings.TrimSpace(b.lastDriveControlBucket),
+		UpdatedAt:       updatedAt.Format(time.RFC3339Nano),
+		VendorID:        strings.TrimSpace(b.lastDriveVendorID),
+		ProductID:       strings.TrimSpace(b.lastDriveProductID),
+		ProductRevision: strings.TrimSpace(b.lastDriveProductRevision),
+		SerialNumber:    strings.TrimSpace(b.lastDriveSerialNumber),
+		IsMMCUnit:       b.lastDriveIsMMCUnit,
+	}
+}
+
+func (b *BurnBridge) driveControlBucketHint() (string, bool) {
+	b.stateMu.Lock()
+	defer b.stateMu.Unlock()
+	controlBucket := strings.TrimSpace(b.lastDriveControlBucket)
+	if controlBucket == "" {
+		return "", false
+	}
+	return controlBucket, true
+}
+
+func (b *BurnBridge) isDriveControlBucket(bucket string) bool {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" {
+		return false
+	}
+	if controlBucket, ok := b.driveControlBucketHint(); ok && strings.EqualFold(trimmedBucket, controlBucket) {
+		return true
+	}
+	if !b.meta.IsOpen() {
+		return false
+	}
+	if raw, err := b.meta.GetBurnbridgeDriveInfoJSON(trimmedBucket); err == nil && len(raw) > 0 {
+		doc := parseDriveInfoControlDocument(raw)
+		if doc != nil && strings.EqualFold(strings.TrimSpace(doc.ControlBucket), trimmedBucket) {
+			b.cacheDriveInfo(doc)
+			return true
+		}
+	}
+	return false
+}
+
+func (b *BurnBridge) refreshDriveInfoDocument(ctx context.Context) ([]byte, *meta.BurnbridgeDriveInfoDocument, error) {
+	if b.grpc == nil {
+		return nil, nil, fmt.Errorf("burnbridge: recorder grpc client unavailable")
+	}
+	discResp, err := b.grpc.GetDiscInfo(ctx, &burnbridgev1.GetDiscInfoRequest{
+		IncludeSessionDiscId: false,
+		IncludeDriveIdentity: true,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	doc := driveInfoDocFromProto("", discResp.GetDrive())
+	if doc == nil {
+		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
+	doc.Bucket = doc.ControlBucket
+	b.cacheDriveInfo(doc)
+	if err := b.meta.StoreBurnbridgeDriveInfo(doc); err != nil {
+		return nil, nil, err
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return nil, nil, err
+	}
+	return raw, doc, nil
+}
+
+func (b *BurnBridge) ensureDriveControlBucket(ctx context.Context) (string, error) {
+	if controlBucket, ok := b.driveControlBucketHint(); ok {
+		return controlBucket, nil
+	}
+	_, doc, err := b.refreshDriveInfoDocument(ctx)
+	if err != nil {
+		if cached := b.cachedDriveInfoDoc(); cached != nil {
+			return strings.TrimSpace(cached.ControlBucket), nil
+		}
+		return "", err
+	}
+	return strings.TrimSpace(doc.ControlBucket), nil
+}
+
+func (b *BurnBridge) cachedDriveControlBucket() (string, bool) {
+	if controlBucket, ok := b.driveControlBucketHint(); ok {
+		return controlBucket, true
+	}
+	if cached := b.cachedDriveInfoDoc(); cached != nil {
+		controlBucket := strings.TrimSpace(cached.ControlBucket)
+		return controlBucket, controlBucket != ""
+	}
+	return "", false
+}
+
+func (b *BurnBridge) resolveActiveBucketForControl(ctx context.Context) (string, error) {
+	_ = b.ensureActiveBucketLoaded(ctx)
+	if b.noDiscLatchedState() {
+		return "", s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if mountedBucket, ok := b.mountedFallbackBucketHint(); ok && strings.TrimSpace(mountedBucket) != "" {
+		return strings.TrimSpace(mountedBucket), nil
+	}
+	activeBucket := strings.TrimSpace(b.activeBucket)
+	if activeBucket == "" {
+		return "", s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if !b.burnbridgeBucketExists(activeBucket) {
+		return "", s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	return activeBucket, nil
+}
+
+func (b *BurnBridge) resolveControlPayloadBucket(ctx context.Context, requestBucket string, req *burnbridgeControlRequest) (payloadBucket string, targetBucket string, err error) {
+	payloadBucket = strings.TrimSpace(requestBucket)
+	if req == nil {
+		return payloadBucket, "", fmt.Errorf("burnbridge: control request is required")
+	}
+	if !b.isDriveControlBucket(payloadBucket) {
+		return payloadBucket, payloadBucket, nil
+	}
+	switch req.Action {
+	case burnbridgeControlActionDiscInfo:
+		targetBucket, err = b.resolveActiveBucketForControl(ctx)
+		if err != nil {
+			return payloadBucket, payloadBucket, nil
+		}
+		return payloadBucket, targetBucket, nil
+	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc:
+		targetBucket, err = b.resolveActiveBucketForControl(ctx)
+		if err != nil {
+			return payloadBucket, "", err
+		}
+		return payloadBucket, targetBucket, nil
+	default:
+		return payloadBucket, payloadBucket, nil
+	}
+}
+
+func (b *BurnBridge) controlRequestBucketAllowed(bucket string, req *burnbridgeControlRequest) bool {
+	trimmedBucket := strings.TrimSpace(bucket)
+	if trimmedBucket == "" || req == nil {
+		return false
+	}
+	return b.isDriveControlBucket(trimmedBucket)
 }
 
 func (b *BurnBridge) refreshDiscInfoDocument(ctx context.Context, bucket string) ([]byte, *meta.BurnbridgeDiscInfoDocument, error) {
@@ -930,6 +1160,10 @@ func New(opts Options) (*BurnBridge, error) {
 		importedBucketState:        make(map[string]bool),
 		pendingImportedConvergence: make(map[string]bool),
 		metaDBPath:                 opts.DBPath,
+	}
+	if _, _, err := bridge.refreshDriveInfoDocument(context.Background()); err != nil {
+		slog.Warn("burnbridge: startup drive identity probe failed; virtual control bucket will appear after drive-info succeeds",
+			"error", err)
 	}
 	if strings.TrimSpace(activeBucket) != "" {
 		if err := bridge.syncImportedBucketState(context.Background(), activeBucket); err != nil {
@@ -1871,6 +2105,9 @@ func (b *BurnBridge) burnbridgeBucketExists(name string) bool {
 	if trimmedName == "" {
 		return false
 	}
+	if b.isDriveControlBucket(trimmedName) {
+		return true
+	}
 	if b.noDiscLatchedState() {
 		return false
 	}
@@ -1951,6 +2188,44 @@ func (b *BurnBridge) ListBuckets(ctx context.Context, input s3response.ListBucke
 		Owner:   s3response.CanonicalUser{ID: input.Owner},
 		Prefix:  input.Prefix,
 	}
+	controlBucket, hasControlBucket := b.cachedDriveControlBucket()
+	addBucket := func(name string) error {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil
+		}
+		if input.Prefix != "" && !strings.HasPrefix(name, input.Prefix) {
+			return nil
+		}
+		if input.ContinuationToken != "" && name <= input.ContinuationToken {
+			return nil
+		}
+		if input.MaxBuckets <= 0 {
+			return nil
+		}
+		if int32(len(result.Buckets.Bucket)) >= input.MaxBuckets {
+			return nil
+		}
+		if !input.IsAdmin {
+			if err := b.bootstrapBucketACL(name, input.Owner); err != nil {
+				return err
+			}
+			acl, _, err := b.ensureBucketACLForOwner(name, input.Owner)
+			if err != nil {
+				return err
+			}
+			if !strings.EqualFold(strings.TrimSpace(acl.Owner), strings.TrimSpace(input.Owner)) {
+				return nil
+			}
+		}
+		result.Buckets.Bucket = append(result.Buckets.Bucket, s3response.ListAllMyBucketsEntry{Name: name, CreationDate: time.Now()})
+		return nil
+	}
+	if hasControlBucket {
+		if err := addBucket(controlBucket); err != nil {
+			return s3response.ListAllMyBucketsResult{}, err
+		}
+	}
 	if b.noDiscLatchedState() {
 		return result, nil
 	}
@@ -1958,40 +2233,36 @@ func (b *BurnBridge) ListBuckets(ctx context.Context, input s3response.ListBucke
 	if name == "" {
 		return result, nil
 	}
-	if input.Prefix != "" && !strings.HasPrefix(name, input.Prefix) {
-		return result, nil
-	}
-	if input.ContinuationToken != "" && name <= input.ContinuationToken {
-		return result, nil
-	}
-	if input.MaxBuckets <= 0 {
-		return result, nil
-	}
-	if !input.IsAdmin {
-		if err := b.bootstrapBucketACL(name, input.Owner); err != nil {
+	if !strings.EqualFold(name, controlBucket) {
+		if err := addBucket(name); err != nil {
 			return s3response.ListAllMyBucketsResult{}, err
 		}
-		acl, _, err := b.ensureBucketACLForOwner(name, input.Owner)
-		if err != nil {
-			return s3response.ListAllMyBucketsResult{}, err
-		}
-		if !strings.EqualFold(strings.TrimSpace(acl.Owner), strings.TrimSpace(input.Owner)) {
-			return result, nil
-		}
 	}
-
-	result.Buckets.Bucket = []s3response.ListAllMyBucketsEntry{{Name: name, CreationDate: time.Now()}}
 	return result, nil
 }
 
 func (b *BurnBridge) ListBucketsAndOwners(ctx context.Context) ([]s3response.Bucket, error) {
 	_ = b.ensureActiveBucketLoaded(ctx)
+	out := []s3response.Bucket{}
+	if controlBucket, ok := b.cachedDriveControlBucket(); ok {
+		acl, _, err := b.loadBucketACL(controlBucket)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s3response.Bucket{
+			Name:  controlBucket,
+			Owner: acl.Owner,
+		})
+	}
 	if b.noDiscLatchedState() {
-		return []s3response.Bucket{}, nil
+		return out, nil
 	}
 	name := strings.TrimSpace(b.activeBucket)
 	if name == "" {
-		return []s3response.Bucket{}, nil
+		return out, nil
+	}
+	if len(out) > 0 && strings.EqualFold(out[0].Name, name) {
+		return out, nil
 	}
 
 	acl, _, err := b.loadBucketACL(name)
@@ -1999,10 +2270,11 @@ func (b *BurnBridge) ListBucketsAndOwners(ctx context.Context) ([]s3response.Buc
 		return nil, err
 	}
 
-	return []s3response.Bucket{{
+	out = append(out, s3response.Bucket{
 		Name:  name,
 		Owner: acl.Owner,
-	}}, nil
+	})
+	return out, nil
 }
 
 func (b *BurnBridge) ChangeBucketOwner(ctx context.Context, bucket, owner string) error {
@@ -2066,10 +2338,13 @@ func (b *BurnBridge) HeadBucket(ctx context.Context, input *s3.HeadBucketInput) 
 	if input == nil || input.Bucket == nil {
 		return nil, fmt.Errorf("bucket required")
 	}
+	bucket := *input.Bucket
+	if b.isDriveControlBucket(bucket) {
+		return &s3.HeadBucketOutput{}, nil
+	}
 	if err := b.ensureActiveBucketLoaded(ctx); err != nil {
 		return nil, err
 	}
-	bucket := *input.Bucket
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2179,7 +2454,34 @@ func (b *BurnBridge) GetBucketTagging(_ context.Context, bucket string) (map[str
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	return map[string]string{}, nil
+	tags := map[string]string{
+		burnbridgeBucketTypeTagKey: burnbridgeBucketTypeData,
+	}
+	if b.isDriveControlBucket(bucket) {
+		tags[burnbridgeBucketTypeTagKey] = burnbridgeBucketTypeControl
+		tags[burnbridgeControlBucketTagKey] = "true"
+	}
+	return tags, nil
+}
+
+func (b *BurnBridge) PutBucketTagging(_ context.Context, bucket string, tags map[string]string) error {
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if b.isDriveControlBucket(bucket) {
+		return burnbridgeControlBucketReadOnly
+	}
+	return nil
+}
+
+func (b *BurnBridge) DeleteBucketTagging(_ context.Context, bucket string) error {
+	if !b.burnbridgeBucketExists(bucket) {
+		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	if b.isDriveControlBucket(bucket) {
+		return burnbridgeControlBucketReadOnly
+	}
+	return nil
 }
 
 // GetBucketPolicy reports no bucket policy for burnbridge buckets.
@@ -2219,11 +2521,11 @@ func (b *BurnBridge) CreateMultipartUpload(ctx context.Context, input s3response
 	}
 	bucket := *input.Bucket
 	key := *input.Key
+	if b.isDriveControlBucket(bucket) {
+		return s3response.InitiateMultipartUploadResult{}, burnbridgeControlBucketReadOnly
+	}
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
-	}
-	if isBurnbridgeControlNamespace(key) {
-		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
 	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
 		return s3response.InitiateMultipartUploadResult{}, err
@@ -2291,11 +2593,11 @@ func (b *BurnBridge) UploadPart(ctx context.Context, input *s3.UploadPartInput) 
 	key := *input.Key
 	uploadID := strings.TrimSpace(*input.UploadId)
 	partNumber := int(*input.PartNumber)
+	if b.isDriveControlBucket(bucket) {
+		return nil, burnbridgeControlBucketReadOnly
+	}
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
-	}
-	if isBurnbridgeControlNamespace(key) {
-		return nil, s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
 	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
 		return nil, err
@@ -2564,6 +2866,9 @@ func (b *BurnBridge) ListParts(_ context.Context, input *s3.ListPartsInput) (s3r
 	bucket := *input.Bucket
 	key := *input.Key
 	uploadID := strings.TrimSpace(*input.UploadId)
+	if b.isDriveControlBucket(bucket) {
+		return s3response.ListPartsResult{}, burnbridgeControlBucketReadOnly
+	}
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.ListPartsResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2643,11 +2948,11 @@ func (b *BurnBridge) CompleteMultipartUpload(ctx context.Context, input *s3.Comp
 	bucket := *input.Bucket
 	key := *input.Key
 	uploadID := strings.TrimSpace(*input.UploadId)
+	if b.isDriveControlBucket(bucket) {
+		return s3response.CompleteMultipartUploadResult{}, "", burnbridgeControlBucketReadOnly
+	}
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrNoSuchBucket)
-	}
-	if isBurnbridgeControlNamespace(key) {
-		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
 	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
 		return s3response.CompleteMultipartUploadResult{}, "", err
@@ -3004,6 +3309,40 @@ func finalizeLayoutLastModifiedFromJSON(raw []byte) time.Time {
 	return time.Now().UTC()
 }
 
+func mediaChangeLastModifiedFromJSON(raw []byte) time.Time {
+	var d meta.BurnbridgeMediaChangeDocument
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return time.Now().UTC()
+	}
+	if strings.TrimSpace(d.CompletedAtUtc) == "" {
+		return time.Now().UTC()
+	}
+	if t, err := time.Parse(time.RFC3339Nano, d.CompletedAtUtc); err == nil {
+		return t.UTC()
+	}
+	if t, err := time.Parse(time.RFC3339, d.CompletedAtUtc); err == nil {
+		return t.UTC()
+	}
+	return time.Now().UTC()
+}
+
+func trayLastModifiedFromJSON(raw []byte) time.Time {
+	var d meta.BurnbridgeTrayDocument
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return time.Now().UTC()
+	}
+	if strings.TrimSpace(d.CompletedAtUtc) == "" {
+		return time.Now().UTC()
+	}
+	if t, err := time.Parse(time.RFC3339Nano, d.CompletedAtUtc); err == nil {
+		return t.UTC()
+	}
+	if t, err := time.Parse(time.RFC3339, d.CompletedAtUtc); err == nil {
+		return t.UTC()
+	}
+	return time.Now().UTC()
+}
+
 func buildDiscInfoControlJSON(req *burnbridgeControlRequest, bucket string, doc *meta.BurnbridgeDiscInfoDocument) (burnbridgeControlPayload, error) {
 	if req == nil {
 		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: disc info control request is required")
@@ -3012,6 +3351,27 @@ func buildDiscInfoControlJSON(req *burnbridgeControlRequest, bucket string, doc 
 		return buildBurnbridgeControlPayload(req, bucket, false, nil, &burnbridgeControlError{
 			Code:    s3err.GetAPIError(s3err.ErrNoSuchKey).Code,
 			Message: "disc info unavailable",
+		}, time.Now().UTC())
+	}
+	lastModified := time.Now().UTC()
+	if strings.TrimSpace(doc.UpdatedAt) != "" {
+		if t, err := time.Parse(time.RFC3339Nano, doc.UpdatedAt); err == nil {
+			lastModified = t.UTC()
+		} else if t, err := time.Parse(time.RFC3339, doc.UpdatedAt); err == nil {
+			lastModified = t.UTC()
+		}
+	}
+	return buildBurnbridgeControlPayload(req, bucket, true, doc, nil, lastModified)
+}
+
+func buildDriveInfoControlJSON(req *burnbridgeControlRequest, bucket string, doc *meta.BurnbridgeDriveInfoDocument) (burnbridgeControlPayload, error) {
+	if req == nil {
+		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: drive info control request is required")
+	}
+	if doc == nil {
+		return buildBurnbridgeControlPayload(req, bucket, false, nil, &burnbridgeControlError{
+			Code:    s3err.GetAPIError(s3err.ErrNoSuchKey).Code,
+			Message: "drive info unavailable",
 		}, time.Now().UTC())
 	}
 	lastModified := time.Now().UTC()
@@ -3066,11 +3426,106 @@ func buildFinalizeControlJSON(req *burnbridgeControlRequest, bucket string, doc 
 	}, lastModified)
 }
 
+func buildMediaChangeControlJSON(req *burnbridgeControlRequest, bucket string, doc *meta.BurnbridgeMediaChangeDocument) (burnbridgeControlPayload, error) {
+	if req == nil {
+		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: media change control request is required")
+	}
+	if doc == nil {
+		return buildBurnbridgeControlPayload(req, bucket, false, nil, &burnbridgeControlError{
+			Code:    s3err.GetAPIError(s3err.ErrNoSuchKey).Code,
+			Message: "media change transcript unavailable",
+		}, time.Now().UTC())
+	}
+	lastModified := mediaChangeLastModifiedFromJSON(mustMarshalJSON(doc))
+	if doc.GrpcOK {
+		return buildBurnbridgeControlPayload(req, bucket, true, doc, nil, lastModified)
+	}
+	errCode := doc.GrpcCode
+	if strings.TrimSpace(errCode) == "" {
+		errCode = "InternalError"
+	}
+	errMessage := doc.GrpcDetails
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = doc.Error
+	}
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = doc.RecorderMessage
+	}
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = "media change failed"
+	}
+	return buildBurnbridgeControlPayload(req, bucket, false, doc, &burnbridgeControlError{
+		Code:    errCode,
+		Message: errMessage,
+	}, lastModified)
+}
+
+func buildTrayControlJSON(req *burnbridgeControlRequest, bucket string, doc *meta.BurnbridgeTrayDocument) (burnbridgeControlPayload, error) {
+	if req == nil {
+		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: tray control request is required")
+	}
+	if doc == nil {
+		return buildBurnbridgeControlPayload(req, bucket, false, nil, &burnbridgeControlError{
+			Code:    s3err.GetAPIError(s3err.ErrNoSuchKey).Code,
+			Message: "tray transcript unavailable",
+		}, time.Now().UTC())
+	}
+	lastModified := trayLastModifiedFromJSON(mustMarshalJSON(doc))
+	if doc.GrpcOK {
+		return buildBurnbridgeControlPayload(req, bucket, true, doc, nil, lastModified)
+	}
+	errCode := doc.GrpcCode
+	if strings.TrimSpace(errCode) == "" {
+		errCode = "InternalError"
+	}
+	errMessage := doc.GrpcDetails
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = doc.Error
+	}
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = doc.RecorderMessage
+	}
+	if strings.TrimSpace(errMessage) == "" {
+		errMessage = "tray control failed"
+	}
+	return buildBurnbridgeControlPayload(req, bucket, false, doc, &burnbridgeControlError{
+		Code:    errCode,
+		Message: errMessage,
+	}, lastModified)
+}
+
+func mustMarshalJSON(v any) []byte {
+	raw, _ := json.Marshal(v)
+	return raw
+}
+
 func parseFinalizeControlDocument(raw []byte) *meta.BurnbridgeFinalizeLayoutDocument {
 	if len(raw) == 0 {
 		return nil
 	}
 	var doc meta.BurnbridgeFinalizeLayoutDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	return &doc
+}
+
+func parseMediaChangeControlDocument(raw []byte) *meta.BurnbridgeMediaChangeDocument {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc meta.BurnbridgeMediaChangeDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	return &doc
+}
+
+func parseTrayControlDocument(raw []byte) *meta.BurnbridgeTrayDocument {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc meta.BurnbridgeTrayDocument
 	if err := json.Unmarshal(raw, &doc); err != nil {
 		return nil
 	}
@@ -3088,16 +3543,48 @@ func parseDiscInfoControlDocument(raw []byte) *meta.BurnbridgeDiscInfoDocument {
 	return &doc
 }
 
+func parseDriveInfoControlDocument(raw []byte) *meta.BurnbridgeDriveInfoDocument {
+	if len(raw) == 0 {
+		return nil
+	}
+	var doc meta.BurnbridgeDriveInfoDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return nil
+	}
+	return &doc
+}
+
 func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req *burnbridgeControlRequest) (burnbridgeControlPayload, error) {
 	if req == nil {
 		return burnbridgeControlPayload{}, fmt.Errorf("burnbridge: control request is required")
 	}
 
 	switch req.Action {
-	case burnbridgeControlActionDiscInfo:
-		raw, doc, err := b.refreshDiscInfoDocument(ctx, bucket)
+	case burnbridgeControlActionDriveInfo:
+		raw, doc, err := b.refreshDriveInfoDocument(ctx)
 		if err != nil || len(raw) == 0 {
-			raw, err = b.meta.GetBurnbridgeDiscInfoJSON(bucket)
+			raw, err = b.meta.GetBurnbridgeDriveInfoJSON(bucket)
+			if err != nil {
+				if errors.Is(err, meta.ErrNoSuchKey) {
+					return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+				}
+				return burnbridgeControlPayload{}, err
+			}
+			doc = parseDriveInfoControlDocument(raw)
+		}
+		if doc == nil {
+			doc = parseDriveInfoControlDocument(raw)
+		}
+		return buildDriveInfoControlJSON(req, bucket, doc)
+
+	case burnbridgeControlActionDiscInfo:
+		payloadBucket, targetBucket, err := b.resolveControlPayloadBucket(ctx, bucket, req)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		raw, doc, err := b.refreshDiscInfoDocument(ctx, targetBucket)
+		if err != nil || len(raw) == 0 {
+			raw, err = b.meta.GetBurnbridgeDiscInfoJSON(targetBucket)
 			if err != nil {
 				if errors.Is(err, meta.ErrNoSuchKey) {
 					return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
@@ -3109,10 +3596,14 @@ func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req 
 		if doc == nil {
 			doc = parseDiscInfoControlDocument(raw)
 		}
-		return buildDiscInfoControlJSON(req, bucket, doc)
+		return buildDiscInfoControlJSON(req, payloadBucket, doc)
 
 	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc:
-		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, bucket, req)
+		payloadBucket, targetBucket, err := b.resolveControlPayloadBucket(ctx, bucket, req)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		raw, err := b.loadOrFinalizeLayoutTranscript(ctx, targetBucket, req)
 		if err != nil {
 			if errors.Is(err, meta.ErrNoSuchKey) {
 				return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
@@ -3120,7 +3611,33 @@ func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req 
 			return burnbridgeControlPayload{}, err
 		}
 		doc := parseFinalizeControlDocument(raw)
-		return buildFinalizeControlJSON(req, bucket, doc)
+		if payloadBucket != targetBucket {
+			if doc != nil {
+				doc.Bucket = targetBucket
+			}
+		}
+		return buildFinalizeControlJSON(req, payloadBucket, doc)
+
+	case burnbridgeControlActionMediaRemoved, burnbridgeControlActionMediaInserted:
+		raw, err := b.loadOrHandleMediaChangeTranscript(ctx, bucket, req)
+		if err != nil {
+			if errors.Is(err, meta.ErrNoSuchKey) {
+				return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+			}
+			return burnbridgeControlPayload{}, err
+		}
+		doc := parseMediaChangeControlDocument(raw)
+		return buildMediaChangeControlJSON(req, bucket, doc)
+	case burnbridgeControlActionTrayOpen, burnbridgeControlActionTrayClose:
+		raw, err := b.loadOrHandleTrayTranscript(ctx, bucket, req)
+		if err != nil {
+			if errors.Is(err, meta.ErrNoSuchKey) {
+				return burnbridgeControlPayload{}, s3err.GetAPIError(s3err.ErrNoSuchKey)
+			}
+			return burnbridgeControlPayload{}, err
+		}
+		doc := parseTrayControlDocument(raw)
+		return buildTrayControlJSON(req, bucket, doc)
 	default:
 		return burnbridgeControlPayload{}, burnbridgeInvalidRequest(fmt.Sprintf("unsupported burnbridge control action %q", req.Action))
 	}
@@ -3158,6 +3675,30 @@ func finalizeObjectKeyForCloseDisc(closeDisc bool) string {
 		return meta.BurnbridgeCloseDiscObjectKey
 	}
 	return meta.BurnbridgeFinalizeLayoutObjectKey
+}
+
+func mediaChangeObjectKeyForAction(action burnbridgeControlAction) (string, burnbridgev1.MediaChangeAction, error) {
+	switch action {
+	case burnbridgeControlActionMediaRemoved:
+		return meta.BurnbridgeMediaRemovedObjectKey, burnbridgev1.MediaChangeAction_MEDIA_CHANGE_ACTION_REMOVED, nil
+	case burnbridgeControlActionMediaInserted:
+		return meta.BurnbridgeMediaInsertedObjectKey, burnbridgev1.MediaChangeAction_MEDIA_CHANGE_ACTION_INSERTED, nil
+	default:
+		return "", burnbridgev1.MediaChangeAction_MEDIA_CHANGE_ACTION_UNSPECIFIED,
+			burnbridgeInvalidRequest(fmt.Sprintf("unsupported media change action %q", action))
+	}
+}
+
+func trayObjectKeyForAction(action burnbridgeControlAction) (string, burnbridgev1.TrayAction, error) {
+	switch action {
+	case burnbridgeControlActionTrayOpen:
+		return meta.BurnbridgeTrayOpenObjectKey, burnbridgev1.TrayAction_TRAY_ACTION_OPEN, nil
+	case burnbridgeControlActionTrayClose:
+		return meta.BurnbridgeTrayCloseObjectKey, burnbridgev1.TrayAction_TRAY_ACTION_CLOSE, nil
+	default:
+		return "", burnbridgev1.TrayAction_TRAY_ACTION_UNSPECIFIED,
+			burnbridgeInvalidRequest(fmt.Sprintf("unsupported tray action %q", action))
+	}
 }
 
 // invokeFinalizeLayoutAgainstRecorder persists a JSON transcript (success or RPC error) for a reserved finalize-style object key.
@@ -3216,6 +3757,185 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 	return payload, nil
 }
 
+func buildMediaChangeResultJSON(bucket string, req *burnbridgeControlRequest, resp *burnbridgev1.HandleMediaChangeResponse, grpcErr error) ([]byte, error) {
+	doc := meta.BurnbridgeMediaChangeDocument{
+		Bucket:         bucket,
+		RequestID:      strings.TrimSpace(req.RequestID),
+		RequestTime:    req.RequestTime,
+		Action:         string(req.Action),
+		CompletedAtUtc: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if grpcErr != nil {
+		doc.GrpcOK = false
+		if st, ok := status.FromError(grpcErr); ok {
+			doc.GrpcCode = st.Code().String()
+			doc.GrpcDetails = st.Message()
+		} else {
+			doc.Error = grpcErr.Error()
+		}
+	} else {
+		doc.GrpcOK = true
+		doc.GrpcCode = codes.OK.String()
+		if resp != nil {
+			doc.RecorderStatus = resp.GetStatus()
+			doc.RecorderMessage = resp.GetMessage()
+			doc.ImportedBucket = resp.GetImportedBucket()
+			if snapshot := resp.GetSnapshot(); snapshot != nil {
+				doc.Ready = snapshot.GetReady()
+				doc.VolumeLabel = snapshot.GetVolumeLabel()
+				doc.WritableState = snapshot.GetWritableState()
+			}
+		}
+	}
+	return json.Marshal(doc)
+}
+
+func shouldReuseMediaChangeTranscript(bucket string, req *burnbridgeControlRequest, raw []byte) bool {
+	if req == nil {
+		return false
+	}
+
+	var doc meta.BurnbridgeMediaChangeDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(doc.Bucket), strings.TrimSpace(bucket)) {
+		return false
+	}
+	if doc.Action != string(req.Action) {
+		return false
+	}
+	if doc.RequestTime != req.RequestTime {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(doc.RequestID), strings.TrimSpace(req.RequestID))
+}
+
+func (b *BurnBridge) invokeMediaChangeAgainstRecorder(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
+	b.putSerialMu.Lock()
+	defer b.putSerialMu.Unlock()
+
+	objectKey, action, err := mediaChangeObjectKeyForAction(req.Action)
+	if err != nil {
+		return nil, err
+	}
+	if prev, err := b.meta.GetBurnbridgeMediaChangeJSON(bucket, objectKey); err == nil && shouldReuseMediaChangeTranscript(bucket, req, prev) {
+		return prev, nil
+	}
+
+	recCtx := ctx
+	if recCtx == nil {
+		recCtx = context.Background()
+	}
+	resp, grpcErr := b.grpc.HandleMediaChange(recCtx, &burnbridgev1.HandleMediaChangeRequest{
+		Action: action,
+		Reason: "gateway-control-" + string(req.Action),
+	})
+
+	payload, mErr := buildMediaChangeResultJSON(bucket, req, resp, grpcErr)
+	if mErr != nil {
+		return nil, fmt.Errorf("burnbridge media change json: %w", mErr)
+	}
+	if err := b.meta.StoreBurnbridgeMediaChangeJSON(bucket, objectKey, payload); err != nil {
+		return nil, err
+	}
+	if grpcErr != nil {
+		slog.Warn("burnbridge: HandleMediaChange gRPC reported failure (transcript stored for GET)",
+			"bucket", bucket, "action", req.Action, "grpc_err", grpcErr)
+	}
+	if resp != nil && resp.GetSnapshot() != nil {
+		if err := b.syncActiveDiscState(resp.GetSnapshot()); err != nil {
+			slog.Warn("burnbridge: failed to sync active disc state after media change",
+				"bucket", bucket, "action", req.Action, "err", err)
+		}
+		b.recordRecorderReadyState(resp.GetSnapshot())
+	}
+	return payload, nil
+}
+
+func buildTrayResultJSON(bucket string, req *burnbridgeControlRequest, resp *burnbridgev1.HandleTrayResponse, grpcErr error) ([]byte, error) {
+	doc := meta.BurnbridgeTrayDocument{
+		Bucket:         bucket,
+		RequestID:      strings.TrimSpace(req.RequestID),
+		RequestTime:    req.RequestTime,
+		Action:         string(req.Action),
+		CompletedAtUtc: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	if grpcErr != nil {
+		doc.GrpcOK = false
+		if st, ok := status.FromError(grpcErr); ok {
+			doc.GrpcCode = st.Code().String()
+			doc.GrpcDetails = st.Message()
+		} else {
+			doc.Error = grpcErr.Error()
+		}
+	} else {
+		doc.GrpcOK = true
+		doc.GrpcCode = codes.OK.String()
+		if resp != nil {
+			doc.RecorderStatus = resp.GetStatus()
+			doc.RecorderMessage = resp.GetMessage()
+		}
+	}
+	return json.Marshal(doc)
+}
+
+func shouldReuseTrayTranscript(bucket string, req *burnbridgeControlRequest, raw []byte) bool {
+	if req == nil {
+		return false
+	}
+
+	var doc meta.BurnbridgeTrayDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(doc.Bucket), strings.TrimSpace(bucket)) {
+		return false
+	}
+	if doc.Action != string(req.Action) {
+		return false
+	}
+	if doc.RequestTime != req.RequestTime {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(doc.RequestID), strings.TrimSpace(req.RequestID))
+}
+
+func (b *BurnBridge) invokeTrayAgainstRecorder(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
+	b.putSerialMu.Lock()
+	defer b.putSerialMu.Unlock()
+
+	objectKey, action, err := trayObjectKeyForAction(req.Action)
+	if err != nil {
+		return nil, err
+	}
+	if prev, err := b.meta.GetBurnbridgeTrayJSON(bucket, objectKey); err == nil && shouldReuseTrayTranscript(bucket, req, prev) {
+		return prev, nil
+	}
+
+	recCtx := ctx
+	if recCtx == nil {
+		recCtx = context.Background()
+	}
+	resp, grpcErr := b.grpc.HandleTray(recCtx, &burnbridgev1.HandleTrayRequest{
+		Action: action,
+		Reason: "gateway-control-" + string(req.Action),
+	})
+
+	payload, mErr := buildTrayResultJSON(bucket, req, resp, grpcErr)
+	if mErr != nil {
+		return nil, fmt.Errorf("burnbridge tray json: %w", mErr)
+	}
+	if err := b.meta.StoreBurnbridgeTrayJSON(bucket, objectKey, payload); err != nil {
+		return nil, err
+	}
+	if grpcErr != nil {
+		slog.Warn("burnbridge: HandleTray gRPC reported failure (transcript stored for GET)",
+			"bucket", bucket, "action", req.Action, "grpc_err", grpcErr)
+	}
+	return payload, nil
+}
+
 func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
 	for _, objectKey := range []string{meta.BurnbridgeFinalizeLayoutObjectKey, meta.BurnbridgeCloseDiscObjectKey} {
 		if err := b.meta.DeleteBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
@@ -3253,19 +3973,72 @@ func (b *BurnBridge) loadOrFinalizeLayoutTranscript(ctx context.Context, bucket 
 	return payload, nil
 }
 
+func (b *BurnBridge) loadOrHandleMediaChangeTranscript(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
+	objectKey, _, err := mediaChangeObjectKeyForAction(req.Action)
+	if err != nil {
+		return nil, err
+	}
+	if prev, err := b.meta.GetBurnbridgeMediaChangeJSON(bucket, objectKey); err == nil && shouldReuseMediaChangeTranscript(bucket, req, prev) {
+		return prev, nil
+	}
+
+	groupKey := bucket + "|" + req.Key
+
+	value, err, _ := b.finalizeGroup.Do(groupKey, func() (interface{}, error) {
+		if prev, err := b.meta.GetBurnbridgeMediaChangeJSON(bucket, objectKey); err == nil && shouldReuseMediaChangeTranscript(bucket, req, prev) {
+			return prev, nil
+		}
+		return b.invokeMediaChangeAgainstRecorder(ctx, bucket, req)
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload, ok := value.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("burnbridge: unexpected media change transcript type %T", value)
+	}
+	return payload, nil
+}
+
+func (b *BurnBridge) loadOrHandleTrayTranscript(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
+	objectKey, _, err := trayObjectKeyForAction(req.Action)
+	if err != nil {
+		return nil, err
+	}
+	if prev, err := b.meta.GetBurnbridgeTrayJSON(bucket, objectKey); err == nil && shouldReuseTrayTranscript(bucket, req, prev) {
+		return prev, nil
+	}
+
+	groupKey := bucket + "|" + req.Key
+
+	value, err, _ := b.finalizeGroup.Do(groupKey, func() (interface{}, error) {
+		if prev, err := b.meta.GetBurnbridgeTrayJSON(bucket, objectKey); err == nil && shouldReuseTrayTranscript(bucket, req, prev) {
+			return prev, nil
+		}
+		return b.invokeTrayAgainstRecorder(ctx, bucket, req)
+	})
+	if err != nil {
+		return nil, err
+	}
+	payload, ok := value.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("burnbridge: unexpected tray transcript type %T", value)
+	}
+	return payload, nil
+}
+
 func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {
 	if input == nil || input.Bucket == nil || input.Key == nil {
 		return nil, fmt.Errorf("bucket/key required")
 	}
 	bucket := *input.Bucket
 	key := *input.Key
-	if !b.burnbridgeBucketExists(bucket) {
-		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
-	}
-
-	if controlReq, isControl, err := parseBurnbridgeControlRequest(key); isControl {
+	if controlReq, isControl, err := b.parseControlRequestForBucket(bucket, key); isControl {
 		if err != nil {
 			return nil, err
+		}
+		if !b.controlRequestBucketAllowed(bucket, controlReq) {
+			return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 		}
 		payload, err := b.loadControlPayload(ctx, bucket, controlReq)
 		if err != nil {
@@ -3280,6 +4053,10 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 			ETag:          &etag,
 			LastModified:  backend.GetTimePtr(payload.LastModified),
 		}, nil
+	}
+
+	if !b.burnbridgeBucketExists(bucket) {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 
 	summary, err := b.meta.GetCommittedObjectSummary(bucket, key)
@@ -3665,17 +4442,12 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 	}
 	bucket := *input.Bucket
 	key := *input.Key
-	if !b.burnbridgeBucketExists(bucket) {
-		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
-	}
-
-	if input.PartNumber != nil && *input.PartNumber > 1 {
-		return nil, s3err.GetAPIError(s3err.ErrInvalidPartNumber)
-	}
-
-	if controlReq, isControl, err := parseBurnbridgeControlRequest(key); isControl {
+	if controlReq, isControl, err := b.parseControlRequestForBucket(bucket, key); isControl {
 		if err != nil {
 			return nil, err
+		}
+		if !b.controlRequestBucketAllowed(bucket, controlReq) {
+			return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 		}
 		payload, err := b.loadControlPayload(ctx, bucket, controlReq)
 		if err != nil {
@@ -3700,6 +4472,14 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 			StorageClass:  types.StorageClassStandard,
 			ContentType:   &ct,
 		}, nil
+	}
+
+	if !b.burnbridgeBucketExists(bucket) {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+
+	if input.PartNumber != nil && *input.PartNumber > 1 {
+		return nil, s3err.GetAPIError(s3err.ErrInvalidPartNumber)
 	}
 
 	idx := objectLockIndex(bucket, key)
@@ -3860,6 +4640,9 @@ func (b *BurnBridge) getMountedFallbackObject(
 }
 
 func (b *BurnBridge) prepareCommittedListing(ctx context.Context, bucket string) (fstest.MapFS, map[string]meta.CommittedObjectSummary, error) {
+	if b.isDriveControlBucket(bucket) {
+		return fstest.MapFS{}, map[string]meta.CommittedObjectSummary{}, nil
+	}
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -4060,7 +4843,7 @@ func shouldSkipMountedFallbackEntry(name string, isDir bool) bool {
 		return true
 	}
 	if isDir {
-		return strings.EqualFold(trimmed, "__MACOSX") || strings.EqualFold(trimmed, strings.Trim(burnbridgeControlNamespacePrefix, "/"))
+		return strings.EqualFold(trimmed, "__MACOSX")
 	}
 	if strings.EqualFold(trimmed, ".DS_Store") {
 		return true
@@ -5379,12 +6162,11 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 
 	bucket := *input.Bucket
 	key := *input.Key
+	if b.isDriveControlBucket(bucket) {
+		return s3response.PutObjectOutput{}, burnbridgeControlBucketReadOnly
+	}
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
-	}
-
-	if isBurnbridgeControlNamespace(key) {
-		return s3response.PutObjectOutput{}, s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
 
 	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
@@ -5621,6 +6403,9 @@ func (b *BurnBridge) DeleteObject(_ context.Context, input *s3.DeleteObjectInput
 	if input == nil || input.Bucket == nil || input.Key == nil {
 		return nil, fmt.Errorf("bucket/key required")
 	}
+	if b.isDriveControlBucket(*input.Bucket) {
+		return nil, burnbridgeControlBucketReadOnly
+	}
 	if !b.burnbridgeBucketExists(*input.Bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -5631,6 +6416,9 @@ func (b *BurnBridge) DeleteObject(_ context.Context, input *s3.DeleteObjectInput
 func (b *BurnBridge) DeleteObjects(_ context.Context, input *s3.DeleteObjectsInput) (s3response.DeleteResult, error) {
 	if input == nil || input.Bucket == nil || input.Delete == nil {
 		return s3response.DeleteResult{}, fmt.Errorf("bucket/delete payload required")
+	}
+	if b.isDriveControlBucket(*input.Bucket) {
+		return s3response.DeleteResult{}, burnbridgeControlBucketReadOnly
 	}
 	if !b.burnbridgeBucketExists(*input.Bucket) {
 		return s3response.DeleteResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)

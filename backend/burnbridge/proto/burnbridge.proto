@@ -49,6 +49,12 @@ service BurnBridge {
   // Query drive + disc information.
   rpc GetDiscInfo(GetDiscInfoRequest) returns (GetDiscInfoResponse);
 
+  // Explicitly notify the recorder about a media insert/remove event.
+  rpc HandleMediaChange(HandleMediaChangeRequest) returns (HandleMediaChangeResponse);
+
+  // Explicitly open or close the recorder tray.
+  rpc HandleTray(HandleTrayRequest) returns (HandleTrayResponse);
+
   // Return the currently imported on-disc metadata snapshot maintained by the recorder.
   rpc GetImportedBucketState(GetImportedBucketStateRequest) returns (GetImportedBucketStateResponse);
 
@@ -120,6 +126,40 @@ message GetDiscInfoRequest {
 message GetDiscInfoResponse {
   OpticalDriveIdentity drive = 1;
   OpticalDiscInfo disc = 2;
+}
+
+enum MediaChangeAction {
+  MEDIA_CHANGE_ACTION_UNSPECIFIED = 0;
+  MEDIA_CHANGE_ACTION_INSERTED = 1;
+  MEDIA_CHANGE_ACTION_REMOVED = 2;
+}
+
+message HandleMediaChangeRequest {
+  MediaChangeAction action = 1;
+  string reason = 2;
+}
+
+message HandleMediaChangeResponse {
+  string status = 1;
+  string message = 2;
+  string imported_bucket = 3;
+  TestUnitReadyResponse snapshot = 4;
+}
+
+enum TrayAction {
+  TRAY_ACTION_UNSPECIFIED = 0;
+  TRAY_ACTION_OPEN = 1;
+  TRAY_ACTION_CLOSE = 2;
+}
+
+message HandleTrayRequest {
+  TrayAction action = 1;
+  string reason = 2;
+}
+
+message HandleTrayResponse {
+  string status = 1;
+  string message = 2;
 }
 
 message GetImportedBucketStateRequest {

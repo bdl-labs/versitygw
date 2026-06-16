@@ -30,6 +30,8 @@ const (
 	BurnBridge_TestUnitReady_FullMethodName              = "/burnbridge.v1.BurnBridge/TestUnitReady"
 	BurnBridge_WatchUnitStatus_FullMethodName            = "/burnbridge.v1.BurnBridge/WatchUnitStatus"
 	BurnBridge_GetDiscInfo_FullMethodName                = "/burnbridge.v1.BurnBridge/GetDiscInfo"
+	BurnBridge_HandleMediaChange_FullMethodName          = "/burnbridge.v1.BurnBridge/HandleMediaChange"
+	BurnBridge_HandleTray_FullMethodName                 = "/burnbridge.v1.BurnBridge/HandleTray"
 	BurnBridge_GetImportedBucketState_FullMethodName     = "/burnbridge.v1.BurnBridge/GetImportedBucketState"
 	BurnBridge_FinalizeLayout_FullMethodName             = "/burnbridge.v1.BurnBridge/FinalizeLayout"
 	BurnBridge_UpdateLicense_FullMethodName              = "/burnbridge.v1.BurnBridge/UpdateLicense"
@@ -71,6 +73,10 @@ type BurnBridgeClient interface {
 	WatchUnitStatus(ctx context.Context, in *WatchUnitStatusRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[UnitStatusEvent], error)
 	// Query drive + disc information.
 	GetDiscInfo(ctx context.Context, in *GetDiscInfoRequest, opts ...grpc.CallOption) (*GetDiscInfoResponse, error)
+	// Explicitly notify the recorder about a media insert/remove event.
+	HandleMediaChange(ctx context.Context, in *HandleMediaChangeRequest, opts ...grpc.CallOption) (*HandleMediaChangeResponse, error)
+	// Explicitly open or close the recorder tray.
+	HandleTray(ctx context.Context, in *HandleTrayRequest, opts ...grpc.CallOption) (*HandleTrayResponse, error)
 	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
 	GetImportedBucketState(ctx context.Context, in *GetImportedBucketStateRequest, opts ...grpc.CallOption) (*GetImportedBucketStateResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
@@ -222,6 +228,26 @@ func (c *burnBridgeClient) GetDiscInfo(ctx context.Context, in *GetDiscInfoReque
 	return out, nil
 }
 
+func (c *burnBridgeClient) HandleMediaChange(ctx context.Context, in *HandleMediaChangeRequest, opts ...grpc.CallOption) (*HandleMediaChangeResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HandleMediaChangeResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_HandleMediaChange_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) HandleTray(ctx context.Context, in *HandleTrayRequest, opts ...grpc.CallOption) (*HandleTrayResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(HandleTrayResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_HandleTray_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *burnBridgeClient) GetImportedBucketState(ctx context.Context, in *GetImportedBucketStateRequest, opts ...grpc.CallOption) (*GetImportedBucketStateResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(GetImportedBucketStateResponse)
@@ -309,6 +335,10 @@ type BurnBridgeServer interface {
 	WatchUnitStatus(*WatchUnitStatusRequest, grpc.ServerStreamingServer[UnitStatusEvent]) error
 	// Query drive + disc information.
 	GetDiscInfo(context.Context, *GetDiscInfoRequest) (*GetDiscInfoResponse, error)
+	// Explicitly notify the recorder about a media insert/remove event.
+	HandleMediaChange(context.Context, *HandleMediaChangeRequest) (*HandleMediaChangeResponse, error)
+	// Explicitly open or close the recorder tray.
+	HandleTray(context.Context, *HandleTrayRequest) (*HandleTrayResponse, error)
 	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
 	GetImportedBucketState(context.Context, *GetImportedBucketStateRequest) (*GetImportedBucketStateResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
@@ -361,6 +391,12 @@ func (UnimplementedBurnBridgeServer) WatchUnitStatus(*WatchUnitStatusRequest, gr
 }
 func (UnimplementedBurnBridgeServer) GetDiscInfo(context.Context, *GetDiscInfoRequest) (*GetDiscInfoResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetDiscInfo not implemented")
+}
+func (UnimplementedBurnBridgeServer) HandleMediaChange(context.Context, *HandleMediaChangeRequest) (*HandleMediaChangeResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HandleMediaChange not implemented")
+}
+func (UnimplementedBurnBridgeServer) HandleTray(context.Context, *HandleTrayRequest) (*HandleTrayResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method HandleTray not implemented")
 }
 func (UnimplementedBurnBridgeServer) GetImportedBucketState(context.Context, *GetImportedBucketStateRequest) (*GetImportedBucketStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetImportedBucketState not implemented")
@@ -571,6 +607,42 @@ func _BurnBridge_GetDiscInfo_Handler(srv interface{}, ctx context.Context, dec f
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BurnBridge_HandleMediaChange_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HandleMediaChangeRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).HandleMediaChange(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_HandleMediaChange_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).HandleMediaChange(ctx, req.(*HandleMediaChangeRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_HandleTray_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(HandleTrayRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).HandleTray(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_HandleTray_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).HandleTray(ctx, req.(*HandleTrayRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BurnBridge_GetImportedBucketState_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(GetImportedBucketStateRequest)
 	if err := dec(in); err != nil {
@@ -688,6 +760,14 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetDiscInfo",
 			Handler:    _BurnBridge_GetDiscInfo_Handler,
+		},
+		{
+			MethodName: "HandleMediaChange",
+			Handler:    _BurnBridge_HandleMediaChange_Handler,
+		},
+		{
+			MethodName: "HandleTray",
+			Handler:    _BurnBridge_HandleTray_Handler,
 		},
 		{
 			MethodName: "GetImportedBucketState",

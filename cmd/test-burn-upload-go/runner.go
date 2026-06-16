@@ -171,6 +171,27 @@ type discInfoDocument struct {
 	RequestTime int64        `json:"requestTime"`
 }
 
+type driveInfoData struct {
+	Bucket          string `json:"bucket"`
+	ControlBucket   string `json:"controlBucket"`
+	IsMMCUnit       bool   `json:"isMmcUnit"`
+	ProductID       string `json:"productId"`
+	ProductRevision string `json:"productRevision"`
+	SerialNumber    string `json:"serialNumber"`
+	UpdatedAt       string `json:"updatedAt"`
+	VendorID        string `json:"vendorId"`
+}
+
+type driveInfoDocument struct {
+	Action      string        `json:"action"`
+	APIVersion  string        `json:"apiVersion"`
+	Bucket      string        `json:"bucket"`
+	Data        driveInfoData `json:"data"`
+	OK          bool          `json:"ok"`
+	RequestID   string        `json:"requestId"`
+	RequestTime int64         `json:"requestTime"`
+}
+
 type interruptRetrySummary struct {
 	Mode                           string  `json:"mode,omitempty"`
 	Status                         string  `json:"status"`
@@ -209,6 +230,24 @@ type interruptRetrySummary struct {
 
 const multipartMinPartSize int64 = 5 * 1024 * 1024
 const defaultMultipartPartSize int64 = 64 * 1024 * 1024
+const burnbridgeBucketTypeTagKey = "burnbridge:bucket-type"
+const burnbridgeBucketTypeControl = "control"
+const burnbridgeBucketTypeData = "data"
+const burnbridgeControlBucketTagKey = "burnbridge:control-bucket"
+
+type bucketClassification struct {
+	Name      string
+	Tags      map[string]string
+	IsControl bool
+	IsData    bool
+}
+
+type bucketDiscovery struct {
+	Buckets        []bucketClassification
+	VisibleNames   []string
+	ControlBuckets []string
+	DataBuckets    []string
+}
 
 type memorySampler struct {
 	scriptPath string
@@ -241,7 +280,7 @@ func newRunner(opts cliOptions) (*runner, error) {
 			return nil, fmt.Errorf("data file not found: %s", opts.dataDir)
 		}
 	}
-	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
+	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("data directory not found: %s", opts.dataDir)
@@ -314,10 +353,13 @@ func (r *runner) run() (err error) {
 	r.logf("SkipMd5Verify: %t", r.opts.skipMD5Verify)
 	r.logf("RemoteOnly: %t", r.opts.remoteOnly)
 	r.logf("ListObjectsOnly: %t", r.opts.listObjectsOnly)
+	r.logf("DriveInfoOnly: %t", r.opts.driveInfoOnly)
 	r.logf("HeadObjectOnly: %t", r.opts.headObjectOnly)
 	r.logf("DiscInfoOnly: %t", r.opts.discInfoOnly)
 	r.logf("FinalizeOnly: %t", r.opts.finalizeOnly)
 	r.logf("CloseDiscOnly: %t", r.opts.closeDiscOnly)
+	r.logf("MediaRemovedOnly: %t", r.opts.mediaRemovedOnly)
+	r.logf("MediaInsertedOnly: %t", r.opts.mediaInsertedOnly)
 	r.logf("InterruptRetryOnly: %t", r.opts.interruptRetryOnly)
 	r.logf("MultipartRetryOnly: %t", r.opts.multipartRetryOnly)
 	if strings.TrimSpace(r.opts.singleObjectKey) != "" {
@@ -347,38 +389,83 @@ func (r *runner) run() (err error) {
 	}
 
 	r.logf("[1/8] Checking gateway connectivity...")
-	if _, err = r.listBuckets(defaultReadTimeout); err != nil {
-		return err
-	}
-
-	activeBucket, err := r.ensureActiveBucket()
+	discovery, err := r.discoverBucketsByTags(defaultReadTimeout)
 	if err != nil {
 		return err
 	}
-	r.logf("Active bucket: %s", activeBucket)
+
+	dataBucket := r.opts.bucket
+	controlBucket := r.opts.bucket
+	if r.opts.driveInfoOnly || r.opts.discInfoOnly || r.opts.finalizeOnly || r.opts.closeDiscOnly || r.opts.mediaRemovedOnly || r.opts.mediaInsertedOnly || r.opts.trayOpenOnly || r.opts.trayCloseOnly {
+		if resolvedControlBucket, resolveErr := r.resolveControlBucket(discovery, controlBucket); resolveErr == nil && strings.TrimSpace(resolvedControlBucket) != "" {
+			controlBucket = resolvedControlBucket
+		} else if resolveErr != nil {
+			r.logf("Drive control bucket auto-resolution skipped: %v", resolveErr)
+		}
+		r.logf("Control bucket: %s", controlBucket)
+	} else {
+		if len(discovery.DataBuckets) == 0 && len(discovery.ControlBuckets) > 0 {
+			return fmt.Errorf(
+				"no data bucket is visible; only control bucket(s) are available: %s. The recorder is likely reporting no usable disc/media",
+				strings.Join(discovery.ControlBuckets, ", "))
+		}
+		dataBucket, err = r.ensureActiveBucket()
+		if err != nil {
+			return err
+		}
+		discovery, err = r.discoverBucketsByTags(defaultReadTimeout)
+		if err != nil {
+			return err
+		}
+		if resolvedDataBucket, resolveErr := r.resolveDataBucket(discovery, dataBucket); resolveErr == nil && strings.TrimSpace(resolvedDataBucket) != "" {
+			dataBucket = resolvedDataBucket
+		} else if resolveErr != nil {
+			r.logf("Data bucket tag resolution skipped: %v", resolveErr)
+		}
+		if resolvedControlBucket, resolveErr := r.resolveControlBucket(discovery, dataBucket); resolveErr == nil && strings.TrimSpace(resolvedControlBucket) != "" {
+			controlBucket = resolvedControlBucket
+		} else {
+			controlBucket = dataBucket
+			if resolveErr != nil {
+				r.logf("Drive control bucket auto-resolution skipped: %v", resolveErr)
+			}
+		}
+		r.logf("Active bucket: %s", dataBucket)
+		r.logf("Control bucket: %s", controlBucket)
+	}
 
 	switch {
 	case r.opts.listObjectsOnly:
-		err = r.runListObjectsOnly(activeBucket)
+		err = r.runListObjectsOnly(dataBucket)
+	case r.opts.driveInfoOnly:
+		err = r.runDriveInfoOnly(controlBucket)
 	case r.opts.discInfoOnly:
-		err = r.runDiscInfoOnly(activeBucket)
+		err = r.runDiscInfoOnly(controlBucket)
 	case r.opts.finalizeOnly:
-		err = r.runFinalizeOnly(activeBucket)
+		err = r.runFinalizeOnly(controlBucket)
 	case r.opts.closeDiscOnly:
-		err = r.runCloseDiscOnly(activeBucket)
+		err = r.runCloseDiscOnly(controlBucket)
+	case r.opts.mediaRemovedOnly:
+		err = r.runMediaRemovedOnly(controlBucket)
+	case r.opts.mediaInsertedOnly:
+		err = r.runMediaInsertedOnly(controlBucket)
+	case r.opts.trayOpenOnly:
+		err = r.runTrayOpenOnly(controlBucket)
+	case r.opts.trayCloseOnly:
+		err = r.runTrayCloseOnly(controlBucket)
 	case r.opts.headObjectOnly:
-		err = r.runHeadObjectOnly(activeBucket)
+		err = r.runHeadObjectOnly(dataBucket)
 	case r.opts.interruptRetryOnly:
-		err = r.runInterruptRetry(activeBucket)
+		err = r.runInterruptRetry(dataBucket, controlBucket)
 	case r.opts.multipartRetryOnly:
-		err = r.runMultipartInterruptRetry(activeBucket)
+		err = r.runMultipartInterruptRetry(dataBucket, controlBucket)
 	case r.opts.mode == modeMultipartFlow:
-		err = r.runMultipartFlow(activeBucket)
+		err = r.runMultipartFlow(dataBucket, controlBucket)
 	case strings.TrimSpace(r.opts.singleObjectKey) != "":
-		err = r.runSingleObjectDownload(activeBucket)
+		err = r.runSingleObjectDownload(dataBucket)
 	default:
 		var summary *runSummary
-		summary, finalizeDuration, verifyDir, err = r.runFullFlow(activeBucket, metrics, finalizeOutputPath, testStart)
+		summary, finalizeDuration, verifyDir, err = r.runFullFlow(dataBucket, controlBucket, metrics, finalizeOutputPath, testStart)
 		if summary != nil {
 			if marshalErr := writeJSONFile(r.summaryJSONPath, summary); marshalErr != nil && err == nil {
 				err = marshalErr
@@ -402,7 +489,7 @@ func (r *runner) run() (err error) {
 		totalSeconds := roundSeconds(time.Since(testStart))
 		summary := &runSummary{
 			Status:                  "Success",
-			Bucket:                  activeBucket,
+			Bucket:                  dataBucket,
 			RequestedBucket:         r.opts.bucket,
 			DataDirectory:           r.opts.dataDir,
 			RemoteOnly:              r.opts.remoteOnly,
@@ -455,8 +542,14 @@ func (r *runner) ensureActiveBucket() (string, error) {
 		return "", err
 	}
 	if exists {
-		r.logf("Requested bucket already exists: %s", activeBucket)
-		return activeBucket, nil
+		if isData, tagErr := r.isDataBucket(activeBucket); tagErr != nil {
+			r.logf("Requested bucket tag check failed: %s | %v", activeBucket, tagErr)
+		} else if isData {
+			r.logf("Requested data bucket already exists: %s", activeBucket)
+			return activeBucket, nil
+		} else {
+			r.logf("Requested bucket exists but is not a data bucket: %s", activeBucket)
+		}
 	}
 
 	createdRequestedBucket := false
@@ -510,10 +603,23 @@ func (r *runner) runListObjectsOnly(bucket string) error {
 	return nil
 }
 
+func (r *runner) runDriveInfoOnly(bucket string) error {
+	r.logf("[3/3] Reading DriveInfo...")
+	driveInfoPath := filepath.Join(r.runRoot, "driveinfo.json")
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "drive-info", driveInfoPath)
+	if err != nil {
+		return err
+	}
+	r.logf("DriveInfo control key: %s", controlKey)
+	r.logf("DriveInfo saved to: %s", driveInfoPath)
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
 func (r *runner) runDiscInfoOnly(bucket string) error {
 	r.logf("[3/3] Reading DiscInfo...")
 	discInfoPath := filepath.Join(r.runRoot, "discinfo.json")
-	controlKey, raw, err := r.downloadControlObject(bucket, "disc-info", discInfoPath)
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "disc-info", discInfoPath)
 	if err != nil {
 		return err
 	}
@@ -527,7 +633,7 @@ func (r *runner) runFinalizeOnly(bucket string) error {
 	r.logf("[3/3] Triggering FinalizeLayout...")
 	outputPath := filepath.Join(r.runRoot, "finalize-layout-response.json")
 	start := time.Now()
-	controlKey, raw, err := r.downloadControlObject(bucket, "finalize-layout", outputPath)
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "finalize-layout", outputPath)
 	if err != nil {
 		return err
 	}
@@ -542,13 +648,73 @@ func (r *runner) runCloseDiscOnly(bucket string) error {
 	r.logf("[3/3] Triggering CloseDisc...")
 	outputPath := filepath.Join(r.runRoot, "close-disc-response.json")
 	start := time.Now()
-	controlKey, raw, err := r.downloadControlObject(bucket, "close-disc", outputPath)
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "close-disc", outputPath)
 	if err != nil {
 		return err
 	}
 	r.logf("CloseDisc control key: %s", controlKey)
 	r.logf("CloseDisc response saved to: %s", outputPath)
 	r.logf("CloseDisc elapsed: %.3fs", roundSeconds(time.Since(start)))
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runMediaRemovedOnly(bucket string) error {
+	r.logf("[3/3] Triggering MediaRemoved...")
+	outputPath := filepath.Join(r.runRoot, "media-removed-response.json")
+	start := time.Now()
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "media-removed", outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("MediaRemoved control key: %s", controlKey)
+	r.logf("MediaRemoved response saved to: %s", outputPath)
+	r.logf("MediaRemoved elapsed: %.3fs", roundSeconds(time.Since(start)))
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runMediaInsertedOnly(bucket string) error {
+	r.logf("[3/3] Triggering MediaInserted...")
+	outputPath := filepath.Join(r.runRoot, "media-inserted-response.json")
+	start := time.Now()
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "media-inserted", outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("MediaInserted control key: %s", controlKey)
+	r.logf("MediaInserted response saved to: %s", outputPath)
+	r.logf("MediaInserted elapsed: %.3fs", roundSeconds(time.Since(start)))
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runTrayOpenOnly(bucket string) error {
+	r.logf("[3/3] Triggering TrayOpen...")
+	outputPath := filepath.Join(r.runRoot, "tray-open-response.json")
+	start := time.Now()
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "tray-open", outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("TrayOpen control key: %s", controlKey)
+	r.logf("TrayOpen response saved to: %s", outputPath)
+	r.logf("TrayOpen elapsed: %.3fs", roundSeconds(time.Since(start)))
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runTrayCloseOnly(bucket string) error {
+	r.logf("[3/3] Triggering TrayClose...")
+	outputPath := filepath.Join(r.runRoot, "tray-close-response.json")
+	start := time.Now()
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "tray-close", outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("TrayClose control key: %s", controlKey)
+	r.logf("TrayClose response saved to: %s", outputPath)
+	r.logf("TrayClose elapsed: %.3fs", roundSeconds(time.Since(start)))
 	r.writeControlJSONLog(raw)
 	return nil
 }
@@ -649,7 +815,7 @@ func (r *runner) runSingleObjectDownload(bucket string) error {
 	return nil
 }
 
-func (r *runner) runInterruptRetry(bucket string) error {
+func (r *runner) runInterruptRetry(bucket, controlBucket string) error {
 	source, err := buildSingleFileSource(r.opts.dataDir)
 	if err != nil {
 		return err
@@ -672,7 +838,7 @@ func (r *runner) runInterruptRetry(bucket string) error {
 	r.logf("  fileMd5       : %s", source.MD5)
 
 	r.logf("[4/8] Reading baseline DiscInfo...")
-	beforeInfo, err := r.fetchDiscInfo(bucket, beforeDiscInfoPath)
+	beforeInfo, err := r.fetchDiscInfo(controlBucket, beforeDiscInfoPath)
 	if err != nil {
 		return err
 	}
@@ -691,7 +857,7 @@ func (r *runner) runInterruptRetry(bucket string) error {
 	time.Sleep(3 * time.Second)
 
 	r.logf("[6/8] Reading DiscInfo after interrupted upload...")
-	afterFailureInfo, err := r.fetchDiscInfo(bucket, afterFailureDiscInfoPath)
+	afterFailureInfo, err := r.fetchDiscInfo(controlBucket, afterFailureDiscInfoPath)
 	if err != nil {
 		return err
 	}
@@ -713,7 +879,7 @@ func (r *runner) runInterruptRetry(bucket string) error {
 
 	r.logf("[7.5/8] Triggering FinalizeLayout...")
 	finalizeStart := time.Now()
-	controlKey, finalizeRaw, err := r.downloadControlObject(bucket, "finalize-layout", finalizeOutputPath)
+	controlKey, finalizeRaw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
 	if err != nil {
 		return err
 	}
@@ -742,7 +908,7 @@ func (r *runner) runInterruptRetry(bucket string) error {
 	r.logf("  downloadMd5     : %s", downloadMD5)
 
 	r.logf("[8.5/8] Reading DiscInfo after finalize...")
-	afterFinalizeInfo, err := r.fetchDiscInfo(bucket, afterFinalizeDiscInfoPath)
+	afterFinalizeInfo, err := r.fetchDiscInfo(controlBucket, afterFinalizeDiscInfoPath)
 	if err != nil {
 		return err
 	}
@@ -803,7 +969,7 @@ func (r *runner) runInterruptRetry(bucket string) error {
 	return nil
 }
 
-func (r *runner) runMultipartInterruptRetry(bucket string) error {
+func (r *runner) runMultipartInterruptRetry(bucket, controlBucket string) error {
 	source, err := buildSingleFileSource(r.opts.dataDir)
 	if err != nil {
 		return err
@@ -841,7 +1007,7 @@ func (r *runner) runMultipartInterruptRetry(bucket string) error {
 	r.logf("  failAfterBytes : %d", r.opts.failAfterBytes)
 
 	r.logf("[4/9] Reading baseline DiscInfo...")
-	beforeInfo, err := r.fetchDiscInfo(bucket, beforeDiscInfoPath)
+	beforeInfo, err := r.fetchDiscInfo(controlBucket, beforeDiscInfoPath)
 	if err != nil {
 		return err
 	}
@@ -890,7 +1056,7 @@ func (r *runner) runMultipartInterruptRetry(bucket string) error {
 	time.Sleep(3 * time.Second)
 
 	r.logf("[7.5/9] Reading DiscInfo after interrupted part...")
-	afterFailureInfo, err := r.fetchDiscInfo(bucket, afterFailureDiscInfoPath)
+	afterFailureInfo, err := r.fetchDiscInfo(controlBucket, afterFailureDiscInfoPath)
 	if err != nil {
 		return err
 	}
@@ -954,7 +1120,7 @@ func (r *runner) runMultipartInterruptRetry(bucket string) error {
 	r.logf("  downloadMd5     : %s", downloadMD5)
 
 	r.logf("[9/9] Reading DiscInfo after multipart complete...")
-	afterCompleteInfo, err := r.fetchDiscInfo(bucket, afterCompleteDiscInfoPath)
+	afterCompleteInfo, err := r.fetchDiscInfo(controlBucket, afterCompleteDiscInfoPath)
 	if err != nil {
 		return err
 	}
@@ -1018,7 +1184,7 @@ func (r *runner) runMultipartInterruptRetry(bucket string) error {
 	return nil
 }
 
-func (r *runner) runMultipartFlow(bucket string) error {
+func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 	testStart := time.Now()
 	source, err := buildSingleFileSource(r.opts.dataDir)
 	if err != nil {
@@ -1066,7 +1232,7 @@ func (r *runner) runMultipartFlow(bucket string) error {
 
 	r.logf("[7/8] Triggering FinalizeLayout...")
 	finalizeStart := time.Now()
-	controlKey, finalizeRaw, err := r.downloadControlObject(bucket, "finalize-layout", finalizeOutputPath)
+	controlKey, finalizeRaw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
 	if err != nil {
 		return err
 	}
@@ -1243,7 +1409,7 @@ func (r *runner) uploadMultipartObject(bucket, objectKey string, source sourceIt
 	return uploadSeconds, roundSeconds(time.Since(completeStart)), strings.TrimSpace(awsString(completeOut.ETag)), nil
 }
 
-func (r *runner) runFullFlow(bucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) (*runSummary, float64, string, error) {
+func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) (*runSummary, float64, string, error) {
 	var snapshot fileSnapshot
 	var err error
 	if r.opts.remoteOnly {
@@ -1388,7 +1554,7 @@ func (r *runner) runFullFlow(bucket string, metrics map[string]*fileMetric, fina
 	} else {
 		r.logf("[7/8] Triggering FinalizeLayout ...")
 		start := time.Now()
-		controlKey, raw, err := r.downloadControlObject(bucket, "finalize-layout", finalizeOutputPath)
+		controlKey, raw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
 		if err != nil {
 			return nil, 0, "", err
 		}
@@ -1670,6 +1836,151 @@ func (r *runner) listBuckets(timeoutSeconds int) ([]types.Bucket, error) {
 	return out.Buckets, nil
 }
 
+func (r *runner) discoverBucketsByTags(timeoutSeconds int) (bucketDiscovery, error) {
+	buckets, err := r.listBuckets(timeoutSeconds)
+	if err != nil {
+		return bucketDiscovery{}, err
+	}
+
+	discovery := bucketDiscovery{
+		Buckets:      make([]bucketClassification, 0, len(buckets)),
+		VisibleNames: make([]string, 0, len(buckets)),
+	}
+	for _, bucket := range buckets {
+		name := strings.TrimSpace(awsString(bucket.Name))
+		if name == "" {
+			continue
+		}
+		tags, tagErr := r.getBucketTags(name)
+		if tagErr != nil {
+			r.logf("  bucket tag read failed: %s | %v", name, tagErr)
+			tags = map[string]string{}
+		}
+
+		bucketType := strings.ToLower(strings.TrimSpace(tags[burnbridgeBucketTypeTagKey]))
+		isControl := bucketType == burnbridgeBucketTypeControl ||
+			strings.EqualFold(strings.TrimSpace(tags[burnbridgeControlBucketTagKey]), "true")
+		isData := bucketType == burnbridgeBucketTypeData
+		classification := bucketClassification{
+			Name:      name,
+			Tags:      tags,
+			IsControl: isControl,
+			IsData:    isData,
+		}
+		discovery.Buckets = append(discovery.Buckets, classification)
+		discovery.VisibleNames = append(discovery.VisibleNames, name)
+		if isControl {
+			discovery.ControlBuckets = append(discovery.ControlBuckets, name)
+		}
+		if isData {
+			discovery.DataBuckets = append(discovery.DataBuckets, name)
+		}
+	}
+	sort.Strings(discovery.VisibleNames)
+	sort.Strings(discovery.ControlBuckets)
+	sort.Strings(discovery.DataBuckets)
+
+	r.logBucketDiscovery(discovery)
+	return discovery, nil
+}
+
+func (r *runner) logBucketDiscovery(discovery bucketDiscovery) {
+	r.logf("Visible buckets: %d", len(discovery.Buckets))
+	if len(discovery.Buckets) == 0 {
+		return
+	}
+
+	sort.Slice(discovery.Buckets, func(i, j int) bool {
+		return discovery.Buckets[i].Name < discovery.Buckets[j].Name
+	})
+	for _, bucket := range discovery.Buckets {
+		bucketType := "unknown"
+		switch {
+		case bucket.IsControl:
+			bucketType = burnbridgeBucketTypeControl
+		case bucket.IsData:
+			bucketType = burnbridgeBucketTypeData
+		}
+		r.logf("  bucket=%s type=%s tags=%s", bucket.Name, bucketType, formatBucketTags(bucket.Tags))
+	}
+}
+
+func (r *runner) getBucketTags(bucket string) (map[string]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsConnectTimeout)
+	defer cancel()
+
+	out, err := r.client.GetBucketTagging(ctx, &s3.GetBucketTaggingInput{Bucket: &bucket})
+	if err != nil {
+		return nil, err
+	}
+	tags := make(map[string]string, len(out.TagSet))
+	for _, tag := range out.TagSet {
+		key := strings.TrimSpace(awsString(tag.Key))
+		if key == "" {
+			continue
+		}
+		tags[key] = strings.TrimSpace(awsString(tag.Value))
+	}
+	return tags, nil
+}
+
+func (r *runner) resolveControlBucket(discovery bucketDiscovery, preferredBucket string) (string, error) {
+	preferredBucket = strings.TrimSpace(preferredBucket)
+	if preferredBucket != "" {
+		for _, bucket := range discovery.Buckets {
+			if strings.EqualFold(bucket.Name, preferredBucket) && bucket.IsControl {
+				return bucket.Name, nil
+			}
+		}
+	}
+	if len(discovery.ControlBuckets) > 0 {
+		return discovery.ControlBuckets[0], nil
+	}
+	return r.resolveDriveControlBucket(preferredBucket)
+}
+
+func (r *runner) resolveDataBucket(discovery bucketDiscovery, preferredBucket string) (string, error) {
+	preferredBucket = strings.TrimSpace(preferredBucket)
+	if preferredBucket != "" {
+		for _, bucket := range discovery.Buckets {
+			if strings.EqualFold(bucket.Name, preferredBucket) && bucket.IsData {
+				return bucket.Name, nil
+			}
+		}
+	}
+	if len(discovery.DataBuckets) == 1 {
+		return discovery.DataBuckets[0], nil
+	}
+	if len(discovery.DataBuckets) > 1 {
+		for _, bucket := range discovery.DataBuckets {
+			if strings.EqualFold(bucket, preferredBucket) {
+				return bucket, nil
+			}
+		}
+		return "", fmt.Errorf("multiple data buckets visible: %s", strings.Join(discovery.DataBuckets, ", "))
+	}
+	if preferredBucket != "" {
+		return preferredBucket, nil
+	}
+	return "", fmt.Errorf("no data bucket visible")
+}
+
+func formatBucketTags(tags map[string]string) string {
+	if len(tags) == 0 {
+		return "{}"
+	}
+	keys := make([]string, 0, len(tags))
+	for key := range tags {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%s", key, tags[key]))
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
 func (r *runner) bucketExists(bucket string) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsConnectTimeout)
 	defer cancel()
@@ -1681,6 +1992,59 @@ func (r *runner) bucketExists(bucket string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+func (r *runner) isDataBucket(bucket string) (bool, error) {
+	tags, err := r.getBucketTags(bucket)
+	if err != nil {
+		return false, err
+	}
+	bucketType := strings.ToLower(strings.TrimSpace(tags[burnbridgeBucketTypeTagKey]))
+	isControl := bucketType == burnbridgeBucketTypeControl ||
+		strings.EqualFold(strings.TrimSpace(tags[burnbridgeControlBucketTagKey]), "true")
+	return bucketType == burnbridgeBucketTypeData && !isControl, nil
+}
+
+func (r *runner) resolveDriveControlBucket(requestedBucket string) (string, error) {
+	requestedBucket = strings.TrimSpace(requestedBucket)
+	if requestedBucket != "" {
+		if exists, err := r.bucketExists(requestedBucket); err == nil && exists {
+			tags, tagErr := r.getBucketTags(requestedBucket)
+			if tagErr == nil {
+				bucketType := strings.ToLower(strings.TrimSpace(tags[burnbridgeBucketTypeTagKey]))
+				if bucketType == burnbridgeBucketTypeControl ||
+					strings.EqualFold(strings.TrimSpace(tags[burnbridgeControlBucketTagKey]), "true") {
+					return requestedBucket, nil
+				}
+			}
+		} else if err != nil {
+			return "", err
+		}
+	}
+
+	buckets, err := r.listBuckets(defaultReadTimeout)
+	if err != nil {
+		return "", err
+	}
+	for _, bucket := range buckets {
+		name := strings.TrimSpace(awsString(bucket.Name))
+		if name == "" {
+			continue
+		}
+		doc, err := r.fetchDriveInfo(name, filepath.Join(r.runRoot, "driveinfo-discovery-"+sanitizeBucketForPath(name)+".json"))
+		if err != nil || doc == nil || !doc.OK {
+			continue
+		}
+		controlBucket := strings.TrimSpace(doc.Data.ControlBucket)
+		if controlBucket != "" {
+			return controlBucket, nil
+		}
+		return name, nil
+	}
+	if requestedBucket != "" {
+		return requestedBucket, nil
+	}
+	return "", fmt.Errorf("drive control bucket is unavailable")
 }
 
 func (r *runner) createBucket(bucket string) error {
@@ -1705,22 +2069,28 @@ func (r *runner) resolveActiveBucket(requestedBucket string, timeoutSeconds int)
 			return "", "", nil, err
 		}
 		if exists {
-			return requestedBucket, "requested", lastBuckets, nil
+			isData, tagErr := r.isDataBucket(requestedBucket)
+			if tagErr != nil {
+				return "", "", nil, tagErr
+			}
+			if isData {
+				return requestedBucket, "requested", lastBuckets, nil
+			}
 		}
 
-		buckets, err := r.listBuckets(defaultReadTimeout)
+		discovery, err := r.discoverBucketsByTags(defaultReadTimeout)
 		if err != nil {
 			return "", "", nil, err
 		}
 		lastBuckets = lastBuckets[:0]
-		for _, bucket := range buckets {
-			name := strings.TrimSpace(awsString(bucket.Name))
-			if name != "" {
-				lastBuckets = append(lastBuckets, name)
-			}
+		lastBuckets = append(lastBuckets, discovery.VisibleNames...)
+		if len(discovery.DataBuckets) == 1 {
+			return discovery.DataBuckets[0], "single-visible-data", lastBuckets, nil
 		}
-		if len(lastBuckets) == 1 {
-			return lastBuckets[0], "single-visible", lastBuckets, nil
+		for _, bucket := range discovery.DataBuckets {
+			if strings.EqualFold(bucket, requestedBucket) {
+				return bucket, "requested-data", lastBuckets, nil
+			}
 		}
 
 		time.Sleep(defaultBucketReadyPollSeconds * time.Second)
@@ -1736,7 +2106,13 @@ func (r *runner) ensureBucketReady(bucket string, timeoutSeconds int) (bool, err
 			return false, err
 		}
 		if exists {
-			return true, nil
+			isData, tagErr := r.isDataBucket(bucket)
+			if tagErr != nil {
+				return false, tagErr
+			}
+			if isData {
+				return true, nil
+			}
 		}
 		time.Sleep(defaultBucketReadyPollSeconds * time.Second)
 	}
@@ -1856,11 +2232,23 @@ func (r *runner) listAllObjects(bucket string) ([]sourceItem, error) {
 }
 
 func (r *runner) fetchDiscInfo(bucket, outputPath string) (*discInfoDocument, error) {
-	_, raw, err := r.downloadControlObject(bucket, "disc-info", outputPath)
+	_, raw, err := r.downloadShortControlObject(bucket, "disc-info", outputPath)
 	if err != nil {
 		return nil, err
 	}
 	var doc discInfoDocument
+	if err := json.Unmarshal(trimUTF8BOM(raw), &doc); err != nil {
+		return nil, err
+	}
+	return &doc, nil
+}
+
+func (r *runner) fetchDriveInfo(bucket, outputPath string) (*driveInfoDocument, error) {
+	_, raw, err := r.downloadShortControlObject(bucket, "drive-info", outputPath)
+	if err != nil {
+		return nil, err
+	}
+	var doc driveInfoDocument
 	if err := json.Unmarshal(trimUTF8BOM(raw), &doc); err != nil {
 		return nil, err
 	}
@@ -2024,7 +2412,11 @@ func (r *runner) downloadObjectToFile(bucket, key, outputPath string, timeoutSec
 }
 
 func (r *runner) downloadControlObject(bucket, action, outputPath string) (string, []byte, error) {
-	controlKey := fmt.Sprintf(".__bbctl__/v1/%s/%d/%s", action, time.Now().UTC().UnixMilli(), uuid.NewString())
+	return r.downloadShortControlObject(bucket, action, outputPath)
+}
+
+func (r *runner) downloadShortControlObject(bucket, action, outputPath string) (string, []byte, error) {
+	controlKey := fmt.Sprintf("v1/%s", action)
 	if err := r.downloadObjectToFile(bucket, controlKey, outputPath, defaultFinalizeTimeout); err != nil {
 		return "", nil, err
 	}
@@ -2209,7 +2601,7 @@ param(
 $ErrorActionPreference = 'Continue'
 while ($true) {
     $timestamp = [DateTime]::UtcNow.ToString('o')
-    $processes = Get-Process BurnServer,versitygw -ErrorAction SilentlyContinue
+    $processes = Get-Process optical-recorder,BurnServer,versitygw -ErrorAction SilentlyContinue
     foreach ($proc in @($processes)) {
         $line = '{0},{1},{2},{3},{4},{5},{6},{7}' -f $timestamp,$proc.ProcessName,$proc.Id,$proc.WorkingSet64,$proc.PrivateMemorySize64,$proc.PagedMemorySize64,$proc.HandleCount,$proc.Threads.Count
         [System.IO.File]::AppendAllText($Path, $line + [Environment]::NewLine)

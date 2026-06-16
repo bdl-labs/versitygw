@@ -37,6 +37,8 @@ type testBurnBridgeClient struct {
 	registerPullSourceFn  func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
 	finalizeFn            func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
 	getDiscInfoFn         func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error)
+	handleMediaChangeFn   func(context.Context, *burnbridgev1.HandleMediaChangeRequest, ...grpc.CallOption) (*burnbridgev1.HandleMediaChangeResponse, error)
+	handleTrayFn          func(context.Context, *burnbridgev1.HandleTrayRequest, ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error)
 	importedBucketStateFn func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error)
 	testUnitReadyFn       func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error)
 	readObjectFn          func(context.Context, *burnbridgev1.ReadObjectRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error)
@@ -135,6 +137,20 @@ func (c testBurnBridgeClient) GetDiscInfo(ctx context.Context, req *burnbridgev1
 		return c.getDiscInfoFn(ctx, req, opts...)
 	}
 	panic("unexpected GetDiscInfo call")
+}
+
+func (c testBurnBridgeClient) HandleMediaChange(ctx context.Context, req *burnbridgev1.HandleMediaChangeRequest, opts ...grpc.CallOption) (*burnbridgev1.HandleMediaChangeResponse, error) {
+	if c.handleMediaChangeFn != nil {
+		return c.handleMediaChangeFn(ctx, req, opts...)
+	}
+	return &burnbridgev1.HandleMediaChangeResponse{}, nil
+}
+
+func (c testBurnBridgeClient) HandleTray(ctx context.Context, req *burnbridgev1.HandleTrayRequest, opts ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+	if c.handleTrayFn != nil {
+		return c.handleTrayFn(ctx, req, opts...)
+	}
+	return &burnbridgev1.HandleTrayResponse{}, nil
 }
 
 func (c testBurnBridgeClient) GetImportedBucketState(ctx context.Context, req *burnbridgev1.GetImportedBucketStateRequest, opts ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
@@ -2504,20 +2520,34 @@ func TestInvokeFinalizeLayoutReusesOnlyMatchingControlRequest(t *testing.T) {
 }
 
 func testControlKey(action string) string {
-	return ".__bbctl__/v1/" + action + "/1780622225123/550e8400-e29b-41d4-a716-446655440000"
+	return "v1/" + action
+}
+
+func testEnsureDriveControlBucket(t *testing.T, b *BurnBridge) string {
+	t.Helper()
+	controlBucket, err := b.ensureDriveControlBucket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return controlBucket
+}
+
+func testDriveInfo(serial string) *burnbridgev1.GetDiscInfoResponse {
+	return &burnbridgev1.GetDiscInfoResponse{
+		Drive: &burnbridgev1.OpticalDriveIdentity{
+			SerialNumber: serial,
+		},
+	}
 }
 
 func testControlRequest(t *testing.T, action string, requestTime int64, requestID string) *burnbridgeControlRequest {
 	t.Helper()
-	req, isControl, err := parseBurnbridgeControlRequest(
-		fmt.Sprintf(".__bbctl__/v1/%s/%d/%s", action, requestTime, requestID))
-	if err != nil {
-		t.Fatal(err)
+	return &burnbridgeControlRequest{
+		Action:      burnbridgeControlAction(action),
+		RequestTime: requestTime,
+		RequestID:   requestID,
+		Key:         fmt.Sprintf("v1/%s", action),
 	}
-	if !isControl {
-		t.Fatal("expected control request")
-	}
-	return req
 }
 
 func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) {
@@ -2571,6 +2601,9 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 			},
 			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
 				return &burnbridgev1.GetDiscInfoResponse{
+					Drive: &burnbridgev1.OpticalDriveIdentity{
+						SerialNumber: "DRIVE-SERIAL-DISCINFO-001",
+					},
 					Disc: &burnbridgev1.OpticalDiscInfo{
 						ProfileName:                   "BD-R",
 						DiscStatusName:                "incomplete/appendable",
@@ -2594,9 +2627,13 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 			},
 		},
 	}
+	controlBucket, err := b.ensureDriveControlBucket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: ptr("bucket1"),
+		Bucket: ptr(controlBucket),
 		Key:    ptr(testControlKey("disc-info")),
 	})
 	if err != nil {
@@ -2619,8 +2656,8 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 	if envelope.Action != "disc-info" {
 		t.Fatalf("expected action disc-info, got %q", envelope.Action)
 	}
-	if envelope.RequestID != "550e8400-e29b-41d4-a716-446655440000" {
-		t.Fatalf("unexpected request id %q", envelope.RequestID)
+	if strings.TrimSpace(envelope.RequestID) == "" {
+		t.Fatal("expected request id to be populated")
 	}
 	data, err := json.Marshal(envelope.Data)
 	if err != nil {
@@ -2651,6 +2688,100 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 	}
 	if !doc.TrackNextWritableAddressValid {
 		t.Fatal("expected trackNextWritableAddressValid true")
+	}
+}
+
+func TestDriveInfoVirtualControlBucketIsVisibleAndReadable(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(_ context.Context, req *burnbridgev1.GetDiscInfoRequest, _ ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				if !req.GetIncludeDriveIdentity() {
+					t.Fatal("expected IncludeDriveIdentity=true")
+				}
+				return &burnbridgev1.GetDiscInfoResponse{
+					Drive: &burnbridgev1.OpticalDriveIdentity{
+						VendorId:        "HL-DT-ST",
+						ProductId:       "BD-RE BU40N",
+						ProductRevision: "1.04",
+						SerialNumber:    "DRIVE-SERIAL-001",
+						IsMmcUnit:       true,
+					},
+				}, nil
+			},
+		},
+	}
+
+	controlBucket, err := b.ensureDriveControlBucket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if controlBucket != "drive-serial-001" {
+		t.Fatalf("expected control bucket drive-serial-001, got %q", controlBucket)
+	}
+
+	if _, err := b.HeadBucket(context.Background(), &s3.HeadBucketInput{Bucket: ptr(controlBucket)}); err != nil {
+		t.Fatalf("HeadBucket control bucket returned error: %v", err)
+	}
+
+	list, err := b.ListBuckets(context.Background(), s3response.ListBucketsInput{
+		Owner:      "owner1",
+		MaxBuckets: 100,
+		IsAdmin:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Buckets.Bucket) != 1 || list.Buckets.Bucket[0].Name != controlBucket {
+		t.Fatalf("expected only control bucket in list, got %+v", list.Buckets.Bucket)
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("drive-info")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected ok=true, got false with error %+v", envelope.Error)
+	}
+	if envelope.Action != "drive-info" {
+		t.Fatalf("expected action drive-info, got %q", envelope.Action)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc meta.BurnbridgeDriveInfoDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.ControlBucket != controlBucket {
+		t.Fatalf("expected controlBucket %q, got %q", controlBucket, doc.ControlBucket)
+	}
+	if doc.SerialNumber != "DRIVE-SERIAL-001" {
+		t.Fatalf("unexpected serial number %q", doc.SerialNumber)
+	}
+	if !doc.IsMMCUnit {
+		t.Fatal("expected isMmcUnit true")
 	}
 }
 
@@ -2704,6 +2835,9 @@ func TestDiscInfoGetObjectSuppressesStaleFinalizeStateOnMismatchedDisc(t *testin
 			},
 			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
 				return &burnbridgev1.GetDiscInfoResponse{
+					Drive: &burnbridgev1.OpticalDriveIdentity{
+						SerialNumber: "DRIVE-SERIAL-DISCINFO-002",
+					},
 					Disc: &burnbridgev1.OpticalDiscInfo{
 						ProfileName:                   "BD-R",
 						DiscStatusName:                "incomplete/appendable",
@@ -2728,9 +2862,10 @@ func TestDiscInfoGetObjectSuppressesStaleFinalizeStateOnMismatchedDisc(t *testin
 			},
 		},
 	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
 
 	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: ptr("bucket1"),
+		Bucket: ptr(controlBucket),
 		Key:    ptr(testControlKey("disc-info")),
 	})
 	if err != nil {
@@ -2840,6 +2975,9 @@ func TestCloseDiscGetObjectInvokesFinalizeWithCloseDisc(t *testing.T) {
 	b := &BurnBridge{
 		meta: store,
 		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-CLOSEDISC-001"), nil
+			},
 			finalizeFn: func(_ctx context.Context, req *burnbridgev1.FinalizeLayoutRequest, _opts ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
 				gotCloseDisc = req.GetCloseDisc()
 				return &burnbridgev1.FinalizeLayoutResponse{
@@ -2852,9 +2990,10 @@ func TestCloseDiscGetObjectInvokesFinalizeWithCloseDisc(t *testing.T) {
 		activeBucket: "bucket1",
 		udfLabel:     "BUCKET1",
 	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
 
 	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
-		Bucket: ptr("bucket1"),
+		Bucket: ptr(controlBucket),
 		Key:    ptr(testControlKey("close-disc")),
 	})
 	if err != nil {
@@ -2894,6 +3033,405 @@ func TestCloseDiscGetObjectInvokesFinalizeWithCloseDisc(t *testing.T) {
 	}
 	if doc.RecorderStatus != "finalized" {
 		t.Fatalf("expected recorderStatus finalized, got %q", doc.RecorderStatus)
+	}
+}
+
+func TestMediaInsertedControlGetObjectBypassesMissingBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var gotAction burnbridgev1.MediaChangeAction
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-MEDIA-001"), nil
+			},
+			handleMediaChangeFn: func(_ctx context.Context, req *burnbridgev1.HandleMediaChangeRequest, _opts ...grpc.CallOption) (*burnbridgev1.HandleMediaChangeResponse, error) {
+				gotAction = req.GetAction()
+				return &burnbridgev1.HandleMediaChangeResponse{
+					Status:         "inserted",
+					Message:        "manual insert handled",
+					ImportedBucket: "inserted-bucket",
+					Snapshot: &burnbridgev1.TestUnitReadyResponse{
+						Ready:         true,
+						VolumeLabel:   "INSERTED-BUCKET",
+						WritableState: "Appendable",
+					},
+				}, nil
+			},
+		},
+	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("media-inserted")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if gotAction != burnbridgev1.MediaChangeAction_MEDIA_CHANGE_ACTION_INSERTED {
+		t.Fatalf("expected media inserted action, got %v", gotAction)
+	}
+
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected ok=true, got false with error %+v", envelope.Error)
+	}
+	if envelope.Action != "media-inserted" {
+		t.Fatalf("expected action media-inserted, got %q", envelope.Action)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc meta.BurnbridgeMediaChangeDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.ImportedBucket != "inserted-bucket" {
+		t.Fatalf("expected importedBucket inserted-bucket, got %q", doc.ImportedBucket)
+	}
+	if !doc.Ready {
+		t.Fatal("expected ready snapshot in media-inserted transcript")
+	}
+}
+
+func TestCloseDiscControlStillRequiresExistingBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-CLOSEDISC-002"), nil
+			},
+			finalizeFn: func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				t.Fatal("FinalizeLayout should not be called for a missing bucket")
+				return nil, nil
+			},
+		},
+	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
+
+	_, err = b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("close-disc")),
+	})
+	if err == nil {
+		t.Fatal("expected missing bucket error")
+	}
+	if !strings.Contains(err.Error(), "NoSuchBucket") {
+		t.Fatalf("expected NoSuchBucket error, got %v", err)
+	}
+}
+
+func TestCloseDiscViaDriveControlBucketTargetsActiveBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var gotBucket string
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "bucket1",
+		udfLabel:     "BUCKET1",
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return &burnbridgev1.GetDiscInfoResponse{
+					Drive: &burnbridgev1.OpticalDriveIdentity{
+						SerialNumber: "DRIVE-SERIAL-003",
+					},
+				}, nil
+			},
+			finalizeFn: func(_ctx context.Context, req *burnbridgev1.FinalizeLayoutRequest, _opts ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				gotBucket = req.GetBucket()
+				return &burnbridgev1.FinalizeLayoutResponse{
+					Bucket:  req.GetBucket(),
+					Status:  "closed",
+					Message: "disc closed",
+				}, nil
+			},
+		},
+	}
+
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:      "bucket1",
+		VolumeLabel: "BUCKET1",
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	controlBucket, err := b.ensureDriveControlBucket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("close-disc")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if gotBucket != "bucket1" {
+		t.Fatalf("expected FinalizeLayout target bucket1, got %q", gotBucket)
+	}
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Bucket != controlBucket {
+		t.Fatalf("expected response bucket to remain control bucket %q, got %q", controlBucket, envelope.Bucket)
+	}
+}
+
+func TestTrayOpenControlGetObjectBypassesMissingBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var gotAction burnbridgev1.TrayAction
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-TRAY-001"), nil
+			},
+			handleTrayFn: func(_ctx context.Context, req *burnbridgev1.HandleTrayRequest, _opts ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+				gotAction = req.GetAction()
+				return &burnbridgev1.HandleTrayResponse{
+					Status:  "opened",
+					Message: "manual tray open handled",
+				}, nil
+			},
+		},
+	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("tray-open")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if gotAction != burnbridgev1.TrayAction_TRAY_ACTION_OPEN {
+		t.Fatalf("expected tray open action, got %v", gotAction)
+	}
+
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected ok=true, got false with error %+v", envelope.Error)
+	}
+	if envelope.Action != "tray-open" {
+		t.Fatalf("expected action tray-open, got %q", envelope.Action)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc meta.BurnbridgeTrayDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.RecorderStatus != "opened" {
+		t.Fatalf("expected recorderStatus opened, got %q", doc.RecorderStatus)
+	}
+}
+
+func TestTrayOpenControlGetObjectUsesDriveControlBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var gotAction burnbridgev1.TrayAction
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return &burnbridgev1.GetDiscInfoResponse{
+					Drive: &burnbridgev1.OpticalDriveIdentity{
+						SerialNumber: "DRIVE-SERIAL-002",
+					},
+				}, nil
+			},
+			handleTrayFn: func(_ctx context.Context, req *burnbridgev1.HandleTrayRequest, _opts ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+				gotAction = req.GetAction()
+				return &burnbridgev1.HandleTrayResponse{
+					Status:  "opened",
+					Message: "manual tray open handled",
+				}, nil
+			},
+		},
+	}
+
+	controlBucket, err := b.ensureDriveControlBucket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("tray-open")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if gotAction != burnbridgev1.TrayAction_TRAY_ACTION_OPEN {
+		t.Fatalf("expected tray open action, got %v", gotAction)
+	}
+}
+
+func TestShortControlPathOnlyWorksOnDriveControlBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var trayCalls int32
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: "bucket1",
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return &burnbridgev1.GetDiscInfoResponse{
+					Drive: &burnbridgev1.OpticalDriveIdentity{
+						SerialNumber: "DRIVE-SERIAL-004",
+					},
+				}, nil
+			},
+			handleTrayFn: func(context.Context, *burnbridgev1.HandleTrayRequest, ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+				atomic.AddInt32(&trayCalls, 1)
+				return &burnbridgev1.HandleTrayResponse{Status: "opened"}, nil
+			},
+		},
+	}
+	controlBucket, err := b.ensureDriveControlBucket(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr("v1/tray-open"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	if atomic.LoadInt32(&trayCalls) != 1 {
+		t.Fatalf("expected one tray call via short control path, got %d", atomic.LoadInt32(&trayCalls))
+	}
+
+	_, err = b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("bucket1"),
+		Key:    ptr("v1/tray-open"),
+	})
+	if err == nil {
+		t.Fatal("expected real bucket short path to behave like a normal missing object")
+	}
+	if atomic.LoadInt32(&trayCalls) != 1 {
+		t.Fatalf("expected real bucket short path not to trigger tray, got %d calls", atomic.LoadInt32(&trayCalls))
+	}
+}
+
+func TestTrayCloseControlGetObjectInvokesHandleTray(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var gotAction burnbridgev1.TrayAction
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-TRAY-002"), nil
+			},
+			handleTrayFn: func(_ctx context.Context, req *burnbridgev1.HandleTrayRequest, _opts ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+				gotAction = req.GetAction()
+				return &burnbridgev1.HandleTrayResponse{
+					Status:  "closed",
+					Message: "manual tray close handled",
+				}, nil
+			},
+		},
+	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("tray-close")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+
+	if gotAction != burnbridgev1.TrayAction_TRAY_ACTION_CLOSE {
+		t.Fatalf("expected tray close action, got %v", gotAction)
+	}
+	raw, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected ok=true, got false with error %+v", envelope.Error)
+	}
+	if envelope.Action != "tray-close" {
+		t.Fatalf("expected action tray-close, got %q", envelope.Action)
 	}
 }
 
@@ -2992,13 +3530,17 @@ func TestHeadObjectControlKeyReturnsEnvelopeMetadata(t *testing.T) {
 		meta:         store,
 		activeBucket: "bucket1",
 		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-HEAD-001"), nil
+			},
 			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
 				return nil, status.Error(codes.Unavailable, "offline for cache fallback")
 			},
 		},
 	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
 	out, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
-		Bucket: ptr("bucket1"),
+		Bucket: ptr(controlBucket),
 		Key:    ptr(testControlKey("disc-info")),
 	})
 	if err != nil {
@@ -3012,22 +3554,23 @@ func TestHeadObjectControlKeyReturnsEnvelopeMetadata(t *testing.T) {
 	}
 }
 
-func TestPutObjectRejectsControlNamespace(t *testing.T) {
+func TestPutObjectRejectsDriveControlBucket(t *testing.T) {
 	b := &BurnBridge{
-		activeBucket: "bucket1",
-		putQueueSem:  make(chan struct{}, 1),
+		activeBucket:           "bucket1",
+		lastDriveControlBucket: "drive-serial-001",
+		putQueueSem:            make(chan struct{}, 1),
 	}
 	_, err := b.PutObject(context.Background(), s3response.PutObjectInput{
-		Bucket: ptr("bucket1"),
+		Bucket: ptr("drive-serial-001"),
 		Key:    ptr(testControlKey("disc-info")),
 		Body:   io.NopCloser(strings.NewReader("x")),
 	})
 	if err == nil {
-		t.Fatal("expected access denied")
+		t.Fatal("expected method not allowed")
 	}
 	st, ok := err.(interface{ Error() string })
-	if !ok || !strings.Contains(st.Error(), "AccessDenied") {
-		t.Fatalf("expected access denied error, got %v", err)
+	if !ok || !strings.Contains(st.Error(), "MethodNotAllowed") {
+		t.Fatalf("expected method not allowed error, got %v", err)
 	}
 }
 

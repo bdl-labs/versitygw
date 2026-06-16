@@ -17,11 +17,11 @@ OPTICAL_ARCHIVE_DATA_DIR="${OPTICAL_ARCHIVE_DATA_DIR:-/var/lib/burnbridge}"
 OPTICAL_ARCHIVE_LOG_DIR="${OPTICAL_ARCHIVE_LOG_DIR:-/var/log/burnbridge}"
 OPTICAL_ARCHIVE_DOTNET_ENV_SCRIPT="${OPTICAL_ARCHIVE_DOTNET_ENV_SCRIPT:-/root/configure.sh}"
 
-RECORDER_DIR="${OPTICAL_ARCHIVE_HOME}/burnserver"
+RECORDER_DIR="${OPTICAL_ARCHIVE_RECORDER_DIR:-${OPTICAL_ARCHIVE_HOME}/optical-recorder}"
 GATEWAY_DIR="${OPTICAL_ARCHIVE_HOME}/versitygw"
-RECORDER_EXE="${RECORDER_DIR}/BurnServer"
+RECORDER_EXE="${RECORDER_DIR}/optical-recorder"
 GATEWAY_EXE="${GATEWAY_DIR}/versitygw"
-RECORDER_PID="${OPTICAL_ARCHIVE_DATA_DIR}/burnserver.pid"
+RECORDER_PID="${OPTICAL_ARCHIVE_DATA_DIR}/optical-recorder.pid"
 GATEWAY_PID="${OPTICAL_ARCHIVE_DATA_DIR}/gateway.pid"
 
 prepare_runtime() {
@@ -34,6 +34,15 @@ prepare_runtime() {
 
   if [[ ! -f "${OPTICAL_ARCHIVE_CONFIG_PATH}" ]]; then
     echo "ERROR: config file not found: ${OPTICAL_ARCHIVE_CONFIG_PATH}" >&2
+    exit 1
+  fi
+
+  if [[ ! -x "${RECORDER_EXE}" ]]; then
+    echo "ERROR: recorder executable not found or not executable: ${RECORDER_EXE}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${GATEWAY_EXE}" ]]; then
+    echo "ERROR: gateway executable not found or not executable: ${GATEWAY_EXE}" >&2
     exit 1
   fi
 
@@ -58,11 +67,7 @@ recorder_foreground() {
   export ASPNETCORE_URLS="${ASPNETCORE_URLS:-http://0.0.0.0:50051}"
 
   cd "${RECORDER_DIR}"
-  if [[ -x "${RECORDER_EXE}" ]]; then
-    exec "${RECORDER_EXE}"
-  fi
-
-  exec dotnet "${RECORDER_DIR}/BurnServer.dll"
+  exec "${RECORDER_EXE}"
 }
 
 gateway_foreground() {
@@ -114,7 +119,7 @@ gateway_foreground() {
 start_background() {
   prepare_runtime
   stop_background || true
-  nohup "$0" recorder >"${OPTICAL_ARCHIVE_DATA_DIR}/burnserver.out" 2>&1 &
+  nohup "$0" recorder >"${OPTICAL_ARCHIVE_DATA_DIR}/optical-recorder.out" 2>&1 &
   echo "$!" >"${RECORDER_PID}"
   sleep 3
   nohup "$0" gateway >"${OPTICAL_ARCHIVE_DATA_DIR}/gateway.out" 2>&1 &
@@ -174,7 +179,7 @@ case "${ACTION}" in
     status
     ;;
   logs)
-    tail -n 120 -f "${OPTICAL_ARCHIVE_DATA_DIR}/burnserver.out" "${OPTICAL_ARCHIVE_DATA_DIR}/gateway.out"
+    tail -n 120 -f "${OPTICAL_ARCHIVE_DATA_DIR}/optical-recorder.out" "${OPTICAL_ARCHIVE_DATA_DIR}/gateway.out"
     ;;
   *)
     echo "Usage: $0 {start|stop|restart|status|logs|recorder|gateway}" >&2

@@ -6,6 +6,7 @@ SERVICE_DIR="${SERVICE_DIR:-/etc/systemd/system}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/optical-archive}"
 OPTICAL_ARCHIVE_HOME="${OPTICAL_ARCHIVE_HOME:-/opt/burnbridge}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EXTRA_DIR="${OPTICAL_ARCHIVE_EXTRA_DIR:-$(cd "${SCRIPT_DIR}/../extra" && pwd)}"
 
 services=(optical-archive-recorder.service optical-archive-gateway.service)
 all_services=(optical-archive-recorder.service optical-archive-gateway.service optical-archive-mount-refresh.service)
@@ -24,12 +25,13 @@ install_files() {
   install -m 0755 "${SCRIPT_DIR}/optical-archive-start.sh" "${OPTICAL_ARCHIVE_HOME}/scripts/optical-archive-start.sh"
   install -m 0755 "${SCRIPT_DIR}/optical-archive-mount-refresh.sh" "${OPTICAL_ARCHIVE_HOME}/scripts/optical-archive-mount-refresh.sh"
   install -m 0755 "${SCRIPT_DIR}/stop-all.sh" "${OPTICAL_ARCHIVE_HOME}/scripts/stop-all.sh"
-  install -m 0644 "${SCRIPT_DIR}/optical-archive-recorder.service" "${SERVICE_DIR}/optical-archive-recorder.service"
-  install -m 0644 "${SCRIPT_DIR}/optical-archive-gateway.service" "${SERVICE_DIR}/optical-archive-gateway.service"
-  install -m 0644 "${SCRIPT_DIR}/optical-archive-mount-refresh.service" "${SERVICE_DIR}/optical-archive-mount-refresh.service"
+  install -m 0755 "${SCRIPT_DIR}/optical-archive-service.sh" "${OPTICAL_ARCHIVE_HOME}/scripts/optical-archive-service.sh"
+  install -m 0644 "${EXTRA_DIR}/optical-archive-recorder.service" "${SERVICE_DIR}/optical-archive-recorder.service"
+  install -m 0644 "${EXTRA_DIR}/optical-archive-gateway.service" "${SERVICE_DIR}/optical-archive-gateway.service"
+  install -m 0644 "${EXTRA_DIR}/optical-archive-mount-refresh.service" "${SERVICE_DIR}/optical-archive-mount-refresh.service"
 
   if [[ ! -f "${CONFIG_DIR}/optical-archive.env" ]]; then
-    install -m 0644 "${SCRIPT_DIR}/optical-archive.env.example" "${CONFIG_DIR}/optical-archive.env"
+    install -m 0644 "${EXTRA_DIR}/optical-archive.env.example" "${CONFIG_DIR}/optical-archive.env"
   fi
 
   systemctl daemon-reload
@@ -97,11 +99,11 @@ case "${ACTION}" in
 Usage: optical-archive-service.sh {install|uninstall|start|stop|restart|status|enable|disable|logs}
 
 Examples:
-  sudo ./optical-archive-service.sh install
-  sudo ./optical-archive-service.sh start
-  sudo ./optical-archive-service.sh status
-  sudo ./optical-archive-service.sh stop
-  sudo ./optical-archive-service.sh uninstall
+  sudo /opt/burnbridge/scripts/optical-archive-service.sh install
+  sudo /opt/burnbridge/scripts/optical-archive-service.sh start
+  sudo /opt/burnbridge/scripts/optical-archive-service.sh status
+  sudo /opt/burnbridge/scripts/optical-archive-service.sh stop
+  sudo /opt/burnbridge/scripts/optical-archive-service.sh uninstall
 EOF
     exit 2
     ;;
