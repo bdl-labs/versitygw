@@ -42,6 +42,8 @@ Use this checklist before treating a deployment as production-ready.
 
 - Run `close-disc`.
 - Confirm `disc-info` reports finalized/read-only media.
+- Run `optical-recovery-check` with recorder `udf-layout.db`, recorder journal, and mounted `OA<bucket>.sqlite3`.
+- Confirm the recovery verdict is `SAFE_FINALIZED`.
 - Confirm final download verification passes.
 - Only after this point may local runtime DB snapshots and recovery journal files be archived or cleaned.
 
@@ -63,3 +65,23 @@ Use this checklist before treating a deployment as production-ready.
 - Gateway `sqlite-safety-backups`
 
 Do not delete these files until the disc is finalized and full download verification succeeds.
+
+## Recovery Verdict Command
+
+Example:
+
+```bash
+optical-recovery-check \
+  --layout-db /var/lib/burnbridge/recorder/udf-layout.db \
+  --mounted-db /mnt/optical/OA<bucket>.sqlite3 \
+  --journal /var/lib/burnbridge/recorder/recovery-journal/recorder-events.jsonl \
+  --snapshots-dir /var/lib/burnbridge/recorder/runtime-snapshots \
+  --media-backups-dir /var/lib/burnbridge/recorder/media-change-backups
+```
+
+Exit codes:
+
+- `0`: finalized metadata is consistent.
+- `1`: needs finalize, mounted metadata, or manual review.
+- `2`: recovery is required.
+- `3`: analysis is blocked, usually because local metadata is missing or corrupt.
