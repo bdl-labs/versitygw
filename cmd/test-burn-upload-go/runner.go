@@ -46,6 +46,9 @@ type toolConfig struct {
 			S3SecretAccessKey  string `json:"S3SecretAccessKey"`
 			AWSAccessKeyID     string `json:"AwsAccessKeyId"`
 			AWSSecretAccessKey string `json:"AwsSecretAccessKey"`
+			LogRoot            string `json:"LogRoot"`
+			TestRunRoot        string `json:"TestRunRoot"`
+			VerifyDownloadRoot string `json:"VerifyDownloadRoot"`
 		} `json:"Testing"`
 	} `json:"OpticalArchive"`
 }
@@ -1679,9 +1682,9 @@ func loadResolvedConfig(opts cliOptions) (resolvedConfig, error) {
 
 	configDir := filepath.Dir(resolvedCfgPath)
 	publisherRoot := filepath.Dir(configDir)
-	logRoot := filepath.Join(publisherRoot, "logs")
-	testRunRoot := filepath.Join(logRoot, "test-runs")
-	verifyDownloadRoot := filepath.Join(publisherRoot, "verify-download")
+	logRoot := resolveConfiguredPath(raw.OpticalArchive.Testing.LogRoot, configDir, filepath.Join(publisherRoot, "logs"))
+	testRunRoot := resolveConfiguredPath(raw.OpticalArchive.Testing.TestRunRoot, configDir, filepath.Join(logRoot, "test-runs"))
+	verifyDownloadRoot := resolveConfiguredPath(raw.OpticalArchive.Testing.VerifyDownloadRoot, configDir, filepath.Join(publisherRoot, "verify-download"))
 
 	if err := ensureDir(testRunRoot); err != nil {
 		return resolvedConfig{}, err
@@ -1794,6 +1797,23 @@ func newS3Client(cfg resolvedConfig, profile string) (*s3.Client, error) {
 		o.DisableLogOutputChecksumValidationSkipped = true
 	})
 	return client, nil
+}
+
+func resolveConfiguredPath(value, baseDir, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	if strings.HasPrefix(value, "/") {
+		if runtimeGOOS() == "windows" {
+			return fallback
+		}
+		return filepath.Clean(value)
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(baseDir, value))
 }
 
 func buildRunRoot(root, bucket string) (string, error) {
