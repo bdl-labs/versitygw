@@ -296,6 +296,16 @@ func NewSqlMeta(dbPath string, opts ...SqlMetaOption) (SqlMeta, error) {
 	if log == nil {
 		log = slog.Default()
 	}
+	if result, err := verifySQLiteIntegrity(sqlDB); err != nil {
+		backupPath, backupErr := copySQLiteFileForDiagnostics(dbPath, "integrity-failed", log)
+		if backupErr != nil {
+			log.Warn("sqlite diagnostic backup failed after integrity check failure", "db_path", dbPath, "err", backupErr)
+		}
+		return SqlMeta{}, fmt.Errorf("sqlite integrity check failed: %w (result=%s, diagnostic_backup=%s)", err, result, backupPath)
+	}
+	if _, err := backupSQLiteDatabase(sqlDB, dbPath, "startup", log); err != nil {
+		log.Warn("sqlite startup backup failed", "db_path", dbPath, "err", err)
+	}
 	applySQLiteFlashPragmas(sqlDB, log)
 
 	sqlDB.SetMaxOpenConns(4)
