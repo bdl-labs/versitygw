@@ -30,6 +30,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/cespare/xxhash/v2"
+	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/s3err"
 	"github.com/zeebo/xxh3"
 )
@@ -127,6 +128,13 @@ func NewHashReader(r io.Reader, expectedSum string, ht HashType) (*HashReader, e
 // Read allows *HashReader to be used as an io.Reader
 func (hr *HashReader) Read(p []byte) (int, error) {
 	n, readerr := hr.r.Read(p)
+	// Treat ErrUnexpectedEOF as EOF so a truncated body triggers checksum
+	// validation (which will fail on partial data) rather than leaking a
+	// raw Go error as an internal server error.
+	if readerr == io.ErrUnexpectedEOF {
+		debuglogger.Logf("client connection terminated early")
+		readerr = io.EOF
+	}
 	_, err := hr.hash.Write(p[:n])
 	if err != nil {
 		return n, err
@@ -136,7 +144,7 @@ func (hr *HashReader) Read(p []byte) (int, error) {
 		case HashTypeContentMD5:
 			sum := hr.Sum()
 			if sum != hr.sum {
-				return n, s3err.GetAPIError(s3err.ErrBadDigest)
+				return n, s3err.GetBadDigestErr(sum, hr.base64ToHex(hr.sum))
 			}
 		case HashTypeMd5:
 			sum := hr.Sum()
@@ -146,7 +154,7 @@ func (hr *HashReader) Read(p []byte) (int, error) {
 		case HashTypeSha256Hex:
 			sum := hr.Sum()
 			if sum != hr.sum {
-				return n, s3err.GetAPIError(s3err.ErrContentSHA256Mismatch)
+				return n, s3err.GetContentSHA256MismatchErr(hr.sum, sum)
 			}
 		case HashTypeCRC32:
 			sum := hr.Sum()
@@ -198,6 +206,15 @@ func (hr *HashReader) Read(p []byte) (int, error) {
 		}
 	}
 	return n, readerr
+}
+
+func (hr *HashReader) base64ToHex(s string) string {
+	b, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return ""
+	}
+
+	return hex.EncodeToString(b)
 }
 
 func (hr *HashReader) SetReader(r io.Reader) {

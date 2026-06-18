@@ -19,7 +19,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/s3api/middlewares"
 	"github.com/versity/versitygw/s3err"
 )
@@ -35,8 +35,8 @@ func TestApplyBucketCORS_FallbackOrigin_NoBucketCors_NoRequestOrigin(t *testing.
 
 	app := fiber.New()
 	app.Get("/:bucket/test",
-		middlewares.ApplyBucketCORS(mockedBackend, origin),
-		func(c *fiber.Ctx) error {
+		middlewares.ApplyBucketCORS(mockedBackend, middlewares.BucketFromPath, origin),
+		func(c fiber.Ctx) error {
 			return c.SendStatus(http.StatusOK)
 		},
 	)
@@ -55,8 +55,8 @@ func TestApplyBucketCORS_FallbackOrigin_NoBucketCors_NoRequestOrigin(t *testing.
 	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != origin {
 		t.Fatalf("expected Access-Control-Allow-Origin to be set to fallback, got %q", got)
 	}
-	if got := resp.Header.Get("Access-Control-Expose-Headers"); got != "ETag" {
-		t.Fatalf("expected Access-Control-Expose-Headers to include ETag, got %q", got)
+	if got := resp.Header.Get("Access-Control-Expose-Headers"); got != "ETag, x-amz-storage-class" {
+		t.Fatalf("expected Access-Control-Expose-Headers to include ETag and x-amz-storage-class, got %q", got)
 	}
 }
 
@@ -71,8 +71,8 @@ func TestApplyBucketCORS_FallbackOrigin_NotAppliedWhenBucketCorsExists(t *testin
 
 	app := fiber.New()
 	app.Get("/:bucket/test",
-		middlewares.ApplyBucketCORS(mockedBackend, origin),
-		func(c *fiber.Ctx) error {
+		middlewares.ApplyBucketCORS(mockedBackend, middlewares.BucketFromPath, origin),
+		func(c fiber.Ctx) error {
 			return c.SendStatus(http.StatusOK)
 		},
 	)

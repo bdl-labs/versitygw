@@ -29,13 +29,13 @@ source ./tests/drivers/put_bucket_ownership_controls/put_bucket_ownership_contro
 source ./tests/drivers/put_bucket_tagging/put_bucket_tagging_rest.sh
 source ./tests/logger.sh
 source ./tests/setup.sh
-source ./tests/util/util_list_buckets.sh
 source ./tests/util/util_lock_config.sh
 source ./tests/util/util_public_access_block.sh
 source ./tests/util/util_rest.sh
 
 export RUN_USERS=true
 
+# tags: curl,minimal-request,HeadBucket
 @test "REST - HeadBucket" {
   run get_bucket_name "$BUCKET_ONE_NAME"
   assert_success
@@ -48,6 +48,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,minimal-request,GetBucketTagging
 @test "REST - bucket tagging - no tags" {
   run get_bucket_name "$BUCKET_ONE_NAME"
   assert_success
@@ -60,6 +61,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,minimal-request,GetBucketOwnershipControls,PutBucketOwnershipControls
 @test "REST - get, put bucket ownership controls" {
   run get_bucket_name "$BUCKET_ONE_NAME"
   assert_success
@@ -78,6 +80,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,minimal-request,GetObjectLockConfiguration,PutObjectLockConfiguration
 @test "test_rest_set_get_lock_config" {
   if [ "$RECREATE_BUCKETS" == "false" ]; then
     skip "test not valid for static buckets"
@@ -103,6 +106,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,PutBucketVersioning,PutObjectLockConfiguration
 @test "REST - can set object lock enabled on existing buckets" {
   run get_bucket_name "$BUCKET_ONE_NAME"
   assert_success
@@ -119,6 +123,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,PutObjectLockConfiguration,content-md5,invalid-header
 @test "REST - cannot set object lock enabled without content-md5" {
   run get_bucket_name "$BUCKET_ONE_NAME"
   assert_success
@@ -132,6 +137,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,minimal-request,GetBucketPolicy
 @test "REST - get policy w/o policy" {
   if [ "$DIRECT" != "true" ]; then
     skip "https://github.com/versity/versitygw/issues/959"
@@ -147,6 +153,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,PutBucketPolicy,user
 @test "REST - put policy" {
   if [ "$SKIP_USERS_TESTS" == "true" ]; then
     skip "skip versitygw-specific users tests"
@@ -172,6 +179,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: curl,malformed-message,invalid-method
 @test "REST - POST call on root endpoint" {
   if [ "$DIRECT" != "true" ]; then
     skip "https://github.com/versity/versitygw/issues/1487"

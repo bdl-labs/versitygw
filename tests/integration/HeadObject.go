@@ -62,6 +62,34 @@ func HeadObject_invalid_part_number(s *S3Conf) error {
 	})
 }
 
+// HeadObject_incidental_dir_object verifies that a directory created incidentally
+// as a parent during object upload (i.e. never explicitly PUT via S3 with a
+// trailing-slash key) is not accessible via HeadObject.
+func HeadObject_incidental_dir_object(s *S3Conf) error {
+	testName := "HeadObject_incidental_dir_object"
+	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
+		// Upload an object under a prefix; this creates the parent directory
+		// incidentally on posix but the directory was never PUT as an S3 object.
+		obj := "my-dir/my-obj"
+		_, err := putObjectWithData(int64(64), &s3.PutObjectInput{
+			Bucket: &bucket,
+			Key:    &obj,
+		}, s3client)
+		if err != nil {
+			return err
+		}
+
+		dir := "my-dir/"
+		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
+		_, err = s3client.HeadObject(ctx, &s3.HeadObjectInput{
+			Bucket: &bucket,
+			Key:    &dir,
+		})
+		cancel()
+		return checkSdkApiErr(err, "NotFound")
+	})
+}
+
 func HeadObject_non_existing_dir_object(s *S3Conf) error {
 	testName := "HeadObject_non_existing_dir_object"
 	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
@@ -506,6 +534,19 @@ func HeadObject_conditional_reads(s *S3Conf) error {
 			{nil, &etagTrimmed, nil, &before, errCond},
 			{nil, &etagTrimmed, nil, &after, errMod},
 			{nil, &etagTrimmed, nil, nil, errMod},
+
+			// if-match and if-none-match with asterisk
+			{getPtr("*"), nil, nil, nil, nil},
+			{getPtr("*"), nil, &after, nil, errMod},
+			{getPtr("*"), getPtr("invalid_etag"), nil, nil, nil},
+			{getPtr("*"), etag, nil, nil, errMod},
+			{getPtr("*"), getPtr("*"), nil, nil, errMod},
+			{getPtr("*"), getPtr("*"), nil, &before, errMod},
+			{nil, getPtr("*"), nil, nil, errMod},
+			{nil, getPtr("*"), &before, nil, errMod},
+			{nil, getPtr("*"), nil, &after, errMod},
+			{nil, getPtr("*"), nil, &before, errCond},
+			{getPtr("invalid_etag"), getPtr("*"), nil, nil, errCond},
 		} {
 			ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
 			_, err := s3client.HeadObject(ctx, &s3.HeadObjectInput{
@@ -541,18 +582,20 @@ func HeadObject_success(s *S3Conf) error {
 		}
 		ctype, cDisp, cEnc, cLang := defaultContentType, "cont-desp", "json", "eng"
 		cacheControl, expires := "cache-ctrl", time.Now().Add(time.Hour*2)
+		redirectLocation := "/head-object-redirect"
 
 		_, err := putObjectWithData(dataLen, &s3.PutObjectInput{
-			Bucket:             &bucket,
-			Key:                &obj,
-			Metadata:           meta,
-			ContentType:        &ctype,
-			ContentDisposition: &cDisp,
-			ContentEncoding:    &cEnc,
-			ContentLanguage:    &cLang,
-			CacheControl:       &cacheControl,
-			Expires:            &expires,
-			Tagging:            getPtr("key=value"),
+			Bucket:                  &bucket,
+			Key:                     &obj,
+			Metadata:                meta,
+			ContentType:             &ctype,
+			ContentDisposition:      &cDisp,
+			ContentEncoding:         &cEnc,
+			ContentLanguage:         &cLang,
+			CacheControl:            &cacheControl,
+			Expires:                 &expires,
+			WebsiteRedirectLocation: &redirectLocation,
+			Tagging:                 getPtr("key=value"),
 		}, s3client)
 		if err != nil {
 			return err
@@ -602,6 +645,10 @@ func HeadObject_success(s *S3Conf) error {
 		if getString(out.CacheControl) != cacheControl {
 			return fmt.Errorf("expected Cache-Control %v, instead got %v",
 				cacheControl, getString(out.CacheControl))
+		}
+		if getString(out.WebsiteRedirectLocation) != redirectLocation {
+			return fmt.Errorf("expected WebsiteRedirectLocation %v, instead got %v",
+				redirectLocation, getString(out.WebsiteRedirectLocation))
 		}
 		if out.StorageClass != types.StorageClassStandard {
 			return fmt.Errorf("expected the storage class to be %v, instead got %v",
@@ -800,6 +847,7 @@ func HeadObject_overrides_presign_success(s *S3Conf) error {
 				s.awsSecret,
 				"s3",
 				s.awsRegion,
+				"",
 				nil,
 				time.Now(),
 				nil,
@@ -835,6 +883,7 @@ func HeadObject_overrides_presign_success(s *S3Conf) error {
 			s.awsSecret,
 			"s3",
 			s.awsRegion,
+			"",
 			nil,
 			time.Now(),
 			nil,
@@ -1090,6 +1139,7 @@ func HeadObject_by_range_resp_status(s *S3Conf) error {
 				s.awsSecret,
 				"s3",
 				s.awsRegion,
+				"",
 				nil,
 				time.Now(),
 				map[string]string{"Range": rng},
@@ -1240,6 +1290,7 @@ func HeadObject_mp_part_number_resp_status(s *S3Conf) error {
 			s.awsSecret,
 			"s3",
 			s.awsRegion,
+			"",
 			nil,
 			time.Now(),
 			nil,

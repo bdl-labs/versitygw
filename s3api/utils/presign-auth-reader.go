@@ -15,9 +15,7 @@
 package utils
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"net/url"
 	"os"
 	"strconv"
@@ -25,9 +23,9 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/smithy-go/logging"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
+	v4 "github.com/versity/versitygw/aws/signer/v4"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/s3err"
 )
@@ -39,42 +37,8 @@ const (
 	algoECDSA string = "AWS4-ECDSA-P256-SHA256"
 )
 
-// PresignedAuthReader is an io.Reader that validates presigned request authorization
-// once the underlying reader returns io.EOF.  This is needed for streaming
-// data requests where the data size is not known until
-// the data is completely read.
-type PresignedAuthReader struct {
-	ctx    *fiber.Ctx
-	auth   AuthData
-	secret string
-	r      io.Reader
-}
-
-func NewPresignedAuthReader(ctx *fiber.Ctx, r io.Reader, auth AuthData, secret string) *PresignedAuthReader {
-	return &PresignedAuthReader{
-		ctx:    ctx,
-		r:      r,
-		auth:   auth,
-		secret: secret,
-	}
-}
-
-// Read allows *PresignedAuthReader to be used as an io.Reader
-func (pr *PresignedAuthReader) Read(p []byte) (int, error) {
-	n, err := pr.r.Read(p)
-
-	if errors.Is(err, io.EOF) {
-		cerr := CheckPresignedSignature(pr.ctx, pr.auth, pr.secret, true)
-		if cerr != nil {
-			return n, cerr
-		}
-	}
-
-	return n, err
-}
-
 // CheckPresignedSignature validates presigned request signature
-func CheckPresignedSignature(ctx *fiber.Ctx, auth AuthData, secret string, streamBody bool) error {
+func CheckPresignedSignature(ctx fiber.Ctx, auth AuthData, secret string) error {
 	signedHdrs := strings.Split(auth.SignedHeaders, ";")
 
 	var contentLength int64
@@ -88,18 +52,18 @@ func CheckPresignedSignature(ctx *fiber.Ctx, auth AuthData, secret string, strea
 	}
 
 	// Create a new http request instance from fasthttp request
-	req, err := createPresignedHttpRequestFromCtx(ctx, signedHdrs, contentLength, streamBody)
+	req, err := createPresignedHttpRequestFromCtx(ctx, signedHdrs, contentLength)
 	if err != nil {
-		return fmt.Errorf("create http request from context: %w", err)
+		return err
 	}
 
 	date, _ := time.Parse(iso8601Format, auth.Date)
 
 	signer := v4.NewSigner()
-	uri, _, signErr := signer.PresignHTTP(ctx.Context(), aws.Credentials{
+	uri, _, signMeta, signErr := signer.PresignHTTP(ctx.RequestCtx(), aws.Credentials{
 		AccessKeyID:     auth.Access,
 		SecretAccessKey: secret,
-	}, req, unsignedPayload, service, auth.Region, date, func(options *v4.SignerOptions) {
+	}, req, unsignedPayload, service, auth.Region, date, signedHdrs, func(options *v4.SignerOptions) {
 		options.DisableURIPathEscaping = true
 		if debuglogger.IsDebugEnabled() {
 			options.LogSigning = true
@@ -117,7 +81,14 @@ func CheckPresignedSignature(ctx *fiber.Ctx, auth AuthData, secret string, strea
 
 	signature := urlParts.Query().Get("X-Amz-Signature")
 	if signature != auth.Signature {
-		return s3err.GetAPIError(s3err.ErrSignatureDoesNotMatch)
+		return s3err.GetSignatureDoesNotMatchErr(
+			auth.Access,
+			signMeta.StringToSign,
+			auth.Signature,
+			HexBytes(signMeta.StringToSign),
+			signMeta.CanonicalString,
+			HexBytes(signMeta.CanonicalString),
+		)
 	}
 
 	return nil
@@ -133,7 +104,7 @@ func CheckPresignedSignature(ctx *fiber.Ctx, auth AuthData, secret string, strea
 // &X-Amz-Expires=86400
 // &X-Amz-SignedHeaders=host
 // &X-Amz-Signature=1e68ad45c1db540284a4a1eca3884c293ba1a0ff63ab9db9a15b5b29dfa02cd8
-func ParsePresignedURIParts(ctx *fiber.Ctx, region string) (AuthData, error) {
+func ParsePresignedURIParts(ctx fiber.Ctx, region string) (AuthData, error) {
 	a := AuthData{}
 
 	// Get and verify algorithm query parameter
@@ -218,11 +189,11 @@ func validateExpiration(str string, date time.Time) error {
 		return s3err.QueryAuthErrors.ExpiresTooLarge()
 	}
 
-	now := time.Now()
-	passed := int(now.Sub(date).Seconds())
+	now := time.Now().UTC()
+	expiresAt := date.Add(time.Duration(exp) * time.Second)
 
-	if passed > exp {
-		return s3err.GetAPIError(s3err.ErrExpiredPresignRequest)
+	if expiresAt.Before(now) {
+		return s3err.GetExpiredPresignedURLError(exp, expiresAt.Format(time.RFC3339), now.Format(time.RFC3339))
 	}
 
 	return nil
@@ -247,18 +218,28 @@ func validateAlgorithm(algo string) error {
 
 // IsPresignedURLAuth determines if the request is presigned:
 // which is authorization with query params
-func IsPresignedURLAuth(ctx *fiber.Ctx) bool {
+func IsPresignedURLAuth(ctx fiber.Ctx) bool {
 	algo := ctx.Query("X-Amz-Algorithm")
 	creds := ctx.Query("X-Amz-Credential")
 	signature := ctx.Query("X-Amz-Signature")
 	signedHeaders := ctx.Query("X-Amz-SignedHeaders")
 	expires := ctx.Query("X-Amz-Expires")
 
-	return !isEmpty(algo, creds, signature, signedHeaders, expires)
+	return !allEmpty(algo, creds, signature, signedHeaders, expires) || IsPresignedURLAuthV2(ctx)
 }
 
-// isEmpty checks if all the given strings are empty
-func isEmpty(args ...string) bool {
+// IsPresignedURLAuthV2 determines if the request is
+// query-string signed with aws v2 signer
+func IsPresignedURLAuthV2(ctx fiber.Ctx) bool {
+	expires := ctx.Query("Expires")
+	access := ctx.Query("AWSAccessKeyId")
+	signature := ctx.Query("Signature")
+
+	return anyNonEmpty(expires, access, signature)
+}
+
+// allEmpty reports whether every given string is empty.
+func allEmpty(args ...string) bool {
 	for _, a := range args {
 		if a != "" {
 			return false
@@ -266,4 +247,15 @@ func isEmpty(args ...string) bool {
 	}
 
 	return true
+}
+
+// anyNonEmpty reports whether at least one given string is non-empty.
+func anyNonEmpty(args ...string) bool {
+	for _, a := range args {
+		if a != "" {
+			return true
+		}
+	}
+
+	return false
 }

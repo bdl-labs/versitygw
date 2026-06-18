@@ -15,7 +15,6 @@
 package utils
 
 import (
-	"bytes"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
@@ -26,14 +25,16 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/valyala/fasthttp"
+	signerV4 "github.com/versity/versitygw/aws/signer/v4"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3response"
@@ -57,6 +58,16 @@ func SetBucketNameValidationStrict(strict bool) {
 // maximum allowed size (2 KB) for all user-defined
 // object metadata combined, excluded the 'x-amz-meta-' prefix
 const maxMetadataSize = 2048
+
+func ValidateWebsiteRedirectLocation(location string) error {
+	if location == "" || strings.HasPrefix(location, "http://") ||
+		strings.HasPrefix(location, "https://") || strings.HasPrefix(location, "/") {
+		return nil
+	}
+
+	debuglogger.Logf("invalid website redirect location: %q", location)
+	return s3err.GetAPIError(s3err.ErrInvalidRedirectLocation)
+}
 
 // GetUserMetaData extracts user metadata from headers with the "x-amz-meta-" prefix.
 // Keys are normalized to lowercase and duplicate headers are merged as
@@ -94,7 +105,7 @@ func GetUserMetaData(headers *fasthttp.RequestHeader) (map[string]string, error)
 
 			if metadataSize > maxMetadataSize {
 				debuglogger.Logf("total meta headers size exceeded the maximum allowed: (size): %v, (max): %v", metadataSize, maxMetadataSize)
-				return nil, s3err.GetAPIError(s3err.ErrMetadataTooLarge)
+				return nil, s3err.GetMetadataTooLargeErr(metadataSize, maxMetadataSize)
 			}
 		}
 	}
@@ -115,7 +126,7 @@ func ExtractMetadataFromFields(fields map[string]string) (map[string]string, err
 		metadataSize += len(trimmedKey) + len(value)
 		if metadataSize > maxMetadataSize {
 			debuglogger.Logf("total meta headers size exceeded the maximum allowed: (size): %v, (max): %v", metadataSize, maxMetadataSize)
-			return nil, s3err.GetAPIError(s3err.ErrMetadataTooLarge)
+			return nil, s3err.GetMetadataTooLargeErr(metadataSize, maxMetadataSize)
 		}
 
 		metadata[trimmedKey] = value
@@ -124,28 +135,18 @@ func ExtractMetadataFromFields(fields map[string]string) (map[string]string, err
 	return metadata, nil
 }
 
-func createHttpRequestFromCtx(ctx *fiber.Ctx, signedHdrs []string, contentLength int64, streamBody bool) (*http.Request, error) {
+func createHttpRequestFromCtx(ctx fiber.Ctx, signedHdrs []string, contentLength int64) (*http.Request, error) {
 	req := ctx.Request()
-	var body io.Reader
-	if streamBody {
-		body = req.BodyStream()
-	} else {
-		body = bytes.NewReader(req.Body())
-	}
 
 	uri := ctx.OriginalURL()
 
-	httpReq, err := http.NewRequest(string(req.Header.Method()), uri, body)
+	httpReq, err := http.NewRequest(string(req.Header.Method()), uri, nil)
 	if err != nil {
 		return nil, errors.New("error in creating an http request")
 	}
 
-	// Set the request headers
-	for key, value := range req.Header.All() {
-		keyStr := string(key)
-		if includeHeader(keyStr, signedHdrs) {
-			httpReq.Header.Add(keyStr, string(value))
-		}
+	if err := addRequestHeadersFromCtx(ctx, httpReq, signedHdrs); err != nil {
+		return nil, err
 	}
 
 	// make sure all headers in the signed headers are present
@@ -179,14 +180,8 @@ var (
 	}
 )
 
-func createPresignedHttpRequestFromCtx(ctx *fiber.Ctx, signedHdrs []string, contentLength int64, streamBody bool) (*http.Request, error) {
+func createPresignedHttpRequestFromCtx(ctx fiber.Ctx, signedHdrs []string, contentLength int64) (*http.Request, error) {
 	req := ctx.Request()
-	var body io.Reader
-	if streamBody {
-		body = req.BodyStream()
-	} else {
-		body = bytes.NewReader(req.Body())
-	}
 
 	uri, _, _ := strings.Cut(ctx.OriginalURL(), "?")
 	isFirst := true
@@ -204,16 +199,12 @@ func createPresignedHttpRequestFromCtx(ctx *fiber.Ctx, signedHdrs []string, cont
 		}
 	}
 
-	httpReq, err := http.NewRequest(string(req.Header.Method()), uri, body)
+	httpReq, err := http.NewRequest(string(req.Header.Method()), uri, nil)
 	if err != nil {
 		return nil, errors.New("error in creating an http request")
 	}
-	// Set the request headers
-	for key, value := range req.Header.All() {
-		keyStr := string(key)
-		if includeHeader(keyStr, signedHdrs) {
-			httpReq.Header.Add(keyStr, string(value))
-		}
+	if err := addRequestHeadersFromCtx(ctx, httpReq, signedHdrs); err != nil {
+		return nil, err
 	}
 
 	// Check if Content-Length in signed headers
@@ -230,7 +221,7 @@ func createPresignedHttpRequestFromCtx(ctx *fiber.Ctx, signedHdrs []string, cont
 	return httpReq, nil
 }
 
-func SetMetaHeaders(ctx *fiber.Ctx, meta map[string]string) {
+func SetMetaHeaders(ctx fiber.Ctx, meta map[string]string) {
 	ctx.Response().Header.DisableNormalizing()
 	for key, val := range meta {
 		ctx.Response().Header.Set(fmt.Sprintf("x-amz-meta-%s", key), val)
@@ -279,14 +270,14 @@ func ParseMaxLimiter(limiter string, lt LimiterType) (int32, error) {
 			lt = LimiterTypeMaxKeys
 		}
 		debuglogger.Logf("invalid %s provided: %s\n", lt, limiter)
-		return 0, s3err.GetInvalidMaxLimiterErr(string(lt))
+		return 0, s3err.GetInvalidArgMaxLimiter(string(lt), limiter)
 	}
 
 	// max-buckets has distinct range rules and errors.
 	if lt == LimiterTypeMaxBuckets {
 		if num < 1 || num > int64(defaultMaxBuckets) {
 			debuglogger.Logf("invalid max-buckets: %v", num)
-			return 0, s3err.GetAPIError(s3err.ErrInvalidMaxBuckets)
+			return 0, s3err.GetInvalidArgumentErr(s3err.InvalidArgMaxBuckets, limiter)
 		}
 		return int32(num), nil
 	}
@@ -302,10 +293,10 @@ func ParseMaxLimiter(limiter string, lt LimiterType) (int32, error) {
 
 		// versions_max_keys uses the MaxKeys negative error.
 		if lt == LimiterTypeVersionsMaxKeys {
-			return 0, s3err.GetAPIError(s3err.ErrNegativeMaxKeys)
+			return 0, s3err.GetInvalidArgumentErr(s3err.InvalidArgNegativeMaxKeys, limiter)
 		}
 
-		return 0, s3err.GetNegativeMaxLimiterErr(string(lt))
+		return 0, s3err.GetInvalidArgNegativeMaxLimiter(string(lt), limiter)
 	}
 
 	// Clamp excessive limiters to defaultMaxLimiter.
@@ -320,17 +311,17 @@ type CustomHeader struct {
 	Value string
 }
 
-func SetResponseHeaders(ctx *fiber.Ctx, headers []CustomHeader) {
+func SetResponseHeaders(ctx fiber.Ctx, headers []CustomHeader) {
 	for _, header := range headers {
 		ctx.Set(header.Key, header.Value)
 	}
 }
 
 // Streams the response body by chunks
-func StreamResponseBody(ctx *fiber.Ctx, rdr io.ReadCloser, bodysize int) {
+func StreamResponseBody(ctx fiber.Ctx, rdr io.ReadCloser, bodysize int) {
 	// SetBodyStream will call Close() on the reader when the stream is done
 	// since rdr is a ReadCloser
-	ctx.Context().SetBodyStream(rdr, bodysize)
+	ctx.RequestCtx().SetBodyStream(rdr, bodysize)
 }
 
 func IsValidBucketName(bucket string) bool {
@@ -357,17 +348,36 @@ func IsValidBucketName(bucket string) bool {
 }
 
 func includeHeader(hdr string, signedHdrs []string) bool {
-	for _, shdr := range signedHdrs {
-		if strings.EqualFold(hdr, shdr) {
-			return true
+	return slices.ContainsFunc(signedHdrs, func(shdr string) bool {
+		return strings.EqualFold(hdr, shdr)
+	})
+}
+
+func addRequestHeadersFromCtx(ctx fiber.Ctx, httpReq *http.Request, signedHdrs []string) error {
+	headersNotSigned := []string{}
+	for key, value := range ctx.Request().Header.All() {
+		keyStr := string(key)
+		if includeHeader(keyStr, signedHdrs) || signerV4.IsIgnoredHeader(keyStr) {
+			httpReq.Header.Add(keyStr, string(value))
+			continue
+		}
+		if signerV4.IsRequiredSignedHeader(keyStr) {
+			lowerKey := strings.ToLower(keyStr)
+			headersNotSigned = append(headersNotSigned, lowerKey)
 		}
 	}
-	return false
+
+	if len(headersNotSigned) != 0 {
+		debuglogger.Logf("headers present in request but not included in SignedHeaders: %q", strings.Join(headersNotSigned, ", "))
+		return s3err.GetHeadersNotSignedErr(headersNotSigned)
+	}
+
+	return nil
 }
 
 // expiration time window
 // https://docs.aws.amazon.com/AmazonS3/latest/userguide/RESTAuthentication.html#RESTAuthenticationTimeStamp
-const timeExpirationSec = 15 * 60
+const timeExpirationSec = 15 * 60 // seconds
 
 func ValidateDate(date time.Time) error {
 	now := time.Now().UTC()
@@ -375,7 +385,7 @@ func ValidateDate(date time.Time) error {
 
 	// Checks the dates difference to be within allotted window
 	if diff > timeExpirationSec || diff < -timeExpirationSec {
-		return s3err.GetAPIError(s3err.ErrRequestTimeTooSkewed)
+		return s3err.GetRequestTimeTooSkewedErr(date.Format(iso8601Format), now.Format(time.RFC3339), timeExpirationSec*1000)
 	}
 
 	return nil
@@ -414,7 +424,7 @@ func FilterObjectAttributes(attrs map[s3response.ObjectAttributes]struct{}, outp
 	return output
 }
 
-func ParseObjectAttributes(ctx *fiber.Ctx) (map[s3response.ObjectAttributes]struct{}, error) {
+func ParseObjectAttributes(ctx fiber.Ctx) (map[s3response.ObjectAttributes]struct{}, error) {
 	attrs := map[s3response.ObjectAttributes]struct{}{}
 	var err error
 	for key, value := range ctx.Request().Header.All() {
@@ -427,7 +437,7 @@ func ParseObjectAttributes(ctx *fiber.Ctx) (map[s3response.ObjectAttributes]stru
 				attr := s3response.ObjectAttributes(a)
 				if !attr.IsValid() {
 					debuglogger.Logf("invalid object attribute: %v\n", attr)
-					err = s3err.GetAPIError(s3err.ErrInvalidObjectAttributes)
+					err = s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectAttributes, string(value))
 					break
 				}
 				attrs[attr] = struct{}{}
@@ -453,14 +463,18 @@ type objLockCfg struct {
 	LegalHoldStatus types.ObjectLockLegalHoldStatus
 }
 
-func ParsObjectLockHdrs(ctx *fiber.Ctx) (*objLockCfg, error) {
+func ParsObjectLockHdrs(ctx fiber.Ctx) (*objLockCfg, error) {
 	legalHoldHdr := ctx.Get("X-Amz-Object-Lock-Legal-Hold")
 	objLockModeHdr := ctx.Get("X-Amz-Object-Lock-Mode")
 	objLockDate := ctx.Get("X-Amz-Object-Lock-Retain-Until-Date")
 
-	if (objLockDate != "" && objLockModeHdr == "") || (objLockDate == "" && objLockModeHdr != "") {
-		debuglogger.Logf("one of 2 required params is missing: (lock date): %v, (lock mode): %v\n", objLockDate, objLockModeHdr)
-		return nil, s3err.GetAPIError(s3err.ErrObjectLockInvalidHeaders)
+	if objLockDate != "" && objLockModeHdr == "" {
+		debuglogger.Logf("the missing x-amz-object-lock-mode is required with x-amz-object-lock-retain-until-date")
+		return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgMissingObjectLockMode, "")
+	}
+	if objLockDate == "" && objLockModeHdr != "" {
+		debuglogger.Logf("the missing x-amz-object-lock-retain-until-date is required with x-amz-object-lock-mode")
+		return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgMissingObjectLockRetainDate, "")
 	}
 
 	var retainUntilDate time.Time
@@ -468,11 +482,11 @@ func ParsObjectLockHdrs(ctx *fiber.Ctx) (*objLockCfg, error) {
 		rDate, err := time.Parse(time.RFC3339, objLockDate)
 		if err != nil {
 			debuglogger.Logf("failed to parse retain until date: %v\n", err)
-			return nil, s3err.GetAPIError(s3err.ErrInvalidRetainUntilDate)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgRetainUntilDate, objLockDate)
 		}
 		if rDate.Before(time.Now()) {
 			debuglogger.Logf("expired retain until date: %v\n", rDate.Format(time.RFC3339))
-			return nil, s3err.GetAPIError(s3err.ErrPastObjectLockRetainDate)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgPastObjectLockRetainDate, objLockDate)
 		}
 		retainUntilDate = rDate
 	}
@@ -483,14 +497,14 @@ func ParsObjectLockHdrs(ctx *fiber.Ctx) (*objLockCfg, error) {
 		objLockMode != types.ObjectLockModeCompliance &&
 		objLockMode != types.ObjectLockModeGovernance {
 		debuglogger.Logf("invalid object lock mode: %v\n", objLockMode)
-		return nil, s3err.GetAPIError(s3err.ErrInvalidObjectLockMode)
+		return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectLockMode, objLockModeHdr)
 	}
 
 	legalHold := types.ObjectLockLegalHoldStatus(legalHoldHdr)
 
 	if legalHold != "" && legalHold != types.ObjectLockLegalHoldStatusOff && legalHold != types.ObjectLockLegalHoldStatusOn {
 		debuglogger.Logf("invalid object lock legal hold status: %v\n", legalHold)
-		return nil, s3err.GetAPIError(s3err.ErrInvalidLegalHoldStatus)
+		return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgLegalHoldStatus, legalHoldHdr)
 	}
 
 	return &objLockCfg{
@@ -535,7 +549,7 @@ func (cv ChecksumValues) Headers() string {
 
 // ParseCalculatedChecksumHeaders parses and validates x-amz-checksum-x header keys
 // e.g x-amz-checksum-crc32, x-amz-checksum-sha256 ...
-func ParseCalculatedChecksumHeaders(ctx *fiber.Ctx) (ChecksumValues, error) {
+func ParseCalculatedChecksumHeaders(ctx fiber.Ctx) (ChecksumValues, error) {
 	checksums := ChecksumValues{}
 
 	var hdrErr error
@@ -625,7 +639,7 @@ func ParseCalculatedChecksumFields(fields map[string]string) (ChecksumValues, er
 // ParseCompleteMpChecksumHeaders parses and validates
 // the 'CompleteMultipartUpload' x-amz-checksum-x headers
 // by supporting both 'checksum' and 'checksum-<part_length>' formats
-func ParseCompleteMpChecksumHeaders(ctx *fiber.Ctx) (ChecksumValues, error) {
+func ParseCompleteMpChecksumHeaders(ctx fiber.Ctx) (ChecksumValues, error) {
 	// first parse/validate 'x-amz-checksum-x' headers
 	checksums, err := ParseCalculatedChecksumHeaders(ctx)
 	if err != nil {
@@ -659,7 +673,7 @@ func ParseCompleteMpChecksumHeaders(ctx *fiber.Ctx) (ChecksumValues, error) {
 
 // ParseChecksumHeadersAndSdkAlgo parses/validates 'x-amz-sdk-checksum-algorithm' and
 // 'x-amz-checksum-x' precalculated request headers
-func ParseChecksumHeadersAndSdkAlgo(ctx *fiber.Ctx) (types.ChecksumAlgorithm, ChecksumValues, error) {
+func ParseChecksumHeadersAndSdkAlgo(ctx fiber.Ctx) (types.ChecksumAlgorithm, ChecksumValues, error) {
 	sdkAlgorithm := types.ChecksumAlgorithm(strings.ToUpper(ctx.Get("X-Amz-Sdk-Checksum-Algorithm")))
 	err := IsChecksumAlgorithmValid(sdkAlgorithm)
 	if err != nil {
@@ -848,7 +862,7 @@ func checkChecksumTypeAndAlgo(algo types.ChecksumAlgorithm, t types.ChecksumType
 }
 
 // Parses and validates the x-amz-checksum-algorithm and x-amz-checksum-type headers
-func ParseCreateMpChecksumHeaders(ctx *fiber.Ctx) (types.ChecksumAlgorithm, types.ChecksumType, error) {
+func ParseCreateMpChecksumHeaders(ctx fiber.Ctx) (types.ChecksumAlgorithm, types.ChecksumType, error) {
 	algo := types.ChecksumAlgorithm(strings.ToUpper(ctx.Get("x-amz-checksum-algorithm")))
 	if err := IsChecksumAlgorithmValid(algo); err != nil {
 		return "", "", err
@@ -928,25 +942,25 @@ func ParseTagging(data []byte, limit TagLimit) (map[string]string, error) {
 		// validate tag key length
 		if len(tag.Key) == 0 || len(tag.Key) > 128 {
 			debuglogger.Logf("tag key should 0 < tag.Key <= 128, key: %v", tag.Key)
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagKey, tag.Key, "")
 		}
 
 		// validate tag key string chars
 		if !tagRule.MatchString(tag.Key) {
 			debuglogger.Logf("invalid tag key: %s", tag.Key)
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagKey, tag.Key, "")
 		}
 
 		// validate tag value length
 		if len(tag.Value) > 256 {
 			debuglogger.Logf("invalid long tag value: (length): %v, (value): %v", len(tag.Value), tag.Value)
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagValue)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagValue, tag.Key, tag.Value)
 		}
 
 		// validate tag value string chars
 		if !tagRule.MatchString(tag.Value) {
 			debuglogger.Logf("invalid tag value: %s", tag.Value)
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagValue)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagValue, tag.Key, tag.Value)
 		}
 
 		// make sure there are no duplicate keys
@@ -1028,18 +1042,17 @@ func GetInt64(n *int64) int64 {
 }
 
 // ValidateCopySource parses and validates the copy-source
-func ValidateCopySource(copysource string) error {
-	var err error
-	copysource, err = url.QueryUnescape(copysource)
+func ValidateCopySource(input string) error {
+	copysource, err := url.QueryUnescape(input)
 	if err != nil {
-		debuglogger.Logf("invalid copy source encoding: %s", copysource)
-		return s3err.GetAPIError(s3err.ErrInvalidCopySourceEncoding)
+		debuglogger.Logf("invalid copy source encoding: %s", input)
+		return s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceEncoding, input)
 	}
 
 	bucket, rest, _ := strings.Cut(copysource, "/")
 	if !IsValidBucketName(bucket) {
 		debuglogger.Logf("invalid copy source bucket: %s", bucket)
-		return s3err.GetAPIError(s3err.ErrInvalidCopySourceBucket)
+		return s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceBucket, input)
 	}
 
 	// cut till the versionId as it's the only query param
@@ -1051,14 +1064,14 @@ func ValidateCopySource(copysource string) error {
 	// in the gateway
 	if !IsObjectNameValid(object) {
 		debuglogger.Logf("invalid copy source object: %s", object)
-		return s3err.GetAPIError(s3err.ErrInvalidCopySourceObject)
+		return s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceObject, object)
 	}
 
 	return nil
 }
 
 // GetQueryParam returns a pointer to the query parameter value if it exists
-func GetQueryParam(ctx *fiber.Ctx, key string) *string {
+func GetQueryParam(ctx fiber.Ctx, key string) *string {
 	value := ctx.Query(key)
 	if value == "" {
 		return nil
@@ -1076,9 +1089,9 @@ func ApplyOverride(original, override *string) *string {
 
 // GenerateObjectLocation generates the object location path-styled or host-styled
 // depending on the gateway configuration
-func GenerateObjectLocation(ctx *fiber.Ctx, virtualDomain, bucket, object string) string {
-	scheme := ctx.Protocol()
-	host := ctx.Hostname()
+func GenerateObjectLocation(ctx fiber.Ctx, virtualDomain, bucket, object string) string {
+	scheme := ctx.Scheme()
+	host := ctx.Host()
 
 	// escape the object name
 	obj := url.PathEscape(object)
@@ -1131,4 +1144,22 @@ func NewTLSListener(network string, address string, getCertificateFunc func(*tls
 		return nil, err
 	}
 	return tls.NewListener(ln, config), nil
+}
+
+func DetectResourceType(ctx fiber.Ctx) s3err.ResourceType {
+	path := ctx.Path()
+	if path == "" || path == "/" {
+		return s3err.ResourceTypeService
+	}
+
+	path = strings.TrimPrefix(path, "/")
+	_, rest, found := strings.Cut(path, "/")
+	if !found {
+		return s3err.ResourceTypeBucket
+	}
+	if rest == "" {
+		return s3err.ResourceTypeBucket
+	}
+
+	return s3err.ResourceTypeObject
 }

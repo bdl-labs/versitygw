@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
@@ -41,7 +41,7 @@ type RootUserConfig struct {
 func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, streamBody, requireContentSha256, allowDefaultRegion bool) fiber.Handler {
 	acct := accounts{root: root, iam: iam}
 
-	return func(ctx *fiber.Ctx) error {
+	return func(ctx fiber.Ctx) error {
 		// The bucket is public, no need to check this signature
 		if utils.ContextKeyPublicBucket.IsSet(ctx) {
 			return nil
@@ -53,6 +53,10 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 
 		// Check X-Amz-Date header
 		date := ctx.Get("X-Amz-Date")
+		if date == "" {
+			// Fall back to `Date` header if `X-Amz-Date` is not set
+			date = ctx.Get("Date")
+		}
 		if date == "" {
 			return s3err.GetAPIError(s3err.ErrMissingDateHeader)
 		}
@@ -71,7 +75,7 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 
 		authorization := ctx.Get("Authorization")
 		if authorization == "" {
-			return s3err.GetAPIError(s3err.ErrInvalidAuthHeader)
+			return s3err.GetInvalidArgumentErr(s3err.InvalidArgAuthHeader, authorization)
 		}
 
 		authData, err := utils.ParseAuthorization(authorization)
@@ -87,7 +91,7 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 
 		account, err := acct.getAccount(authData.Access)
 		if err == auth.ErrNoSuchUser {
-			return s3err.GetAPIError(s3err.ErrInvalidAccessKeyID)
+			return s3err.GetInvalidAccessKeyIdErr(authData.Access)
 		}
 		if err != nil {
 			return err
@@ -113,29 +117,43 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 		if requireContentSha256 && hashPayload == "" {
 			return s3err.GetAPIError(s3err.ErrMissingContentSha256)
 		}
-		if !utils.IsValidSh256PayloadHeader(hashPayload) {
-			return s3err.GetAPIError(s3err.ErrInvalidSHA256Paylod)
+		if !utils.IsValidSha256PayloadHeader(hashPayload) {
+			return s3err.GetInvalidArgumentErr(s3err.InvalidArgSHA256Payload, hashPayload)
 		}
 		// the streaming payload type is allowed only in PutObject and UploadPart
 		// e.g. STREAMING-UNSIGNED-PAYLOAD-TRAILER
 		if !streamBody && utils.IsStreamingPayload(hashPayload) {
 			return s3err.GetAPIError(s3err.ErrInvalidSHA256PayloadUsage)
 		}
-		if streamBody {
-			// for streaming PUT actions, authorization is deferred
-			// until end of stream due to need to get length and
-			// checksum of the stream to validate authorization
-			wrapBodyReader(ctx, func(r io.Reader) io.Reader {
-				return utils.NewAuthReader(ctx, r, authData, account.Secret)
-			})
 
+		canonicalString, err := utils.CheckValidSignature(ctx, authData, account.Secret, hashPayload, tdate, contentLength)
+		if err != nil {
+			return err
+		}
+
+		if streamBody {
+			// store the request body stream reader in context locals
+			wrapBodyReader(ctx, func(r io.Reader) io.Reader {
+				return r
+			})
+			// wrap the io.Reader with sha256 hex hash reader, if x-amz-content-sha256
+			// is the content sha256 - not a special payload type
+			if !utils.IsSpecialPayload(hashPayload) {
+				wrapBodyReader(ctx, func(r io.Reader) io.Reader {
+					var cr io.Reader
+					cr, err = utils.NewHashReader(r, hashPayload, utils.HashTypeSha256Hex)
+					return cr
+				})
+				if err != nil {
+					return err
+				}
+			}
 			// wrap the io.Reader with ChunkReader if x-amz-content-sha256
 			// provide chunk encoding value
 			if utils.IsStreamingPayload(hashPayload) {
-				var err error
 				wrapBodyReader(ctx, func(r io.Reader) io.Reader {
 					var cr io.Reader
-					cr, err = utils.NewChunkReader(ctx, r, authData, account.Secret, tdate)
+					cr, err = utils.NewChunkReader(ctx, r, authData, canonicalString, account.Secret, tdate)
 					return cr
 				})
 				if err != nil {
@@ -152,7 +170,7 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 			// the upload limit for big data actions: PutObject, UploadPart
 			// is 5gb. If the size exceeds the limit, return 'EntityTooLarge' err
 			if contentLength > maxObjSizeLimit {
-				return s3err.GetAPIError(s3err.ErrEntityTooLarge)
+				return s3err.GetEntityTooLargeErr(contentLength, maxObjSizeLimit)
 			}
 
 			return nil
@@ -160,18 +178,13 @@ func VerifyV4Signature(root RootUserConfig, iam auth.IAMService, region string, 
 
 		if !utils.IsSpecialPayload(hashPayload) {
 			// Calculate the hash of the request payload
-			hashedPayload := sha256.Sum256(ctx.Body())
+			hashedPayload := sha256.Sum256(ctx.BodyRaw())
 			hexPayload := hex.EncodeToString(hashedPayload[:])
 
 			// Compare the calculated hash with the hash provided
 			if hashPayload != hexPayload {
-				return s3err.GetAPIError(s3err.ErrContentSHA256Mismatch)
+				return s3err.GetContentSHA256MismatchErr(hashPayload, hexPayload)
 			}
-		}
-
-		err = utils.CheckValidSignature(ctx, authData, account.Secret, hashPayload, tdate, contentLength, false)
-		if err != nil {
-			return err
 		}
 
 		return nil

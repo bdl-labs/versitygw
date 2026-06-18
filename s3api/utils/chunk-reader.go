@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/s3err"
 )
@@ -100,7 +100,7 @@ func (c checksumType) isValid() bool {
 }
 
 // Extracts and validates the checksum type from the 'X-Amz-Trailer' header
-func ExtractChecksumType(ctx *fiber.Ctx) (checksumType, error) {
+func ExtractChecksumType(ctx fiber.Ctx) (checksumType, error) {
 	trailer := ctx.Get("X-Amz-Trailer")
 	chType := checksumType(strings.ToLower(trailer))
 	if chType != "" && !chType.isValid() {
@@ -116,15 +116,15 @@ func IsSpecialPayload(str string) bool {
 	return specialValues[payloadType(str)]
 }
 
-// IsValidSh256PayloadHeader checks if the provided x-amz-content-sha256
-// paylod header is valid special paylod type or a valid sh256 hash
-func IsValidSh256PayloadHeader(value string) bool {
+// IsValidSha256PayloadHeader checks if the provided x-amz-content-sha256
+// payload header is valid special payload type or a valid sh256 hash
+func IsValidSha256PayloadHeader(value string) bool {
 	// empty header is valid
 	if value == "" {
 		return true
 	}
 	// special values are valid
-	if specialValues[payloadType(value)] {
+	if IsSpecialPayload(value) {
 		return true
 	}
 
@@ -162,7 +162,7 @@ func IsUnsignedPaylod(hash string) bool {
 	return hash == string(payloadTypeUnsigned)
 }
 
-// IsChunkEncoding checks for streaming/unsigned authorization types
+// IsStreamingPayload checks for streaming/unsigned authorization types
 func IsStreamingPayload(str string) bool {
 	pt := payloadType(str)
 	return pt == payloadTypeStreamingUnsignedTrailer ||
@@ -172,7 +172,7 @@ func IsStreamingPayload(str string) bool {
 
 // ParseDecodedContentLength extracts and validates the
 // 'x-amz-decoded-content-length' from fiber context
-func ParseDecodedContentLength(ctx *fiber.Ctx) (int64, error) {
+func ParseDecodedContentLength(ctx fiber.Ctx) (int64, error) {
 	decContLengthStr := ctx.Get("X-Amz-Decoded-Content-Length")
 	if decContLengthStr == "" {
 		debuglogger.Logf("missing required header 'X-Amz-Decoded-Content-Length'")
@@ -186,13 +186,13 @@ func ParseDecodedContentLength(ctx *fiber.Ctx) (int64, error) {
 
 	if decContLength > maxObjSizeLimit {
 		debuglogger.Logf("the object size exceeds the allowed limit: (size): %v, (limit): %v", decContLength, int64(maxObjSizeLimit))
-		return 0, s3err.GetAPIError(s3err.ErrEntityTooLarge)
+		return 0, s3err.GetEntityTooLargeErr(decContLength, maxObjSizeLimit)
 	}
 
 	return decContLength, nil
 }
 
-func NewChunkReader(ctx *fiber.Ctx, r io.Reader, authdata AuthData, secret string, date time.Time) (io.Reader, error) {
+func NewChunkReader(ctx fiber.Ctx, r io.Reader, authdata AuthData, canonicalString, secret string, date time.Time) (io.Reader, error) {
 	cLength, err := ParseDecodedContentLength(ctx)
 	if err != nil {
 		return nil, err
@@ -214,9 +214,9 @@ func NewChunkReader(ctx *fiber.Ctx, r io.Reader, authdata AuthData, secret strin
 	case payloadTypeStreamingUnsignedTrailer:
 		return NewUnsignedChunkReader(r, checksumType, cLength)
 	case payloadTypeStreamingSignedTrailer:
-		return NewSignedChunkReader(r, authdata, secret, date, checksumType, true, cLength)
+		return NewSignedChunkReader(r, authdata, canonicalString, secret, date, checksumType, true, cLength)
 	case payloadTypeStreamingSigned:
-		return NewSignedChunkReader(r, authdata, secret, date, "", false, cLength)
+		return NewSignedChunkReader(r, authdata, canonicalString, secret, date, "", false, cLength)
 	// return not supported for:
 	// - STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD
 	// - STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER

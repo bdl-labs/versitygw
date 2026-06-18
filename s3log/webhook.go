@@ -26,7 +26,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
@@ -57,7 +57,7 @@ func InitWebhookLogger(url string) (AuditLogger, error) {
 }
 
 // Log sends log message to webhook
-func (wl *WebhookLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMeta) {
+func (wl *WebhookLogger) Log(ctx fiber.Ctx, err error, body []byte, meta LogMeta) {
 	wl.mu.Lock()
 	defer wl.mu.Unlock()
 
@@ -76,17 +76,17 @@ func (wl *WebhookLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMet
 	if !ok {
 		startTime = time.Now()
 	}
-	tlsConnState := ctx.Context().TLSConnectionState()
+	tlsConnState := ctx.RequestCtx().TLSConnectionState()
 	if tlsConnState != nil {
 		lf.CipherSuite = tls.CipherSuiteName(tlsConnState.CipherSuite)
 		lf.TLSVersion = getTLSVersionName(tlsConnState.Version)
 	}
 
 	if err != nil {
-		serr, ok := err.(s3err.APIError)
+		serr, ok := err.(s3err.S3Error)
 		if ok {
-			errorCode = serr.Code
-			httpStatus = serr.HTTPStatusCode
+			errorCode = serr.BaseError().Code
+			httpStatus = serr.StatusCode()
 		} else {
 			errorCode = err.Error()
 			httpStatus = 500
@@ -103,7 +103,6 @@ func (wl *WebhookLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMet
 	lf.Time = time.Now()
 	lf.RemoteIP = ctx.IP()
 	lf.Requester = access
-	lf.RequestID = genID()
 	lf.Operation = meta.Action
 	lf.Key = object
 	lf.RequestURI = reqURI
@@ -116,12 +115,14 @@ func (wl *WebhookLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMet
 	lf.Referer = ctx.Get("Referer")
 	lf.UserAgent = ctx.Get("User-Agent")
 	lf.VersionID = ctx.Query("versionId")
-	lf.HostID = ctx.Get("X-Amz-Id-2")
 	lf.SignatureVersion = "SigV4"
 	lf.AuthenticationType = "AuthHeader"
 	lf.HostHeader = fmt.Sprintf("s3.%v.amazonaws.com", utils.ContextKeyRegion.Get(ctx).(string))
 	lf.AccessPointARN = fmt.Sprintf("arn:aws:s3:::%v", strings.Join(path, "/"))
 	lf.AclRequired = "Yes"
+	requestID, hostID := utils.EnsureRequestIDs(ctx)
+	lf.RequestID = requestID
+	lf.HostID = hostID
 
 	wl.sendLog(lf)
 }
@@ -130,11 +131,13 @@ func (wl *WebhookLogger) sendLog(lf LogFields) {
 	jsonLog, err := json.Marshal(lf)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to parse the log data: %v\n", err.Error())
+		return
 	}
 
 	req, err := http.NewRequest(http.MethodPost, wl.url, bytes.NewReader(jsonLog))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
 

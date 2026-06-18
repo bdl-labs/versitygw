@@ -18,11 +18,22 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
+	"html"
 	"net/http"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
+
+// S3Error is the interface implemented by all S3 error types.
+// It allows centralized error handling while supporting per-error-type XML fields.
+type S3Error interface {
+	error
+	StatusCode() int
+	BaseError() APIError
+	XMLBody(requestID, hostID string) []byte
+	HTMLBody(requestID, hostID string) []byte
+}
 
 // APIError structure
 type APIError struct {
@@ -31,17 +42,8 @@ type APIError struct {
 	HTTPStatusCode int
 }
 
-// APIErrorResponse - error response format
-type APIErrorResponse struct {
-	XMLName    xml.Name `xml:"Error" json:"-"`
-	Code       string
-	Message    string
-	Key        string `xml:"Key,omitempty" json:"Key,omitempty"`
-	BucketName string `xml:"BucketName,omitempty" json:"BucketName,omitempty"`
-	Resource   string
-	Region     string `xml:"Region,omitempty" json:"Region,omitempty"`
-	RequestID  string `xml:"RequestId" json:"RequestId"`
-	HostID     string `xml:"HostId" json:"HostId"`
+func (e APIError) BaseError() APIError {
+	return e
 }
 
 func (A APIError) Error() string {
@@ -50,6 +52,27 @@ func (A APIError) Error() string {
 	e := xml.NewEncoder(&bytesBuffer)
 	_ = e.Encode(A)
 	return bytesBuffer.String()
+}
+
+func (e APIError) StatusCode() int { return e.HTTPStatusCode }
+
+func (e APIError) XMLBody(requestID, hostID string) []byte {
+	return encodeResponse(struct {
+		XMLName   xml.Name `xml:"Error"`
+		Code      string
+		Message   string
+		RequestID string `xml:"RequestId,omitempty"`
+		HostID    string `xml:"HostId,omitempty"`
+	}{
+		Code:      e.Code,
+		Message:   e.Description,
+		RequestID: requestID,
+		HostID:    hostID,
+	})
+}
+
+func (e APIError) HTMLBody(requestID, hostID string) []byte {
+	return e.encodeHTMLResponse(requestID, hostID)
 }
 
 // ErrorCode type of error status.
@@ -76,48 +99,28 @@ const (
 	ErrInvalidBucketName
 	ErrInvalidDigest
 	ErrBadDigest
-	ErrInvalidMaxBuckets
-	ErrNegativeMaxKeys
-	ErrInvalidObjectAttributes
 	ErrInvalidPart
-	ErrInvalidPartNumber
 	ErrInvalidPartNumberRange
 	ErrRangeAndPartNumber
 	ErrInvalidPartOrder
-	ErrInvalidCompleteMpPartNumber
 	ErrInternalError
 	ErrNonEmptyRequestBody
 	ErrIncompleteBody
 	ErrInvalidCopyDest
-	ErrInvalidCopySourceRange
-	ErrInvalidCopySourceBucket
-	ErrInvalidCopySourceObject
-	ErrInvalidCopySourceEncoding
 	ErrInvalidTagKey
 	ErrInvalidTagValue
 	ErrDuplicateTagKey
 	ErrBucketTaggingLimited
 	ErrObjectTaggingLimited
 	ErrCannotParseHTTPRequest
-	ErrInvalidURLEncodedTagging
-	ErrInvalidAuthHeader
-	ErrUnsupportedAuthorizationType
 	ErrMalformedPOSTRequest
-	ErrPOSTFileRequired
-	ErrPostPolicyConditionInvalidFormat
 	ErrEntityTooSmall
 	ErrEntityTooLarge
-	ErrMissingFields
-	ErrMissingCredTag
 	ErrMalformedXML
 	ErrMalformedCredentialDate
-	ErrMissingSignHeadersTag
-	ErrMissingSignTag
-	ErrUnsignedHeaders
 	ErrExpiredPresignRequest
 	ErrSignatureDoesNotMatch
 	ErrContentSHA256Mismatch
-	ErrInvalidSHA256Paylod
 	ErrInvalidSHA256PayloadUsage
 	ErrUnsupportedAnonymousSignedStreaming
 	ErrMissingContentLength
@@ -127,7 +130,6 @@ const (
 	ErrMissingDateHeader
 	ErrGetUploadsWithKey
 	ErrVersionsWithKey
-	ErrCopySourceNotAllowed
 	ErrInvalidRequest
 	ErrAuthNotSetup
 	ErrNotImplemented
@@ -141,14 +143,8 @@ const (
 	ErrMissingObjectLockConfigurationNoSpaces
 	ErrObjectLockConfigurationNotAllowed
 	ErrObjectLocked
-	ErrInvalidRetainUntilDate
-	ErrPastObjectLockRetainDate
-	ErrObjectLockInvalidRetentionPeriod
-	ErrInvalidLegalHoldStatus
-	ErrInvalidObjectLockMode
 	ErrNoSuchBucketPolicy
 	ErrBucketTaggingNotFound
-	ErrObjectLockInvalidHeaders
 	ErrObjectAttributesInvalidHeader
 	ErrRequestTimeTooSkewed
 	ErrInvalidBucketAclWithObjectOwnership
@@ -158,10 +154,7 @@ const (
 	ErrMalformedACL
 	ErrUnexpectedContent
 	ErrMissingSecurityHeader
-	ErrInvalidMetadataDirective
-	ErrInvalidTaggingDirective
 	ErrKeyTooLong
-	ErrInvalidVersionId
 	ErrNoSuchVersion
 	ErrSuspendedVersioningNotAllowed
 	ErrMissingRequestBody
@@ -170,26 +163,28 @@ const (
 	ErrChecksumRequired
 	ErrMissingContentSha256
 	ErrInvalidChecksumAlgorithm
-	ErrInvalidChecksumPart
 	ErrChecksumTypeWithAlgo
 	ErrInvalidChecksumHeader
 	ErrTrailerHeaderNotSupported
 	ErrBadRequest
-	ErrMissingUploadId
-	ErrInvalidUploadIdMarker
 	ErrNoSuchCORSConfiguration
 	ErrCORSForbidden
 	ErrMissingCORSOrigin
 	ErrCORSIsNotEnabled
+	ErrNoSuchWebsiteConfiguration
+	ErrInvalidWebsiteRedirectProtocol
+	ErrInvalidRedirectLocation
+	ErrBothReplaceKeyAndPrefix
+	ErrMaxMessageLengthExceeded
 	ErrNotModified
 	ErrInvalidLocationConstraint
-	ErrInvalidArgument
 	ErrMalformedTrailer
 	ErrInvalidChunkSize
 	ErrSlowDown
 	ErrMetadataTooLarge
-	ErrOnlyAws4HmacSha256
-	ErrInvalidDateHeader
+	ErrRequestHeaderSectionTooLarge
+	ErrUnsupportedAuthorizationMechanism
+	ErrNoBucketInRequest
 
 	// Non-AWS errors
 	ErrExistingObjectIsDirectory
@@ -287,21 +282,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "The Content-MD5 you specified did not match what we received.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
-	ErrInvalidMaxBuckets: {
-		Code:           "InvalidArgument",
-		Description:    "Argument max-buckets must be an integer between 1 and 10000.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrNegativeMaxKeys: {
-		Code:           "InvalidArgument",
-		Description:    "max-keys cannot be negative",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidObjectAttributes: {
-		Code:           "InvalidArgument",
-		Description:    "Invalid attribute name specified.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
 	ErrNoSuchBucket: {
 		Code:           "NoSuchBucket",
 		Description:    "The specified bucket does not exist.",
@@ -337,11 +317,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "One or more of the specified parts could not be found.  The part may not have been uploaded, or the specified entity tag may not match the part's entity tag.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
-	ErrInvalidPartNumber: {
-		Code:           "InvalidArgument",
-		Description:    "Part number must be an integer between 1 and 10000, inclusive.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
 	ErrInvalidPartNumberRange: {
 		Code:           "InvalidPartNumber",
 		Description:    "The requested partnumber is not satisfiable.",
@@ -357,34 +332,9 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "The list of parts was not in ascending order. Parts must be ordered by part number.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
-	ErrInvalidCompleteMpPartNumber: {
-		Code:           "InvalidArgument",
-		Description:    "PartNumber must be >= 1",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
 	ErrInvalidCopyDest: {
 		Code:           "InvalidRequest",
 		Description:    "This copy request is illegal because it is trying to copy an object to itself without changing the object's metadata, storage class, website redirect location or encryption attributes.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidCopySourceRange: {
-		Code:           "InvalidArgument",
-		Description:    "The x-amz-copy-source-range value must be of the form bytes=first-last where first and last are the zero-based offsets of the first and last bytes to copy",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidCopySourceBucket: {
-		Code:           "InvalidArgument",
-		Description:    "Invalid copy source bucket name",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidCopySourceObject: {
-		Code:           "InvalidArgument",
-		Description:    "Invalid copy source object key",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidCopySourceEncoding: {
-		Code:           "InvalidArgument",
-		Description:    "Invalid copy source encoding",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrInvalidTagKey: {
@@ -417,40 +367,15 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "An error occurred when parsing the HTTP request.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
-	ErrInvalidURLEncodedTagging: {
-		Code:           "InvalidArgument",
-		Description:    "The header 'x-amz-tagging' shall be encoded as UTF-8 then URLEncoded URL query parameters without tag name duplicates.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
 	ErrMalformedXML: {
 		Code:           "MalformedXML",
 		Description:    "The XML you provided was not well-formed or did not validate against our published schema.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidAuthHeader: {
-		Code:           "InvalidArgument",
-		Description:    "Authorization header is invalid -- one and only one ' ' (space) required.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrUnsupportedAuthorizationType: {
-		Code:           "InvalidArgument",
-		Description:    "Unsupported Authorization Type",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrMalformedPOSTRequest: {
 		Code:           "MalformedPOSTRequest",
 		Description:    "The body of your POST request is not well-formed multipart/form-data.",
 		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrPOSTFileRequired: {
-		Code:           "InvalidArgument",
-		Description:    "POST requires exactly one file upload per request.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrPostPolicyConditionInvalidFormat: {
-		Code:           "PostPolicyInvalidKeyName",
-		Description:    "Invalid according to Policy: Policy Condition failed.",
-		HTTPStatusCode: http.StatusForbidden,
 	},
 	ErrEntityTooSmall: {
 		Code:           "EntityTooSmall",
@@ -460,31 +385,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 	ErrEntityTooLarge: {
 		Code:           "EntityTooLarge",
 		Description:    "Your proposed upload exceeds the maximum allowed object size.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrMissingFields: {
-		Code:           "MissingFields",
-		Description:    "Missing fields in request.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrMissingCredTag: {
-		Code:           "InvalidRequest",
-		Description:    "Missing Credential field for this request.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrMissingSignHeadersTag: {
-		Code:           "InvalidArgument",
-		Description:    "Signature header missing SignedHeaders field.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrMissingSignTag: {
-		Code:           "AccessDenied",
-		Description:    "Signature header missing Signature field.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrUnsignedHeaders: {
-		Code:           "AccessDenied",
-		Description:    "There were headers present in the request which were not signed.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrExpiredPresignRequest: {
@@ -510,11 +410,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 	ErrContentSHA256Mismatch: {
 		Code:           "XAmzContentSHA256Mismatch",
 		Description:    "The provided 'x-amz-content-sha256' header does not match what was computed.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidSHA256Paylod: {
-		Code:           "InvalidArgument",
-		Description:    "x-amz-content-sha256 must be UNSIGNED-PAYLOAD, STREAMING-UNSIGNED-PAYLOAD-TRAILER, STREAMING-AWS4-HMAC-SHA256-PAYLOAD, STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER, STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD, STREAMING-AWS4-ECDSA-P256-SHA256-PAYLOAD-TRAILER or a valid sha256 value.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrInvalidSHA256PayloadUsage: {
@@ -550,11 +445,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 	ErrVersionsWithKey: {
 		Code:           "InvalidRequest",
 		Description:    "There is no such thing as the ?versions sub-resource for a key",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrCopySourceNotAllowed: {
-		Code:           "InvalidArgument",
-		Description:    "You can only specify a copy source header for copy requests.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrInvalidRequest: {
@@ -622,31 +512,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "Access Denied because object protected by object lock.",
 		HTTPStatusCode: http.StatusForbidden,
 	},
-	ErrInvalidRetainUntilDate: {
-		Code:           "InvalidArgument",
-		Description:    "The retain until date must be provided in ISO 8601 format",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrPastObjectLockRetainDate: {
-		Code:           "InvalidArgument",
-		Description:    "The retain until date must be in the future!",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrObjectLockInvalidRetentionPeriod: {
-		Code:           "InvalidArgument",
-		Description:    "Default retention period must be a positive integer value.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidLegalHoldStatus: {
-		Code:           "InvalidArgument",
-		Description:    "Legal Hold must be either of 'ON' or 'OFF'",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidObjectLockMode: {
-		Code:           "InvalidArgument",
-		Description:    "Unknown wormMode directive.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
 	ErrNoSuchBucketPolicy: {
 		Code:           "NoSuchBucketPolicy",
 		Description:    "The bucket policy does not exist.",
@@ -656,11 +521,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Code:           "NoSuchTagSet",
 		Description:    "The TagSet does not exist.",
 		HTTPStatusCode: http.StatusNotFound,
-	},
-	ErrObjectLockInvalidHeaders: {
-		Code:           "InvalidRequest",
-		Description:    "x-amz-object-lock-retain-until-date and x-amz-object-lock-mode must both be supplied.",
-		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrObjectAttributesInvalidHeader: {
 		Code:           "InvalidRequest",
@@ -707,21 +567,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "Your request was missing a required header.",
 		HTTPStatusCode: http.StatusNotFound,
 	},
-	ErrInvalidMetadataDirective: {
-		Code:           "InvalidArgument",
-		Description:    "Unknown metadata directive.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidTaggingDirective: {
-		Code:           "InvalidArgument",
-		Description:    "Unknown tagging directive.",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidVersionId: {
-		Code:           "InvalidArgument",
-		Description:    "Invalid version id specified",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
 	ErrKeyTooLong: {
 		Code:           "KeyTooLongError",
 		Description:    "Your key is too long.",
@@ -767,11 +612,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "Checksum algorithm provided is unsupported. Please try again with any of the valid types: [CRC32, CRC32C, CRC64NVME, MD5, SHA1, SHA256, SHA512, XXHASH128, XXHASH3, XXHASH64]",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
-	ErrInvalidChecksumPart: {
-		Code:           "InvalidArgument",
-		Description:    "Invalid Base64 or multiple checksums present in request",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
 	ErrChecksumTypeWithAlgo: {
 		Code:           "InvalidRequest",
 		Description:    "The x-amz-checksum-type header can only be used with the x-amz-checksum-algorithm header.",
@@ -790,16 +630,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 	ErrBadRequest: {
 		Code:           "400",
 		Description:    "Bad Request",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrMissingUploadId: {
-		Code:           "InvalidArgument",
-		Description:    "This operation does not accept partNumber without uploadId",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidUploadIdMarker: {
-		Code:           "InvalidArgument",
-		Description:    "Invalid uploadId marker",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrNoSuchCORSConfiguration: {
@@ -822,6 +652,31 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		Description:    "CORSResponse: CORS is not enabled for this bucket.",
 		HTTPStatusCode: http.StatusForbidden,
 	},
+	ErrNoSuchWebsiteConfiguration: {
+		Code:           "NoSuchWebsiteConfiguration",
+		Description:    "The specified bucket does not have a website configuration",
+		HTTPStatusCode: http.StatusNotFound,
+	},
+	ErrInvalidWebsiteRedirectProtocol: {
+		Code:           "InvalidRequest",
+		Description:    "Invalid protocol, protocol can be http or https. If not defined the protocol will be selected automatically.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrInvalidRedirectLocation: {
+		Code:           "InvalidRedirectLocation",
+		Description:    "The website redirect location must have a prefix of 'http://' or 'https://' or '/'.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrBothReplaceKeyAndPrefix: {
+		Code:           "InvalidRequest",
+		Description:    "You can only define ReplaceKeyPrefix or ReplaceKey but not both.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrMaxMessageLengthExceeded: {
+		Code:           "MaxMessageLengthExceeded",
+		Description:    "Your request was too big.",
+		HTTPStatusCode: http.StatusBadRequest,
+	},
 	ErrNotModified: {
 		Code:           "NotModified",
 		Description:    "Not Modified",
@@ -830,11 +685,6 @@ var errorCodeResponse = map[ErrorCode]APIError{
 	ErrInvalidLocationConstraint: {
 		Code:           "InvalidLocationConstraint",
 		Description:    "The specified location-constraint is not valid",
-		HTTPStatusCode: http.StatusBadRequest,
-	},
-	ErrInvalidArgument: {
-		Code:           "InvalidArgument",
-		Description:    "",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
 	ErrMalformedTrailer: {
@@ -853,20 +703,24 @@ var errorCodeResponse = map[ErrorCode]APIError{
 		HTTPStatusCode: http.StatusServiceUnavailable,
 	},
 	ErrMetadataTooLarge: {
-		// TODO: should have 'Size' and 'MaxSizeAllowed' properties
 		Code:           "MetadataTooLarge",
 		Description:    "Your metadata headers exceed the maximum allowed metadata size",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
-	ErrOnlyAws4HmacSha256: {
-		Code:           "InvalidArgument",
-		Description:    "Only AWS4-HMAC-SHA256 is supported",
+	ErrRequestHeaderSectionTooLarge: {
+		Code:           "RequestHeaderSectionTooLarge",
+		Description:    "Your request header section exceeds the maximum allowed size.",
 		HTTPStatusCode: http.StatusBadRequest,
 	},
-	ErrInvalidDateHeader: {
-		Code:           "InvalidArgument",
-		Description:    "X-Amz-Date must be formated via ISO8601 Long format",
+	ErrUnsupportedAuthorizationMechanism: {
+		Code:           "InvalidRequest",
+		Description:    "The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.",
 		HTTPStatusCode: http.StatusBadRequest,
+	},
+	ErrNoBucketInRequest: {
+		Code:           "WebsiteRedirect",
+		Description:    "Request does not contain a bucket name.",
+		HTTPStatusCode: http.StatusMovedPermanently,
 	},
 
 	// non aws errors
@@ -954,21 +808,6 @@ func GetAPIError(code ErrorCode) APIError {
 	return errorCodeResponse[code]
 }
 
-// getErrorResponse gets in standard error and resource value and
-// provides a encodable populated response values
-func GetAPIErrorResponse(err APIError, resource, requestID, hostID string) []byte {
-	return encodeResponse(APIErrorResponse{
-		Code:       err.Code,
-		Message:    err.Description,
-		BucketName: "",
-		Key:        "",
-		Resource:   resource,
-		Region:     "",
-		RequestID:  requestID,
-		HostID:     hostID,
-	})
-}
-
 // Encodes the response headers into XML format.
 func encodeResponse(response any) []byte {
 	var bytesBuffer bytes.Buffer
@@ -976,6 +815,42 @@ func encodeResponse(response any) []byte {
 	e := xml.NewEncoder(&bytesBuffer)
 	e.Encode(response)
 	return bytesBuffer.Bytes()
+}
+
+type ErrorField struct {
+	Name  string
+	Value any
+}
+
+func (e APIError) encodeHTMLResponse(requestID, hostID string, fields ...ErrorField) []byte {
+	status := fmt.Sprintf("%d %s", e.HTTPStatusCode, http.StatusText(e.HTTPStatusCode))
+
+	builder := &strings.Builder{}
+	builder.WriteString("<html>\n")
+	builder.WriteString("<head><title>")
+	builder.WriteString(html.EscapeString(status))
+	builder.WriteString("</title></head>\n<body>\n<h1>")
+	builder.WriteString(html.EscapeString(status))
+	builder.WriteString("</h1>\n<ul>\n")
+
+	writeHTMLErrorField(builder, "Code", e.Code)
+	writeHTMLErrorField(builder, "Message", e.Description)
+	for _, field := range fields {
+		writeHTMLErrorField(builder, field.Name, field.Value)
+	}
+	writeHTMLErrorField(builder, "RequestId", requestID)
+	writeHTMLErrorField(builder, "HostId", hostID)
+
+	builder.WriteString("</ul>\n<hr/>\n</body>\n</html>\n")
+	return []byte(builder.String())
+}
+
+func writeHTMLErrorField(builder *strings.Builder, name string, value any) {
+	builder.WriteString("<li>")
+	builder.WriteString(html.EscapeString(name))
+	builder.WriteString(": ")
+	builder.WriteString(html.EscapeString(fmt.Sprint(value)))
+	builder.WriteString("</li>\n")
 }
 
 // Returns invalid checksum error with the provided header in the error description
@@ -1055,14 +930,6 @@ func GetInvalidMpObjectSizeErr(val string) APIError {
 	}
 }
 
-func CreateExceedingRangeErr(objSize int64) APIError {
-	return APIError{
-		Code:           "InvalidArgument",
-		Description:    fmt.Sprintf("Range specified is not valid for source object of size: %d", objSize),
-		HTTPStatusCode: http.StatusBadRequest,
-	}
-}
-
 func GetInvalidCORSHeaderErr(header string) APIError {
 	return APIError{
 		Code:           "InvalidRequest",
@@ -1103,22 +970,6 @@ func GetInvalidCORSMethodErr(method string) APIError {
 	}
 }
 
-func GetInvalidMaxLimiterErr(limiter string) APIError {
-	return APIError{
-		Code:           "InvalidArgument",
-		Description:    fmt.Sprintf("Provided %s not an integer or within integer range", limiter),
-		HTTPStatusCode: http.StatusBadRequest,
-	}
-}
-
-func GetNegativeMaxLimiterErr(limiter string) APIError {
-	return APIError{
-		Code:           "InvalidArgument",
-		Description:    fmt.Sprintf("Argument %s must be an integer between 0 and 2147483647", limiter),
-		HTTPStatusCode: http.StatusBadRequest,
-	}
-}
-
 func GetCopySourceObjectTooLargeErr(limit int64) APIError {
 	return APIError{
 		Code:           "InvalidRequest",
@@ -1126,3 +977,37 @@ func GetCopySourceObjectTooLargeErr(limit int64) APIError {
 		HTTPStatusCode: http.StatusBadRequest,
 	}
 }
+
+func GetInvalidRedirectCodeErr(input int) APIError {
+	return APIError{
+		Code:           "InvalidRequest",
+		Description:    fmt.Sprintf("The provided HTTP redirect code (%d) is not valid. Valid codes are 3XX except 300.", input),
+		HTTPStatusCode: http.StatusBadRequest,
+	}
+}
+
+func GetInvalidHTTPErrorCodeErr(input int) APIError {
+	return APIError{
+		Code:           "InvalidRequest",
+		Description:    fmt.Sprintf("The provided HTTP error code (%d) is not valid. Valid codes are 4XX or 5XX.", input),
+		HTTPStatusCode: http.StatusBadRequest,
+	}
+}
+
+func GetWebsiteRoutingRulesLimitedErr(rules int) APIError {
+	return APIError{
+		Code:           "InvalidRequest",
+		Description:    fmt.Sprintf("%d routing rules provided, the number of routing rules in a website configuration is limited to 50.", rules),
+		HTTPStatusCode: http.StatusBadRequest,
+	}
+}
+
+type ResourceType string
+
+const (
+	ResourceTypeBucket       ResourceType = "BUCKET"
+	ResourceTypeObject       ResourceType = "OBJECT"
+	ResourceTypeService      ResourceType = "SERVICE"
+	ResourceTypeBucketPolicy ResourceType = "BUCKETPOLICY"
+	ResourceTypeUpload       ResourceType = "UPLOAD"
+)

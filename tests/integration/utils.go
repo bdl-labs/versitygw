@@ -61,6 +61,8 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
+const emptySHA256Hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
 var (
 	bcktCount        atomic.Uint64
 	adminErrorPrefix = "XAdmin"
@@ -296,18 +298,19 @@ func actionHandlerNoSetup(s *S3Conf, testName string, handler func(s3client *s3.
 }
 
 type authConfig struct {
-	testName string
-	path     string
-	method   string
-	body     []byte
-	service  string
-	date     time.Time
-	headers  map[string]string
+	testName       string
+	path           string
+	method         string
+	overrideSha256 string
+	body           []byte
+	service        string
+	date           time.Time
+	headers        map[string]string
 }
 
 func authHandler(s *S3Conf, cfg *authConfig, handler func(req *http.Request) error) error {
 	runF(cfg.testName)
-	req, err := createSignedReq(cfg.method, s.endpoint, cfg.path, s.awsID, s.awsSecret, cfg.service, s.awsRegion, cfg.body, cfg.date, cfg.headers)
+	req, err := createSignedReq(cfg.method, s.endpoint, cfg.path, s.awsID, s.awsSecret, cfg.service, s.awsRegion, cfg.overrideSha256, cfg.body, cfg.date, cfg.headers)
 	if err != nil {
 		failF("%v: %v", cfg.testName, err)
 		return fmt.Errorf("%v: %w", cfg.testName, err)
@@ -348,7 +351,7 @@ func presignedAuthHandler(s *S3Conf, testName string, handler func(client *s3.Pr
 	return nil
 }
 
-func createSignedReq(method, endpoint, path, access, secret, service, region string, body []byte, date time.Time, headers map[string]string) (*http.Request, error) {
+func createSignedReq(method, endpoint, path, access, secret, service, region, overrideSha256 string, body []byte, date time.Time, headers map[string]string) (*http.Request, error) {
 	req, err := http.NewRequest(method, fmt.Sprintf("%v/%v", endpoint, path), bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to send the request: %w", err)
@@ -356,8 +359,11 @@ func createSignedReq(method, endpoint, path, access, secret, service, region str
 
 	signer := v4.NewSigner()
 
-	hashedPayload := sha256.Sum256(body)
-	hexPayload := hex.EncodeToString(hashedPayload[:])
+	hexPayload := overrideSha256
+	if hexPayload == "" {
+		hashedPayload := sha256.Sum256(body)
+		hexPayload = hex.EncodeToString(hashedPayload[:])
+	}
 
 	req.Header.Set("X-Amz-Content-Sha256", hexPayload)
 	for key, val := range headers {
@@ -372,7 +378,61 @@ func createSignedReq(method, endpoint, path, access, secret, service, region str
 	return req, nil
 }
 
-func checkHTTPResponseApiErr(resp *http.Response, apiErr s3err.APIError) error {
+type APIErrorResponse struct {
+	XMLName                     xml.Name `xml:"Error"`
+	Code                        string
+	Message                     string
+	ArgumentName                string `xml:"ArgumentName,omitempty"`
+	ArgumentValue               string `xml:"ArgumentValue,omitempty"`
+	Method                      string `xml:"Method,omitempty"`
+	Resource                    string `xml:"Resource,omitempty"`
+	ResourceType                s3err.ResourceType
+	CalculatedDigest            string                     `xml:"CalculatedDigest,omitempty"`
+	ExpectedDigest              string                     `xml:"ExpectedDigest,omitempty"`
+	BucketName                  string                     `xml:"BucketName,omitempty"`
+	ClientComputedContentSHA256 string                     `xml:"ClientComputedContentSHA256,omitempty"`
+	S3ComputedContentSHA256     string                     `xml:"S3ComputedContentSHA256,omitempty"`
+	ProposedSize                int64                      `xml:"ProposedSize,omitempty"`
+	MaxSizeAllowed              int64                      `xml:"MaxSizeAllowed,omitempty"`
+	MinSizeAllowed              int64                      `xml:"MinSizeAllowed,omitempty"`
+	ServerTime                  string                     `xml:"ServerTime,omitempty"`
+	XAmzExpires                 int                        `xml:"X-Amz-Expires,omitempty"`
+	Expires                     string                     `xml:"Expires,omitempty"`
+	AWSAccessKeyId              string                     `xml:"AWSAccessKeyId,omitempty"`
+	Chunk                       int                        `xml:"Chunk,omitempty"`
+	BadChunkSize                int64                      `xml:"BadChunkSize,omitempty"`
+	ContentMD5                  string                     `xml:"Content-MD5,omitempty"`
+	LocationConstraint          string                     `xml:"LocationConstraint,omitempty"`
+	UploadId                    string                     `xml:"UploadId,omitempty"`
+	PartNumber                  int32                      `xml:"PartNumber,omitempty"`
+	ETag                        string                     `xml:"ETag,omitempty"`
+	ActualPartCount             int32                      `xml:"ActualPartCount,omitempty"`
+	PartNumberRequested         int32                      `xml:"PartNumberRequested,omitempty"`
+	RangeRequested              string                     `xml:"RangeRequested,omitempty"`
+	ActualObjectSize            int64                      `xml:"ActualObjectSize,omitempty"`
+	TagKey                      string                     `xml:"TagKey,omitempty"`
+	TagValue                    string                     `xml:"TagValue,omitempty"`
+	Size                        int64                      `xml:"Size,omitempty"`
+	Header                      string                     `xml:"Header,omitempty"`
+	AdditionalMessage           s3err.NmpAdditionalMessage `xml:"additionalMessage,omitempty"`
+	Key                         string                     `xml:"Key,omitempty"`
+	VersionId                   string                     `xml:"VersionId,omitempty"`
+	Condition                   s3err.Condition            `xml:"Condition,omitempty"`
+	RequestTime                 string                     `xml:"RequestTime,omitempty"`
+	MaxAllowedSkewMilliseconds  int                        `xml:"MaxAllowedSkewMilliseconds,omitempty"`
+	Region                      string                     `xml:"Region,omitempty"`
+	StringToSign                string                     `xml:"StringToSign,omitempty"`
+	SignatureProvided           string                     `xml:"SignatureProvided,omitempty"`
+	StringToSignBytes           string                     `xml:"StringToSignBytes,omitempty"`
+	CanonicalRequest            string                     `xml:"CanonicalRequest,omitempty"`
+	CanonicalRequestBytes       string                     `xml:"CanonicalRequestBytes,omitempty"`
+	HeadersNotSigned            string                     `xml:"HeadersNotSigned,omitempty"`
+	RequestID                   string                     `xml:"RequestId,omitempty"`
+	HostID                      string                     `xml:"HostId,omitempty"`
+}
+
+func checkHTTPResponseApiErr(resp *http.Response, expected s3err.S3Error) error {
+	apiErr := expected.BaseError()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
@@ -380,7 +440,7 @@ func checkHTTPResponseApiErr(resp *http.Response, apiErr s3err.APIError) error {
 
 	resp.Body.Close()
 
-	var errResp s3err.APIErrorResponse
+	var errResp APIErrorResponse
 	err = xml.Unmarshal(body, &errResp)
 	if err != nil {
 		return err
@@ -389,25 +449,326 @@ func checkHTTPResponseApiErr(resp *http.Response, apiErr s3err.APIError) error {
 	if resp.StatusCode != apiErr.HTTPStatusCode {
 		return fmt.Errorf("expected response status code to be %v, instead got %v", apiErr.HTTPStatusCode, resp.StatusCode)
 	}
-	return compareS3ApiError(apiErr, &errResp)
+	return compareS3ApiError(expected, &errResp)
 }
 
-func compareS3ApiError(expected s3err.APIError, received *s3err.APIErrorResponse) error {
-	if received == nil {
-		return fmt.Errorf("expected %w, received nil", expected)
+// websiteGet issues a plain HTTP GET to the dedicated website endpoint.
+// The bucket is resolved from the request URL host. No S3 signing is applied.
+func websiteGet(s *S3Conf, bucket, path string, headers map[string]string) (*http.Response, error) {
+	return websiteRequest(s, http.MethodGet, bucket, path, headers)
+}
+
+func websiteHead(s *S3Conf, bucket, path string, headers map[string]string) (*http.Response, error) {
+	return websiteRequest(s, http.MethodHead, bucket, path, headers)
+}
+
+func websiteOptions(s *S3Conf, bucket, path string, headers map[string]string) (*http.Response, error) {
+	return websiteRequest(s, http.MethodOptions, bucket, path, headers)
+}
+
+func websiteRequest(s *S3Conf, method, bucket, path string, headers map[string]string) (*http.Response, error) {
+	reqURL, err := websiteURL(s, bucket, path)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(method, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create website request: %w", err)
+	}
+	for key, val := range headers {
+		req.Header.Set(key, val)
 	}
 
-	if received.Code != expected.Code {
-		return fmt.Errorf("expected error code to be %v, instead got %v", expected.Code, received.Code)
+	return s.httpClient.Do(req)
+}
+
+func websiteHost(s *S3Conf, bucket string) string {
+	_, domain, port := websiteEndpointParts(s)
+
+	host := fmt.Sprintf("%s.%s", bucket, domain)
+	if port != "" {
+		host = fmt.Sprintf("%s:%s", host, port)
 	}
-	if received.Message != expected.Description {
-		return fmt.Errorf("expected error message to be %v, instead got %v", expected.Description, received.Message)
+	return host
+}
+
+func websiteURL(s *S3Conf, bucket, path string) (string, error) {
+	return websiteAbsoluteURL(s, websiteHost(s, bucket), path)
+}
+
+func websiteAbsoluteURL(s *S3Conf, host, path string) (string, error) {
+	scheme, _, _ := websiteEndpointParts(s)
+
+	rel, err := url.Parse("/" + strings.TrimLeft(path, "/"))
+	if err != nil {
+		return "", fmt.Errorf("parse website request path: %w", err)
+	}
+
+	return (&url.URL{
+		Scheme:   scheme,
+		Host:     host,
+		Path:     rel.Path,
+		RawQuery: rel.RawQuery,
+	}).String(), nil
+}
+
+func websiteEndpointParts(s *S3Conf) (scheme, domain, port string) {
+	scheme = strings.ToLower(strings.TrimSpace(s.websiteScheme))
+	domain = strings.TrimSpace(s.websiteDomain)
+	port = strings.TrimPrefix(strings.TrimSpace(s.websitePort), ":")
+
+	return scheme, domain, port
+}
+
+func putBucketWebsiteConfig(client *s3.Client, bucket string, config *types.WebsiteConfiguration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
+	_, err := client.PutBucketWebsite(ctx, &s3.PutBucketWebsiteInput{
+		Bucket:               &bucket,
+		WebsiteConfiguration: config,
+	})
+	cancel()
+	return err
+}
+
+func checkWebsiteResponse(resp *http.Response, expectedStatus int, expectedBody []byte) error {
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read website response body: %w", err)
+	}
+
+	if resp.StatusCode != expectedStatus {
+		return fmt.Errorf("expected status %v, got %v; body: %s", expectedStatus, resp.StatusCode, body)
+	}
+
+	return compareBodySHA256(expectedBody, body)
+}
+
+func checkWebsiteErrorResponse(resp *http.Response, expected s3err.S3Error) error {
+	apiErr := expected.BaseError()
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read website error body: %w", err)
+	}
+
+	if resp.StatusCode != apiErr.HTTPStatusCode {
+		return fmt.Errorf("expected status %v, got %v; body: %s", apiErr.HTTPStatusCode, resp.StatusCode, body)
+	}
+	if got := resp.Header.Get("x-amz-error-code"); got != apiErr.Code {
+		return fmt.Errorf("expected x-amz-error-code %q, got %q", apiErr.Code, got)
+	}
+	if got := resp.Header.Get("x-amz-error-message"); got != apiErr.Description {
+		return fmt.Errorf("expected x-amz-error-message %q, got %q", apiErr.Description, got)
+	}
+	requestID := resp.Header.Get("x-amz-request-id")
+	if requestID == "" {
+		return fmt.Errorf("expected x-amz-request-id header")
+	}
+	hostID := resp.Header.Get("x-amz-id-2")
+	if hostID == "" {
+		return fmt.Errorf("expected x-amz-id-2 header")
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.Contains(got, "text/html") {
+		return fmt.Errorf("expected html Content-Type, got %q", got)
+	}
+	if methodErr, ok := expected.(s3err.MethodNotAllowedError); ok && len(methodErr.AllowedMethods) != 0 {
+		if got, want := resp.Header.Get("Allow"), methodErr.AllowedMethodsString(); got != want {
+			return fmt.Errorf("expected Allow header %q, got %q", want, got)
+		}
+	}
+
+	expectedBody := expected.HTMLBody(requestID, hostID)
+	return compareBodySHA256(expectedBody, body)
+}
+
+func compareBodySHA256(expected, actual []byte) error {
+	expectedSum := sha256.Sum256(expected)
+	actualSum := sha256.Sum256(actual)
+	if expectedSum != actualSum {
+		return fmt.Errorf("body checksum mismatch: expected sha256 %x, got %x; expected body %q, got %q",
+			expectedSum, actualSum, string(expected), string(actual))
 	}
 
 	return nil
 }
 
-func checkApiErr(err error, apiErr s3err.APIError) error {
+func compareS3ApiError(expected s3err.S3Error, received *APIErrorResponse) error {
+	apiErr := expected.BaseError()
+	if received == nil {
+		return fmt.Errorf("expected %w, received nil", apiErr)
+	}
+
+	if received.Code != apiErr.Code {
+		return fmt.Errorf("expected error code to be %v, instead got %v", apiErr.Code, received.Code)
+	}
+	if received.Message != apiErr.Description {
+		return fmt.Errorf("expected error message to be %v, instead got %v", apiErr.Description, received.Message)
+	}
+
+	return compareS3ApiErr(expected, received)
+}
+
+func compareS3ApiErr(expected s3err.S3Error, received *APIErrorResponse) error {
+	switch err := expected.(type) {
+	case s3err.APIError:
+		return nil
+	case s3err.AccessForbiddenError:
+		return compareS3ApiErrFields(
+			compareErrField("Method", err.Method, received.Method),
+			compareErrField("ResourceType", err.ResourceType, received.ResourceType),
+		)
+	case s3err.BadDigestError:
+		return compareS3ApiErrFields(
+			compareErrField("CalculatedDigest", err.CalculatedDigest, received.CalculatedDigest),
+			compareErrField("ExpectedDigest", err.ExpectedDigest, received.ExpectedDigest),
+		)
+	case s3err.BucketError:
+		return compareErrField("BucketName", err.BucketName, received.BucketName)
+	case s3err.ContentSHA256MismatchError:
+		return compareS3ApiErrFields(
+			compareErrField("ClientComputedContentSHA256", err.ClientComputedContentSHA256, received.ClientComputedContentSHA256),
+			compareErrField("S3ComputedContentSHA256", err.S3ComputedContentSHA256, received.S3ComputedContentSHA256),
+		)
+	case s3err.EntityTooLargeError:
+		return compareS3ApiErrFields(
+			compareErrField("ProposedSize", err.ProposedSize, received.ProposedSize),
+			compareErrField("MaxSizeAllowed", err.MaxSizeAllowed, received.MaxSizeAllowed),
+		)
+	case s3err.EntityTooSmallError:
+		return compareS3ApiErrFields(
+			compareErrField("ProposedSize", err.ProposedSize, received.ProposedSize),
+			compareErrField("MinSizeAllowed", err.MinSizeAllowed, received.MinSizeAllowed),
+		)
+	case s3err.ExpiredPresignedURLError:
+		return compareS3ApiErrFields(
+			checkErrFieldEmptiness("ServerTime", received.ServerTime, true),
+			compareErrField("X-Amz-Expires", err.XAmzExpires, received.XAmzExpires),
+			checkErrFieldEmptiness("Expires", received.Expires, true),
+		)
+	case s3err.InvalidAccessKeyIdError:
+		return compareErrField("AWSAccessKeyId", err.AWSAccessKeyId, received.AWSAccessKeyId)
+	case s3err.InvalidArgumentError:
+		return compareS3ApiErrFields(
+			compareErrField("ArgumentName", err.ArgumentName, received.ArgumentName),
+			compareErrField("ArgumentValue", err.ArgumentValue, received.ArgumentValue),
+		)
+	case s3err.InvalidChunkSizeError:
+		return compareS3ApiErrFields(
+			compareErrField("Chunk", err.Chunk, received.Chunk),
+			compareErrField("BadChunkSize", err.BadChunkSize, received.BadChunkSize),
+		)
+	case s3err.InvalidDigestError:
+		return compareErrField("Content-MD5", err.ContentMD5, received.ContentMD5)
+	case s3err.InvalidLocationConstraintError:
+		return compareErrField("LocationConstraint", err.LocationConstraint, received.LocationConstraint)
+	case s3err.InvalidPartError:
+		return compareS3ApiErrFields(
+			compareErrField("UploadId", err.UploadId, received.UploadId),
+			compareErrField("PartNumber", err.PartNumber, received.PartNumber),
+			compareErrField("ETag", err.ETag, received.ETag),
+		)
+	case s3err.InvalidPartNumberRangeError:
+		return compareS3ApiErrFields(
+			compareErrField("ActualPartCount", err.ActualPartCount, received.ActualPartCount),
+			compareErrField("PartNumberRequested", err.PartNumberRequested, received.PartNumberRequested),
+		)
+	case s3err.InvalidRangeError:
+		return compareS3ApiErrFields(
+			compareErrField("RangeRequested", err.RangeRequested, received.RangeRequested),
+			compareErrField("ActualObjectSize", err.ActualObjectSize, received.ActualObjectSize),
+		)
+	case s3err.InvalidTagError:
+		return compareS3ApiErrFields(
+			compareErrField("TagKey", err.TagKey, received.TagKey),
+			compareErrField("TagValue", err.TagValue, received.TagValue),
+		)
+	case s3err.KeyTooLongError:
+		return compareS3ApiErrFields(
+			compareErrField("Size", err.Size, received.Size),
+			compareErrField("MaxSizeAllowed", err.MaxSizeAllowed, received.MaxSizeAllowed),
+		)
+	case s3err.MetadataTooLargeError:
+		return compareS3ApiErrFields(
+			compareErrField("Size", int64(err.Size), received.Size),
+			compareErrField("MaxSizeAllowed", int64(err.MaxSizeAllowed), received.MaxSizeAllowed),
+		)
+	case s3err.RequestHeaderSectionTooLargeError:
+		return compareErrField("MaxSizeAllowed", int64(err.MaxSizeAllowed), received.MaxSizeAllowed)
+	case s3err.MethodNotAllowedError:
+		return compareS3ApiErrFields(
+			compareErrField("Method", err.Method, received.Method),
+			compareErrField("ResourceType", err.ResourceType, received.ResourceType),
+		)
+	case s3err.MalformedAuthError:
+		return compareErrField("Region", err.Region, received.Region)
+	case s3err.HeadersNotSignedError:
+		return compareErrField("HeadersNotSigned", err.HeadersNotSigned, received.HeadersNotSigned)
+	case s3err.NoSuchUploadError:
+		return compareErrField("UploadId", err.UploadId, received.UploadId)
+	case s3err.NoSuchVersionError:
+		return compareS3ApiErrFields(
+			compareErrField("Key", err.Key, received.Key),
+			compareErrField("VersionId", err.VersionId, received.VersionId),
+		)
+	case s3err.NotImplementedError:
+		return compareS3ApiErrFields(
+			compareErrField("Header", err.Header, received.Header),
+			compareErrField("additionalMessage", err.AdditionalMessage, received.AdditionalMessage),
+		)
+	case s3err.PreconditionFailedError:
+		return compareErrField("Condition", err.Condition, received.Condition)
+	case s3err.RequestTimeTooSkewedError:
+		return compareS3ApiErrFields(
+			checkErrFieldEmptiness("RequestTime", received.RequestTime, true),
+			checkErrFieldEmptiness("ServerTime", received.ServerTime, true),
+			compareErrField("MaxAllowedSkewMilliseconds", err.MaxAllowedSkewMilliseconds, received.MaxAllowedSkewMilliseconds),
+		)
+	case s3err.SignatureDoesNotMatchError:
+		return compareS3ApiErrFields(
+			compareErrField("AWSAccessKeyId", err.AWSAccessKeyId, received.AWSAccessKeyId),
+			checkErrFieldEmptiness("StringToSign", err.StringToSign, true),
+			compareErrField("SignatureProvided", err.SignatureProvided, received.SignatureProvided),
+			checkErrFieldEmptiness("StringToSignBytes", err.StringToSignBytes, true),
+			checkErrFieldEmptiness("CanonicalRequest", err.CanonicalRequest, true),
+			checkErrFieldEmptiness("CanonicalRequestBytes", err.CanonicalRequestBytes, true),
+		)
+	}
+
+	return nil
+}
+
+func compareS3ApiErrFields(errs ...error) error {
+	for _, err := range errs {
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func compareErrField[T comparable](field string, expected, received T) error {
+	if received != expected {
+		return fmt.Errorf("expected error %s to be %v, instead got %v", field, expected, received)
+	}
+
+	return nil
+}
+
+func checkErrFieldEmptiness(field, received string, require bool) error {
+	if require && received == "" {
+		return fmt.Errorf("expected error %s to be non-empty", field)
+	}
+	if !require && received != "" {
+		return fmt.Errorf("expected error %s to be empty, instead got %s", field, received)
+	}
+
+	return nil
+}
+
+func checkApiErr(err error, expected s3err.S3Error) error {
+	apiErr := expected.BaseError()
 	if err == nil {
 		return fmt.Errorf("expected %v, instead got nil", apiErr.Code)
 	}
@@ -1777,14 +2138,15 @@ func compareDelMarkers(d1, d2 []types.DeleteMarkerEntry) bool {
 }
 
 type ObjectMetaProps struct {
-	ContentLength      int64
-	ContentType        string
-	ContentEncoding    string
-	ContentDisposition string
-	ContentLanguage    string
-	CacheControl       string
-	ExpiresString      string
-	Metadata           map[string]string
+	ContentLength           int64
+	ContentType             string
+	ContentEncoding         string
+	ContentDisposition      string
+	ContentLanguage         string
+	CacheControl            string
+	ExpiresString           string
+	WebsiteRedirectLocation string
+	Metadata                map[string]string
 }
 
 func checkObjectMetaProps(client *s3.Client, bucket, object string, o ObjectMetaProps) error {
@@ -1826,6 +2188,9 @@ func checkObjectMetaProps(client *s3.Client, bucket, object string, o ObjectMeta
 	}
 	if o.ExpiresString != "" && getString(out.ExpiresString) != o.ExpiresString {
 		return fmt.Errorf("expected Expires %v, instead got %v", o.ExpiresString, getString(out.ExpiresString))
+	}
+	if o.WebsiteRedirectLocation != "" && getString(out.WebsiteRedirectLocation) != o.WebsiteRedirectLocation {
+		return fmt.Errorf("expected WebsiteRedirectLocation %v, instead got %v", o.WebsiteRedirectLocation, getString(out.WebsiteRedirectLocation))
 	}
 	if out.StorageClass != types.StorageClassStandard {
 		return fmt.Errorf("expected the storage class to be %v, instead got %v", types.StorageClassStandard, out.StorageClass)
@@ -2478,7 +2843,7 @@ func putBucketPolicy(client *s3.Client, bucket, policy string) error {
 	return err
 }
 
-func sendSignedRequest(s *S3Conf, req *http.Request, cancel context.CancelFunc) (map[string]string, *s3err.APIErrorResponse, error) {
+func sendSignedRequest(s *S3Conf, req *http.Request, cancel context.CancelFunc) (map[string]string, *APIErrorResponse, error) {
 	signer := v4.NewSigner()
 	signErr := signer.SignHTTP(req.Context(), aws.Credentials{AccessKeyID: s.awsID, SecretAccessKey: s.awsSecret}, req, "STREAMING-UNSIGNED-PAYLOAD-TRAILER", "s3", s.awsRegion, time.Now())
 	if signErr != nil {
@@ -2499,7 +2864,7 @@ func sendSignedRequest(s *S3Conf, req *http.Request, cancel context.CancelFunc) 
 			return nil, nil, fmt.Errorf("failed to read the request body: %w", err)
 		}
 
-		var errResp s3err.APIErrorResponse
+		var errResp APIErrorResponse
 		err = xml.Unmarshal(bodyBytes, &errResp)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to unmarshal response body: %w", err)
@@ -2516,7 +2881,7 @@ func sendSignedRequest(s *S3Conf, req *http.Request, cancel context.CancelFunc) 
 	return headers, nil, nil
 }
 
-func testUnsignedStreamingPayloadTrailerObjectPut(s *S3Conf, bucket, object string, body []byte, reqHeaders map[string]string) (map[string]string, *s3err.APIErrorResponse, error) {
+func testUnsignedStreamingPayloadTrailerObjectPut(s *S3Conf, bucket, object string, body []byte, reqHeaders map[string]string) (map[string]string, *APIErrorResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.endpoint+"/"+bucket+"/"+object, bytes.NewReader(body))
 	if err != nil {
@@ -2532,7 +2897,7 @@ func testUnsignedStreamingPayloadTrailerObjectPut(s *S3Conf, bucket, object stri
 	return sendSignedRequest(s, req, cancel)
 }
 
-func testUnsignedStreamingPayloadTrailerUploadPart(s *S3Conf, bucket, object string, uploadId *string, body []byte, reqHeaders map[string]string) (map[string]string, *s3err.APIErrorResponse, error) {
+func testUnsignedStreamingPayloadTrailerUploadPart(s *S3Conf, bucket, object string, uploadId *string, body []byte, reqHeaders map[string]string) (map[string]string, *APIErrorResponse, error) {
 	if uploadId == nil {
 		return nil, nil, fmt.Errorf("empty upload id")
 	}
@@ -2613,7 +2978,7 @@ func withTrailingChecksum(checksum string) signedReqOpt {
 	}
 }
 
-func testSignedStreamingObjectPut(s *S3Conf, bucket, object string, payload []byte, opts ...signedReqOpt) (map[string]string, *s3err.APIErrorResponse, error) {
+func testSignedStreamingObjectPut(s *S3Conf, bucket, object string, payload []byte, opts ...signedReqOpt) (map[string]string, *APIErrorResponse, error) {
 	cfg := &signedReqCfg{
 		chunkSize: 8192, // minimal valid chunk size
 	}
@@ -2707,7 +3072,7 @@ func testSignedStreamingObjectPut(s *S3Conf, bucket, object string, payload []by
 			return nil, nil, fmt.Errorf("failed to read the response body: %w", err)
 		}
 
-		var errResp s3err.APIErrorResponse
+		var errResp APIErrorResponse
 		err = xml.Unmarshal(bodyBytes, &errResp)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to unmarshal response body: %w", err)
@@ -3065,6 +3430,15 @@ type PostRequestConfig struct {
 // sendPostObject sends a POST multipart/form-data request to /{bucket}.
 // Returns the raw *http.Response for flexible per-test assertions.
 func sendPostObject(input PostRequestConfig) (*http.Response, error) {
+	req, _, err := newPostObjectRequest(input)
+	if err != nil {
+		return nil, err
+	}
+
+	return input.s3Conf.httpClient.Do(req)
+}
+
+func newPostObjectRequest(input PostRequestConfig) (*http.Request, map[string]string, error) {
 	if input.date.IsZero() {
 		input.date = time.Now().UTC()
 	}
@@ -3088,7 +3462,7 @@ func sendPostObject(input PostRequestConfig) (*http.Response, error) {
 		var err error
 		policy, err = encodePostPolicy(input.policyConditions, input.policyExpiration, fields, input.omitPolicyConditions)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	} else {
 		policy = *input.rawPolicy
@@ -3099,14 +3473,14 @@ func sendPostObject(input PostRequestConfig) (*http.Response, error) {
 
 	body, boundary, err := buildPostObjectBody(fields, input.extraFields, input.fileContent)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	endpoint := fmt.Sprintf("%s/%s", input.s3Conf.endpoint, input.bucket)
 	if input.s3Conf.hostStyle {
 		u, err := url.Parse(input.s3Conf.endpoint)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 
 		u.Host = input.bucket + "." + u.Host
@@ -3115,13 +3489,13 @@ func sendPostObject(input PostRequestConfig) (*http.Response, error) {
 
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	req.Header.Set("Content-Type", fmt.Sprintf("multipart/form-data; boundary=%s", boundary))
 	req.ContentLength = int64(len(body))
 
-	return input.s3Conf.httpClient.Do(req)
+	return req, fields, nil
 }
 
 func getEtagBytes(etag string) ([]byte, error) {
@@ -3131,4 +3505,21 @@ func getEtagBytes(etag string) ([]byte, error) {
 func md5String(data []byte) string {
 	sum := md5.Sum(data)
 	return hex.EncodeToString(sum[:])
+}
+
+func base64ToHexString(s string) string {
+	data, err := base64.StdEncoding.DecodeString(s)
+	if err != nil {
+		return ""
+	}
+	return hex.EncodeToString(data)
+}
+
+func hexBytes(s string) string {
+	data := []byte(s)
+	parts := make([]string, len(data))
+	for i, b := range data {
+		parts[i] = fmt.Sprintf("%02x", b)
+	}
+	return strings.Join(parts, " ")
 }

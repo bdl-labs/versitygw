@@ -83,6 +83,7 @@ The `gateway.backend.type` value selects the storage backend. Use `gateway.backe
 | **HTTPRoute** | `httpRoute.enabled=true` — Gateway API successor to Ingress for S3 API; also `admin.httpRoute.enabled=true` and `webui.httpRoute.enabled=true` to expose the admin API and/or WebUI |
 | **Admin API** | `admin.enabled=true` — exposes a separate management API on `admin.port` (default `7071`) |
 | **WebUI** | `webui.enabled=true` — browser-based management UI on `webui.port` (default `8080`); set `webui.apiGateways` and `webui.adminGateways` to your externally reachable endpoints |
+| **Website Hosting** | `website.enabled=true` — static website hosting endpoint on `website.port` (default `8090`); optionally set `website.domain` for virtual-host routing (e.g. `example.com`), or omit it for catch-all mode where the full hostname is the bucket name |
 | **IAM** | `iam.enabled=true` — flat-file identity and access management stored alongside backend data |
 | **Persistence** | `persistence.enabled=true` — provisions a PVC for backend data and IAM storage; defaults to `10Gi`, or uses a hostPath volume specified by `persistence.hostPath` |
 | **NetworkPolicy** | `networkPolicy.enabled=true` — restricts ingress to selected pods/namespaces; allows all egress |
@@ -103,6 +104,12 @@ When scaling `versitygw` horizontally by setting `replicaCount` greater than 1, 
     - Using **ReadWriteOnce (RWO)**: All replicas must be scheduled on the **same Kubernetes node** to share the same volume. This is useful for process-level concurrency (e.g., when using high-performance local block storage) but limits high availability across nodes.
     - Using **ReadWriteMany (RWX)**: Replicas can be distributed across **multiple nodes** in the cluster. This is the recommended approach for true horizontal scaling and high availability. When using RWX, it is also recommended to use pod anti-affinity (via `affinity` in `values.yaml`) to ensure pods are distributed across nodes/zones.
 - **Stateless Backends (S3, Azure)**: If you are using a stateless storage backend (e.g. proxying to another S3 store) **and** you are either not using IAM or using an external IAM provider (e.g. LDAP, Vault), persistence can be safely disabled by setting `persistence.enabled=false`.
+
+### Deployment Strategy
+
+By default, the `RollingUpdate` [strategy](https://kubernetes.io/docs/concepts/workloads/controllers/deployment/#strategy) is used.
+If **ReadWriteOnce (RWO)** volumes are used and pods may be scheduled onto different nodes, rollouts may become 
+stuck because the replacement pod cannot start. Consider setting `strategy.type=Recreate` in this case.
 
 ## Configuration
 

@@ -17,6 +17,8 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -98,7 +100,7 @@ func PutObject_tagging(s *S3Conf) error {
 					return err
 				}
 				switch eErr := expectedErr.(type) {
-				case s3err.APIError:
+				case s3err.S3Error:
 					return checkApiErr(err, eErr)
 				default:
 					return fmt.Errorf("invalid err provided: %w", expectedErr)
@@ -151,10 +153,10 @@ func PutObject_tagging(s *S3Conf) error {
 			{"key1=val1&key2=val2", map[string]string{"key1": "val1", "key2": "val2"}, nil},
 			{"key@=val@", map[string]string{"key@": "val@"}, nil},
 			// invalid url-encoded
-			{"=", nil, s3err.GetAPIError(s3err.ErrInvalidURLEncodedTagging)},
-			{"key%", nil, s3err.GetAPIError(s3err.ErrInvalidURLEncodedTagging)},
+			{"=", nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgURLEncodedTagging, "")},
+			{"key%", nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgURLEncodedTagging, "")},
 			// duplicate keys
-			{"key=val&key=val", nil, s3err.GetAPIError(s3err.ErrInvalidURLEncodedTagging)},
+			{"key=val&key=val", nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgURLEncodedTagging, "")},
 			// invalid tag keys
 			{"key?=val", nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)},
 			{"key(=val", nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)},
@@ -212,13 +214,13 @@ func PutObject_missing_object_lock_retention_config(s *S3Conf) error {
 			ObjectLockMode: types.ObjectLockModeCompliance,
 		})
 		cancel()
-		if err := checkSdkApiErr(err, "InvalidRequest"); err != nil {
+		if err := checkSdkApiErr(err, "InvalidArgument"); err != nil {
 			return err
 		}
 		// client sdk regression issue prevents getting full error message,
 		// change back to below once this is fixed:
 		// https://github.com/aws/aws-sdk-go-v2/issues/2921
-		// if err := checkApiErr(err, s3err.GetAPIError(s3err.ErrObjectLockInvalidHeaders)); err != nil {
+		// if err := checkApiErr(err, s3err.GetInvalidArgumentErr(s3err.InvalidArgMissingObjectLockRetainDate, "")); err != nil {
 		// 	return err
 		// }
 
@@ -231,13 +233,13 @@ func PutObject_missing_object_lock_retention_config(s *S3Conf) error {
 			ObjectLockRetainUntilDate: &retainDate,
 		})
 		cancel()
-		if err := checkSdkApiErr(err, "InvalidRequest"); err != nil {
+		if err := checkSdkApiErr(err, "InvalidArgument"); err != nil {
 			return err
 		}
 		// client sdk regression issue prevents getting full error message,
 		// change back to below once this is fixed:
 		// https://github.com/aws/aws-sdk-go-v2/issues/2921
-		// if err := checkApiErr(err, s3err.GetAPIError(s3err.ErrObjectLockInvalidHeaders)); err != nil {
+		// if err := checkApiErr(err, s3err.GetInvalidArgumentErr(s3err.InvalidArgMissingObjectLockMode, "")); err != nil {
 		// 	return err
 		// }
 
@@ -315,7 +317,7 @@ func PutObject_invalid_legal_hold(s *S3Conf) error {
 			Key:                       getPtr("foo"),
 			ObjectLockLegalHoldStatus: types.ObjectLockLegalHoldStatus("invalid_status"),
 		}, s3client)
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrInvalidLegalHoldStatus))
+		return checkApiErr(err, s3err.GetInvalidArgumentErr(s3err.InvalidArgLegalHoldStatus, "invalid_status"))
 	}, withLock())
 }
 
@@ -329,7 +331,7 @@ func PutObject_invalid_object_lock_mode(s *S3Conf) error {
 			ObjectLockRetainUntilDate: &rDate,
 			ObjectLockMode:            types.ObjectLockMode("invalid_mode"),
 		}, s3client)
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrInvalidObjectLockMode))
+		return checkApiErr(err, s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectLockMode, "invalid_mode"))
 	}, withLock())
 }
 
@@ -344,7 +346,7 @@ func PutObject_past_retain_until_date(s *S3Conf) error {
 			ObjectLockRetainUntilDate: &rDate,
 		}, s3client)
 
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrPastObjectLockRetainDate))
+		return checkApiErr(err, s3err.GetInvalidArgumentErr(s3err.InvalidArgPastObjectLockRetainDate, rDate.Format(time.RFC3339)))
 	}, withLock())
 }
 
@@ -359,6 +361,7 @@ func PutObject_invalid_retain_until_date(s *S3Conf) error {
 			s.awsSecret,
 			"s3",
 			s.awsRegion,
+			"",
 			nil,
 			time.Now(),
 			map[string]string{
@@ -375,7 +378,7 @@ func PutObject_invalid_retain_until_date(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidRetainUntilDate))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidArgumentErr(s3err.InvalidArgRetainUntilDate, "invalid_date"))
 	}, withLock())
 }
 
@@ -621,6 +624,67 @@ func PutObject_with_metadata(s *S3Conf) error {
 
 			if !areMapsSame(expectedMeta, res.Metadata) {
 				return fmt.Errorf("test %v failed: expected the object metadata to be %v, instead got %v", i+1, expectedMeta, res.Metadata)
+			}
+		}
+
+		return nil
+	})
+}
+
+func PutObject_invalid_website_redirect_location(s *S3Conf) error {
+	testName := "PutObject_invalid_website_redirect_location"
+	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
+		obj := "my-obj"
+		_, err := putObjectWithData(10, &s3.PutObjectInput{
+			Bucket:                  &bucket,
+			Key:                     &obj,
+			WebsiteRedirectLocation: getPtr("ftp://example.com"),
+		}, s3client)
+		return checkApiErr(err, s3err.GetAPIError(s3err.ErrInvalidRedirectLocation))
+	})
+}
+
+func PutObject_md5(s *S3Conf) error {
+	testName := "PutObject_md5"
+	return actionHandler(s, testName, func(_ *s3.Client, bucket string) error {
+		body := []byte("dummy data")
+		sum := md5.Sum(body)
+		contentMd5 := base64.StdEncoding.EncodeToString(sum[:])
+
+		for i, test := range []struct {
+			name string
+			md5  string
+			err  s3err.S3Error
+		}{
+			{"empty_md5", "", s3err.GetInvalidDigestErr("")},
+			{"invalid_md5", "invalid_md5", s3err.GetInvalidDigestErr("invalid_md5")},
+			// valid base64, but invalid md5
+			{"invalid_md5_length", "aGVsbCBzLGRham5mamFuc2Y=", s3err.GetInvalidDigestErr("aGVsbCBzLGRham5mamFuc2Y=")},
+			// valid md5, but incorrect
+			{"incorrect_md5", "XrY7u+Ae7tCTyyK7j1rNww==", s3err.GetBadDigestErr(contentMd5, base64ToHexString("XrY7u+Ae7tCTyyK7j1rNww=="))},
+			{"success", contentMd5, nil},
+		} {
+			req, err := createSignedReq(http.MethodPut, s.endpoint, fmt.Sprintf("%s/obj-%d", bucket, i), s.awsID, s.awsSecret, "s3", s.awsRegion, "", body, time.Now(), map[string]string{
+				"Content-Md5": test.md5,
+			})
+			if err != nil {
+				return err
+			}
+
+			resp, err := s.httpClient.Do(req)
+			if err != nil {
+				return err
+			}
+
+			if test.err == nil {
+				if resp.StatusCode != http.StatusOK {
+					return fmt.Errorf("test %q failed: expected response status code to be %v, instead got %v", test.name, http.StatusOK, resp.StatusCode)
+				}
+				continue
+			}
+
+			if err := checkHTTPResponseApiErr(resp, test.err); err != nil {
+				return fmt.Errorf("test %q failed: %w", test.name, err)
 			}
 		}
 

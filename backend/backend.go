@@ -30,6 +30,7 @@ import (
 type Backend interface {
 	fmt.Stringer
 	Shutdown()
+	NormalizeObjectKey(bucket, object string) string
 
 	// bucket operations
 	ListBuckets(context.Context, s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error)
@@ -49,6 +50,9 @@ type Backend interface {
 	PutBucketCors(_ context.Context, bucket string, cors []byte) error
 	GetBucketCors(_ context.Context, bucket string) ([]byte, error)
 	DeleteBucketCors(_ context.Context, bucket string) error
+	PutBucketWebsite(_ context.Context, bucket string, website []byte) error
+	GetBucketWebsite(_ context.Context, bucket string) ([]byte, error)
+	DeleteBucketWebsite(_ context.Context, bucket string) error
 
 	// multipart operations
 	CreateMultipartUpload(context.Context, s3response.CreateMultipartUploadInput) (s3response.InitiateMultipartUploadResult, error)
@@ -111,6 +115,9 @@ func (BackendUnsupported) Shutdown() {}
 func (BackendUnsupported) String() string {
 	return "Unsupported"
 }
+func (BackendUnsupported) NormalizeObjectKey(_, object string) string {
+	return object
+}
 func (BackendUnsupported) ListBuckets(context.Context, s3response.ListBucketsInput) (s3response.ListAllMyBucketsResult, error) {
 	return s3response.ListAllMyBucketsResult{}, s3err.GetAPIError(s3err.ErrNotImplemented)
 }
@@ -160,6 +167,15 @@ func (BackendUnsupported) GetBucketCors(_ context.Context, bucket string) ([]byt
 	return nil, s3err.GetAPIError(s3err.ErrNotImplemented)
 }
 func (BackendUnsupported) DeleteBucketCors(_ context.Context, bucket string) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+func (BackendUnsupported) PutBucketWebsite(_ context.Context, bucket string, website []byte) error {
+	return s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+func (BackendUnsupported) GetBucketWebsite(_ context.Context, bucket string) ([]byte, error) {
+	return nil, s3err.GetAPIError(s3err.ErrNotImplemented)
+}
+func (BackendUnsupported) DeleteBucketWebsite(_ context.Context, bucket string) error {
 	return s3err.GetAPIError(s3err.ErrNotImplemented)
 }
 

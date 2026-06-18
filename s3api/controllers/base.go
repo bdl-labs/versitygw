@@ -21,7 +21,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/backend"
 	"github.com/versity/versitygw/debuglogger"
@@ -49,9 +49,10 @@ const (
 	iso8601TimeFormatExtended = "Mon Jan _2 15:04:05 2006"
 	timefmt                   = "Mon, 02 Jan 2006 15:04:05 GMT"
 
-	maxXMLBodyLen = 4 * 1024 * 1024
-	minPartNumber = 1
-	maxPartNumber = 10000
+	maxXMLBodyLen                = 4 * 1024 * 1024
+	minPartNumber                = 1
+	maxPartNumber                = 10000
+	maxWebsiteConfigurationBytes = 131072
 
 	defaultRegion      = "us-east-1"
 	defaultContentType = "binary/octet-stream"
@@ -75,7 +76,7 @@ func New(be backend.Backend, iam auth.IAMService, logger s3log.AuditLogger, evs 
 	}
 }
 
-func (c S3ApiController) getAclHeaderValue(ctx *fiber.Ctx, key string, defaultValues ...string) string {
+func (c S3ApiController) getAclHeaderValue(ctx fiber.Ctx, key string, defaultValues ...string) string {
 	if c.disableACL {
 		return ""
 	}
@@ -85,7 +86,7 @@ func (c S3ApiController) getAclHeaderValue(ctx *fiber.Ctx, key string, defaultVa
 
 // Returns MethodNotAllowed for unmatched routes
 func (c S3ApiController) HandleErrorRoute(err error) Controller {
-	return func(ctx *fiber.Ctx) (*Response, error) {
+	return func(ctx fiber.Ctx) (*Response, error) {
 		return &Response{}, err
 	}
 }
@@ -120,11 +121,11 @@ type Services struct {
 }
 
 // Controller is the type definition for an s3api controller
-type Controller func(ctx *fiber.Ctx) (*Response, error)
+type Controller func(ctx fiber.Ctx) (*Response, error)
 
 // ProcessHandlers groups a controller and multiple middlewares into a single fiber handler
 func ProcessHandlers(controller Controller, s3action string, svc *Services, handlers ...fiber.Handler) fiber.Handler {
-	return func(ctx *fiber.Ctx) error {
+	return func(ctx fiber.Ctx) error {
 		// if skip locals is set, skip to the next rout handler
 		if utils.ContextKeySkip.IsSet(ctx) {
 			utils.ContextKeySkip.Delete(ctx)
@@ -134,7 +135,7 @@ func ProcessHandlers(controller Controller, s3action string, svc *Services, hand
 		for _, handler := range handlers {
 			err := handler(ctx)
 			if err != nil {
-				return ProcessController(ctx, func(ctx *fiber.Ctx) (*Response, error) {
+				return ProcessController(ctx, func(ctx fiber.Ctx) (*Response, error) {
 					return &Response{
 						MetaOpts: &MetaOptions{},
 					}, err
@@ -149,32 +150,35 @@ func ProcessHandlers(controller Controller, s3action string, svc *Services, hand
 // WrapMiddleware executes the given middleware and handles sending the audit logs
 // and metrics. It also handles the error parsing
 func WrapMiddleware(handler fiber.Handler, logger s3log.AuditLogger, mm metrics.Manager) fiber.Handler {
-	return func(ctx *fiber.Ctx) error {
+	return func(ctx fiber.Ctx) error {
+		requestID, hostID := utils.EnsureRequestIDs(ctx)
+
 		err := handler(ctx)
 		if err != nil {
 			if mm != nil {
 				mm.Send(ctx, err, metrics.ActionUndetected, 0, 0)
 			}
 			if logger != nil {
-				logger.Log(ctx, err, ctx.Body(), s3log.LogMeta{
+				logger.Log(ctx, err, ctx.BodyRaw(), s3log.LogMeta{
 					Action: metrics.ActionUndetected,
 				})
 			}
 
 			ctx.Response().Header.SetContentType(fiber.MIMEApplicationXML)
 
-			serr, ok := err.(s3err.APIError)
-			if ok {
-				ctx.Status(serr.HTTPStatusCode)
-				return ctx.Send(s3err.GetAPIErrorResponse(serr, "", "", ""))
+			if serr, ok := err.(s3err.S3Error); ok {
+				if mnaErr, ok := serr.(s3err.MethodNotAllowedError); ok && len(mnaErr.AllowedMethods) != 0 {
+					// for MethodNotAllowed errors, set the 'Allow' header
+					ctx.Response().Header.Set("Allow", mnaErr.AllowedMethodsString())
+				}
+				return ctx.Status(serr.StatusCode()).Send(serr.XMLBody(requestID, hostID))
 			}
 
 			debuglogger.InternalError(err)
 			ctx.Status(http.StatusInternalServerError)
 
-			// If the error is not 's3err.APIError' return 'InternalError'
-			return ctx.Send(s3err.GetAPIErrorResponse(
-				s3err.GetAPIError(s3err.ErrInternalError), "", "", ""))
+			// If the error is not 's3err.S3Error' return 'InternalError'
+			return ctx.Send(s3err.GetAPIError(s3err.ErrInternalError).XMLBody(requestID, hostID))
 		}
 
 		return ctx.Next()
@@ -183,11 +187,12 @@ func WrapMiddleware(handler fiber.Handler, logger s3log.AuditLogger, mm metrics.
 
 // ProcessController executes the given s3api controller and handles the metrics
 // access logs and s3 events
-func ProcessController(ctx *fiber.Ctx, controller Controller, s3action string, svc *Services) error {
+func ProcessController(ctx fiber.Ctx, controller Controller, s3action string, svc *Services) error {
 	response, err := controller(ctx)
 
 	// Set the response headers
 	SetResponseHeaders(ctx, response.Headers)
+	requestID, hostID := utils.EnsureRequestIDs(ctx)
 	ensureExposeMetaHeaders(ctx)
 
 	opts := response.MetaOpts
@@ -216,18 +221,17 @@ func ProcessController(ctx *fiber.Ctx, controller Controller, s3action string, s
 		// set content type to application/xml
 		ctx.Response().Header.SetContentType(fiber.MIMEApplicationXML)
 
-		serr, ok := err.(s3err.APIError)
-		if ok {
-			ctx.Status(serr.HTTPStatusCode)
-			return ctx.Send(s3err.GetAPIErrorResponse(serr, "", "", ""))
+		if serr, ok := err.(s3err.S3Error); ok {
+			if mnaErr, ok := serr.(s3err.MethodNotAllowedError); ok && len(mnaErr.AllowedMethods) != 0 {
+				ctx.Response().Header.Set("Allow", mnaErr.AllowedMethodsString())
+			}
+			return ctx.Status(serr.StatusCode()).Send(serr.XMLBody(requestID, hostID))
 		}
 
 		debuglogger.InternalError(err)
-		ctx.Status(http.StatusInternalServerError)
 
-		// If the error is not 's3err.APIError' return 'InternalError'
-		return ctx.Send(s3err.GetAPIErrorResponse(
-			s3err.GetAPIError(s3err.ErrInternalError), "", "", ""))
+		// If the error is not 's3err.S3Error' return 'InternalError'
+		return ctx.Status(http.StatusInternalServerError).Send(s3err.GetAPIError(s3err.ErrInternalError).XMLBody(requestID, hostID))
 	}
 
 	// At this point, the S3 action has succeeded in the backend and
@@ -276,8 +280,9 @@ func ProcessController(ctx *fiber.Ctx, controller Controller, s3action string, s
 					ObjectSize:  opts.ObjectSize,
 				})
 			}
-			return ctx.Status(http.StatusInternalServerError).Send(s3err.GetAPIErrorResponse(
-				s3err.GetAPIError(s3err.ErrInternalError), "", "", ""))
+
+			err := s3err.GetAPIError(s3err.ErrInternalError)
+			return ctx.Status(err.HTTPStatusCode).Send(err.XMLBody(requestID, hostID))
 		}
 
 		if len(responseBytes) > 0 {
@@ -312,13 +317,12 @@ func ProcessController(ctx *fiber.Ctx, controller Controller, s3action string, s
 				ObjectSize:  opts.ObjectSize,
 			})
 		}
-		ctx.Status(http.StatusInternalServerError)
 
 		// set content type to application/xml
 		ctx.Response().Header.SetContentType(fiber.MIMEApplicationXML)
 
-		return ctx.Send(s3err.GetAPIErrorResponse(
-			s3err.GetAPIError(s3err.ErrInternalError), "", "", ""))
+		err := s3err.GetAPIError(s3err.ErrInternalError)
+		return ctx.Status(err.HTTPStatusCode).Send(err.XMLBody(requestID, hostID))
 	}
 	res := make([]byte, 0, msglen)
 	res = append(res, xmlhdr...)
@@ -338,7 +342,7 @@ func ProcessController(ctx *fiber.Ctx, controller Controller, s3action string, s
 	return ctx.Status(opts.Status).Send(res)
 }
 
-func ensureExposeMetaHeaders(ctx *fiber.Ctx) {
+func ensureExposeMetaHeaders(ctx fiber.Ctx) {
 	// Only attempt to modify expose headers when CORS is actually in use.
 	if len(ctx.Response().Header.Peek("Access-Control-Allow-Origin")) == 0 {
 		return
@@ -410,7 +414,7 @@ func ensureExposeMetaHeaders(ctx *fiber.Ctx) {
 }
 
 // Sets the response headers
-func SetResponseHeaders(ctx *fiber.Ctx, headers map[string]*string) {
+func SetResponseHeaders(ctx fiber.Ctx, headers map[string]*string) {
 	if headers == nil {
 		return
 	}

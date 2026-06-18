@@ -15,8 +15,9 @@
 package middlewares
 
 import (
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/metrics"
+	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
 	"github.com/versity/versitygw/s3log"
 	"golang.org/x/sync/semaphore"
@@ -27,7 +28,9 @@ import (
 func RateLimiter(limit int, mm metrics.Manager, logger s3log.AuditLogger) fiber.Handler {
 	sem := semaphore.NewWeighted(int64(limit))
 
-	return func(ctx *fiber.Ctx) error {
+	return func(ctx fiber.Ctx) error {
+		requestID, hostID := utils.EnsureRequestIDs(ctx)
+
 		if !sem.TryAcquire(1) {
 			// limit reached
 			err := s3err.GetAPIError(s3err.ErrSlowDown)
@@ -36,13 +39,13 @@ func RateLimiter(limit int, mm metrics.Manager, logger s3log.AuditLogger) fiber.
 				mm.Send(ctx, err, metrics.ActionUndetected, 0, 0)
 			}
 			if logger != nil {
-				logger.Log(ctx, err, ctx.Body(), s3log.LogMeta{
+				logger.Log(ctx, err, ctx.BodyRaw(), s3log.LogMeta{
 					Action: metrics.ActionUndetected,
 				})
 			}
 
 			ctx.Status(err.HTTPStatusCode)
-			return ctx.Send(s3err.GetAPIErrorResponse(err, "", "", ""))
+			return ctx.Send(err.XMLBody(requestID, hostID))
 		}
 		defer sem.Release(1)
 		return ctx.Next()

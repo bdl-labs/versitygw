@@ -14,6 +14,7 @@
 # specific language governing permissions and limitations
 # under the License.
 
+source ./tests/drivers/list_objects/list_objects_rest.sh
 source ./tests/drivers/xml.sh
 
 check_rest_expected_error() {
@@ -57,17 +58,20 @@ send_rest_command() {
   if ! check_param_count_v2 "env vars, script" 2 $#; then
     return 1
   fi
+  local response output_file response_code
+
   if [[ "$1" == *"OUTPUT_FILE"* ]]; then
-    if ! output_file=$(echo -n "$1" | sed -n 's/^.*OUTPUT_FILE=\([^ ]*\).*$/\1/p' 2>&1); then
-      log 2 "error getting output file: $output_file"
+    if ! response=$(echo -n "$1" | sed -n 's/^.*OUTPUT_FILE=\([^ ]*\).*$/\1/p' 2>&1); then
+      log 2 "error getting output file: $response"
     fi
+    output_file="$response"
     log 5 "output file: $output_file"
   else
-    if ! file_name=$(get_file_name 2>&1); then
-      log 2 "error getting file name: $file_name"
+    if ! response=$(get_file_name 2>&1); then
+      log 2 "error getting file name: $response"
       return 1
     fi
-    output_file="$TEST_FILE_FOLDER/$file_name"
+    output_file="$TEST_FILE_FOLDER/$response"
   fi
   local env_array=("env" "COMMAND_LOG=$COMMAND_LOG" "OUTPUT_FILE=$output_file")
   if [ "$1" != "" ]; then
@@ -75,21 +79,35 @@ send_rest_command() {
     env_array+=("${env_vars[@]}")
   fi
   # shellcheck disable=SC2068
-  if ! result=$(${env_array[@]} "$2" 2>&1); then
-    log 2 "error sending command: $result"
+  if ! response=$(${env_array[@]} "$2" 2>&1); then
+    log 2 "error sending command: $response"
+    if [ -e "$output_file" ]; then
+      log 2 "output data: '$(cat "$output_file")'"
+    fi
     return 1
   fi
+  response_code="$response"
+
+  echo "$response_code"
+  echo "$output_file"
+  return 0
 }
 
 send_rest_command_expect_error() {
   if ! check_param_count_v2 "env vars, script, response code, error, message" 5 $#; then
     return 1
   fi
-  if ! send_rest_command "$1" "$2"; then
-    log 2 "error sending REST command"
+  local response response_lines response_code output_file
+
+  if ! response=$(send_rest_command "$1" "$2" 2>&1); then
+    log 2 "error sending REST command: $response"
     return 1
   fi
-  if ! check_rest_expected_error "$result" "$output_file" "$3" "$4" "$5"; then
+  mapfile -t response_lines <<< "$response"
+  response_code="${response_lines[0]}"
+  output_file="${response_lines[1]}"
+
+  if ! check_rest_expected_error "$response_code" "$output_file" "$3" "$4" "$5"; then
     log 2 "error checking REST error"
     return 1
   fi
@@ -123,10 +141,15 @@ send_rest_command_expect_header_error() {
   if ! check_param_count_v2 "env vars, script, response code, message" 4 $#; then
     return 1
   fi
-  if ! send_rest_command "$1" "$2"; then
-    log 2 "error sending REST command"
+  local response response_lines output_file
+
+  if ! response=$(send_rest_command "$1" "$2" 2>&1); then
+    log 2 "error sending REST command: $response"
     return 1
   fi
+  mapfile -t response_lines <<< "$response"
+  output_file="${response_lines[1]}"
+
   if ! check_rest_expected_header_error "$output_file" "$3" "$4"; then
     log 2 "error checking REST error"
     return 1
@@ -135,40 +158,53 @@ send_rest_command_expect_header_error() {
 }
 
 send_rest_command_expect_success() {
-if ! check_param_count_v2 "env vars, script, response code" 3 $#; then
-  return 1
-fi
-if ! send_rest_command "$1" "$2"; then
-  log 2 "error sending REST command"
-  return 1
-fi
-if [ "$result" != "$3" ]; then
-  log 2 "expected '$3', was '$result' ($(cat "$output_file"))"
-  return 1
-fi
-return 0
+  if ! check_param_count_v2 "env vars, script, response code" 3 $#; then
+    return 1
+  fi
+  local response response_lines response_code output_file
+
+  if ! response=$(send_rest_command "$1" "$2" 2>&1); then
+    log 2 "error sending REST command: $response"
+    return 1
+  fi
+  mapfile -t response_lines <<< "$response"
+  response_code="${response_lines[0]}"
+  output_file="${response_lines[1]}"
+
+  if [ "$response_code" != "$3" ]; then
+    log 2 "expected '$3', was '$response_code' ($(cat "$output_file"))"
+    return 1
+  fi
+  return 0
 }
 
 send_rest_command_expect_success_callback() {
   if ! check_param_count_v2 "env vars, script, response code, callback fn" 4 $#; then
     return 1
   fi
-  if ! output_file_name=$(get_file_name 2>&1); then
+  local response output_file_name output_file env_array=() http_response response_code callback_response
+
+  if ! response=$(get_file_name 2>&1); then
     log 2 "error generating output file name: $output_file_name"
     return 1
   fi
+  output_file_name="$response"
+
   output_file="$TEST_FILE_FOLDER/$output_file_name"
   local env_array=("env" "COMMAND_LOG=$COMMAND_LOG" "OUTPUT_FILE=$output_file")
   if [ "$1" != "" ]; then
     IFS=' ' read -r -a env_vars <<< "$1"
     env_array+=("${env_vars[@]}")
   fi
+  log 5 "command: ${env_array[*]} $2"
   # shellcheck disable=SC2068
-  if ! result=$(${env_array[@]} "$2" 2>&1); then
-    log 2 "error sending command: $result"
+  if ! response=$(${env_array[@]} "$2" 2>&1); then
+    log 2 "error sending command: $response"
     return 1
   fi
-  response_code="$(echo "$result" | tail -n 1)"
+  http_response="$response"
+
+  response_code="$(echo "$http_response" | tail -n 1)"
   if [ "$response_code" != "$3" ]; then
     log 2 "expected '$3', was '$response_code' ($(cat "$output_file"))"
     return 1
@@ -177,11 +213,11 @@ send_rest_command_expect_success_callback() {
     cat "$output_file"
     return 0
   fi
-  if ! callback_result=$("$4" "$output_file" 2>&1); then
-    log 2 "callback error: $callback_result"
+  if ! callback_response=$("$4" "$output_file" 2>&1); then
+    log 2 "callback error: $callback_response"
     return 1
   fi
-  echo "$callback_result"
+  echo "$callback_response"
   return 0
 }
 
@@ -269,8 +305,8 @@ send_rest_go_command_expect_error_callback() {
     log 2 "error checking expected header error"
     return 1
   fi
-  if [ "$4" != "" ] && ! "$4" "$TEST_FILE_FOLDER/$file_name" "${callback_params[@]}"; then
-    log 2 "callback error"
+  if [ "$4" != "" ] && ! response=$("$4" "$response_file" "${callback_params[@]}" 2>&1); then
+    log 2 "callback error: $response"
     return 1
   fi
   return 0
@@ -401,6 +437,7 @@ check_for_header_key_and_value() {
   if ! check_param_count_v2 "data file, header key, header value" 3 $#; then
     return 1
   fi
+  log 5 "header data: $(cat "$1")"
   while IFS=$': \r' read -r key value; do
     local check_result=0
     value="${value%$'\r'}"
@@ -410,7 +447,7 @@ check_for_header_key_and_value() {
     elif [ "$check_result" -eq 0 ]; then
       return 0
     fi
-  done <<< "$(grep -E '^.+: .+$' "$1")"
+  done <<< "$(grep -aE '^.+: .+$' "$1")"
   log 2 "no header key '$2' found"
   return 1
 }

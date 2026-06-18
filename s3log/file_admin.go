@@ -20,7 +20,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3api/utils"
 )
@@ -45,7 +45,7 @@ func InitAdminFileLogger(logname string) (AuditLogger, error) {
 }
 
 // Log sends log message to file logger
-func (f *AdminFileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMeta) {
+func (f *AdminFileLogger) Log(ctx fiber.Ctx, err error, body []byte, meta LogMeta) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -62,7 +62,7 @@ func (f *AdminFileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMe
 	if !ok {
 		startTime = time.Now()
 	}
-	tlsConnState := ctx.Context().TLSConnectionState()
+	tlsConnState := ctx.RequestCtx().TLSConnectionState()
 	if tlsConnState != nil {
 		lf.CipherSuite = tls.CipherSuiteName(tlsConnState.CipherSuite)
 		lf.TLSVersion = getTLSVersionName(tlsConnState.Version)
@@ -80,7 +80,6 @@ func (f *AdminFileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMe
 	lf.Time = time.Now()
 	lf.RemoteIP = ctx.IP()
 	lf.Requester = access
-	lf.RequestID = genID()
 	lf.Operation = meta.Action
 	lf.RequestURI = reqURI
 	lf.HttpStatus = meta.HttpStatus
@@ -92,6 +91,9 @@ func (f *AdminFileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMe
 	lf.UserAgent = ctx.Get("User-Agent")
 	lf.SignatureVersion = "SigV4"
 	lf.AuthenticationType = "AuthHeader"
+	requestID, hostID := utils.EnsureRequestIDs(ctx)
+	lf.RequestID = requestID
+	lf.HostID = hostID
 
 	f.writeLog(lf)
 }
@@ -125,7 +127,7 @@ func (f *AdminFileLogger) writeLog(lf AdminLogFields) {
 		lf.TLSVersion = "-"
 	}
 
-	log := fmt.Sprintf("%v %v %v %v %v %v %v %v %v %v %v %v %v %v %v %v %v\n",
+	log := fmt.Sprintf("%v %v %v %v %v %v %v %v %v %v %v %v %v %v %v %v %v %v\n",
 		fmt.Sprintf("[%v]", lf.Time.Format(timeFormat)),
 		lf.RemoteIP,
 		lf.Requester,
@@ -139,6 +141,7 @@ func (f *AdminFileLogger) writeLog(lf AdminLogFields) {
 		lf.TurnAroundTime,
 		lf.Referer,
 		lf.UserAgent,
+		lf.HostID,
 		lf.SignatureVersion,
 		lf.CipherSuite,
 		lf.AuthenticationType,

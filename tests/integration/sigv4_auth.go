@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/versity/versitygw/s3err"
 )
 
@@ -42,7 +43,7 @@ func Authentication_invalid_auth_header(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidAuthHeader))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidArgumentErr(s3err.InvalidArgAuthHeader, "invalid_header"))
 	})
 }
 
@@ -64,7 +65,7 @@ func Authentication_unsupported_signature_version(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrUnsupportedAuthorizationType))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidArgumentErr(s3err.InvalidArgAuthorizationType, "AWS2-HMAC-SHA1"))
 	})
 }
 
@@ -192,7 +193,7 @@ func Authentication_malformed_credential(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.MalformedCredential())
+		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.MalformedCredential(""))
 	})
 }
 
@@ -215,7 +216,7 @@ func Authentication_credentials_invalid_terminal(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.IncorrectTerminal("aws_request"))
+		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.IncorrectTerminal("", "aws_request"))
 	})
 }
 
@@ -238,7 +239,7 @@ func Authentication_credentials_incorrect_service(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.IncorrectService("ec2"))
+		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.IncorrectService("", "ec2"))
 	})
 }
 
@@ -285,7 +286,7 @@ func Authentication_credentials_invalid_date(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.InvalidDateFormat("3223423234"))
+		return checkHTTPResponseApiErr(resp, s3err.MalformedAuth.InvalidDateFormat("", "3223423234"))
 	})
 }
 
@@ -309,7 +310,7 @@ func Authentication_credentials_future_date(s *S3Conf) error {
 			return err
 		}
 
-		var errResp s3err.APIErrorResponse
+		var errResp APIErrorResponse
 		err = xml.Unmarshal(body, &errResp)
 		if err != nil {
 			return err
@@ -346,7 +347,7 @@ func Authentication_credentials_past_date(s *S3Conf) error {
 			return err
 		}
 
-		var errResp s3err.APIErrorResponse
+		var errResp APIErrorResponse
 		err = xml.Unmarshal(body, &errResp)
 		if err != nil {
 			return err
@@ -372,9 +373,10 @@ func Authentication_credentials_non_existing_access_key(s *S3Conf) error {
 		service:  "s3",
 		date:     time.Now(),
 	}, func(req *http.Request) error {
+		accessKeyID := "a_rarely_existing_access_key_id_a7s86df78as6df89790a8sd7f"
 		authHdr := req.Header.Get("Authorization")
 		regExp := regexp.MustCompile("Credential=([^/]+)")
-		hdr := regExp.ReplaceAllString(authHdr, "Credential=a_rarely_existing_access_key_id_a7s86df78as6df89790a8sd7f")
+		hdr := regExp.ReplaceAllString(authHdr, "Credential="+accessKeyID)
 		req.Header.Set("Authorization", hdr)
 
 		resp, err := s.httpClient.Do(req)
@@ -382,7 +384,7 @@ func Authentication_credentials_non_existing_access_key(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidAccessKeyID))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidAccessKeyIdErr(accessKeyID))
 	})
 }
 
@@ -471,72 +473,71 @@ func Authentication_invalid_sha256_payload_hash(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidSHA256Paylod))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidArgumentErr(s3err.InvalidArgSHA256Payload, "invalid_sha256"))
 	})
 }
 
 func Authentication_incorrect_payload_hash(s *S3Conf) error {
 	testName := "Authentication_incorrect_payload_hash"
+	const incorrectPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b854"
 	return authHandler(s, &authConfig{
-		testName: testName,
-		method:   http.MethodPut,
-		body:     nil,
-		service:  "s3",
-		date:     time.Now(),
-		path:     "bucket/object?tagging",
+		testName:       testName,
+		method:         http.MethodPut,
+		body:           nil,
+		service:        "s3",
+		date:           time.Now(),
+		path:           "bucket/object?tagging",
+		overrideSha256: incorrectPayloadHash,
 	}, func(req *http.Request) error {
-		req.Header.Set("X-Amz-Content-Sha256", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b854")
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		return checkHTTPResponseApiErr(resp, s3err.GetContentSHA256MismatchErr(incorrectPayloadHash, emptySHA256Hash))
+	})
+}
+
+func Authentication_unsigned_required_header(s *S3Conf) error {
+	testName := "Authentication_unsigned_required_header"
+	return actionHandler(s, testName, func(_ *s3.Client, bucket string) error {
+		req, err := createSignedReq(http.MethodPut, s.endpoint, fmt.Sprintf("%s/obj", bucket), s.awsID, s.awsSecret, "s3", s.awsRegion, "", nil, time.Now(), nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("X-Amz-Copy-Source", "source-bucket/source-key")
+		req.Header.Set("X-Amz-Tagging", "a=b")
 
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrContentSHA256Mismatch))
+		return checkHTTPResponseApiErr(resp, s3err.GetHeadersNotSignedErr([]string{"x-amz-copy-source", "x-amz-tagging"}))
 	})
 }
 
-func Authentication_md5(s *S3Conf) error {
-	testName := "Authentication_md5"
-	bucket := getBucketName()
-	return authHandler(s, &authConfig{
-		testName: testName,
-		method:   http.MethodPut,
-		body:     nil,
-		service:  "s3",
-		date:     time.Now(),
-		path:     fmt.Sprintf("%s/obj", bucket),
-	}, func(req *http.Request) error {
-		err := setup(s, bucket)
+func Authentication_unsigned_non_required_header(s *S3Conf) error {
+	testName := "Authentication_unsigned_non_required_header"
+	return actionHandler(s, testName, func(_ *s3.Client, bucket string) error {
+		req, err := createSignedReq(http.MethodPut, s.endpoint, fmt.Sprintf("%s/obj", bucket), s.awsID, s.awsSecret, "s3", s.awsRegion, "", nil, time.Now(), nil)
 		if err != nil {
 			return err
 		}
 
-		for i, test := range []struct {
-			md5 string
-			err s3err.APIError
-		}{
-			{"invalid_md5", s3err.GetAPIError(s3err.ErrInvalidDigest)},
-			// valid base64, but invalid md5
-			{"aGVsbCBzLGRham5mamFuc2Y=", s3err.GetAPIError(s3err.ErrInvalidDigest)},
-			// valid md5, but incorrect
-			{"XrY7u+Ae7tCTyyK7j1rNww==", s3err.GetAPIError(s3err.ErrBadDigest)},
-		} {
-			req.Header.Set("Content-Md5", test.md5)
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("X-Custom-Header", "value")
+		req.Header.Set("X-Another-Custom-Header", "value")
 
-			resp, err := s.httpClient.Do(req)
-			if err != nil {
-				return err
-			}
-
-			if err := checkHTTPResponseApiErr(resp, test.err); err != nil {
-				return fmt.Errorf("test %v failed: %v", i+1, err)
-			}
-		}
-
-		err = teardown(s, bucket)
+		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("expected response status code to be %v, instead got %v", http.StatusOK, resp.StatusCode)
 		}
 
 		return nil
@@ -554,13 +555,43 @@ func Authentication_signature_error_incorrect_secret_key(s *S3Conf) error {
 		service:  "s3",
 		date:     time.Now(),
 	}, func(req *http.Request) error {
-
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
 			return err
 		}
 
 		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrSignatureDoesNotMatch))
+	})
+}
+
+func Authentication_sigv2_not_supported(s *S3Conf) error {
+	testName := "Authentication_sigv2_not_supported"
+	bucket := getBucketName()
+	return authHandler(s, &authConfig{
+		testName: testName,
+		method:   http.MethodPut,
+		service:  "s3",
+		date:     time.Now(),
+		path:     fmt.Sprintf("%s/object", bucket),
+	}, func(req *http.Request) error {
+		err := setup(s, bucket)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Del("Authorization")
+		req.Header.Set("Authorization", "AWS seed_signature")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		if err := checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrUnsupportedAuthorizationMechanism)); err != nil {
+			return err
+		}
+
+		return teardown(s, bucket)
 	})
 }
 

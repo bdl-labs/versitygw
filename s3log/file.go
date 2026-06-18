@@ -22,7 +22,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
@@ -56,7 +56,7 @@ func InitFileLogger(logname string) (AuditLogger, error) {
 }
 
 // Log sends log message to file logger
-func (f *FileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMeta) {
+func (f *FileLogger) Log(ctx fiber.Ctx, err error, body []byte, meta LogMeta) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -79,17 +79,17 @@ func (f *FileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMeta) {
 	if !ok {
 		startTime = time.Now()
 	}
-	tlsConnState := ctx.Context().TLSConnectionState()
+	tlsConnState := ctx.RequestCtx().TLSConnectionState()
 	if tlsConnState != nil {
 		lf.CipherSuite = tls.CipherSuiteName(tlsConnState.CipherSuite)
 		lf.TLSVersion = getTLSVersionName(tlsConnState.Version)
 	}
 
 	if err != nil {
-		serr, ok := err.(s3err.APIError)
+		serr, ok := err.(s3err.S3Error)
 		if ok {
-			errorCode = serr.Code
-			httpStatus = serr.HTTPStatusCode
+			errorCode = serr.BaseError().Code
+			httpStatus = serr.BaseError().HTTPStatusCode
 		} else {
 			errorCode = err.Error()
 			httpStatus = 500
@@ -111,7 +111,6 @@ func (f *FileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMeta) {
 	lf.Time = time.Now()
 	lf.RemoteIP = ctx.IP()
 	lf.Requester = access
-	lf.RequestID = genID()
 	lf.Operation = meta.Action
 	lf.Key = object
 	lf.RequestURI = reqURI
@@ -124,11 +123,13 @@ func (f *FileLogger) Log(ctx *fiber.Ctx, err error, body []byte, meta LogMeta) {
 	lf.Referer = ctx.Get("Referer")
 	lf.UserAgent = ctx.Get("User-Agent")
 	lf.VersionID = ctx.Query("versionId")
-	lf.HostID = ctx.Get("X-Amz-Id-2")
 	lf.SignatureVersion = "SigV4"
 	lf.AuthenticationType = "AuthHeader"
 	lf.AccessPointARN = fmt.Sprintf("arn:aws:s3:::%v", strings.Join(path, "/"))
 	lf.AclRequired = "Yes"
+	requestID, hostID := utils.EnsureRequestIDs(ctx)
+	lf.RequestID = requestID
+	lf.HostID = hostID
 
 	f.writeLog(lf)
 }

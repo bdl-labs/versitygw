@@ -158,6 +158,11 @@ func TestS3ApiController_PutBucketOwnershipControls(t *testing.T) {
 	)
 	assert.NoError(t, err)
 
+	emptyRulesBody, err := xml.Marshal(
+		s3response.OwnershipControls{},
+	)
+	assert.NoError(t, err)
+
 	tests := []struct {
 		name   string
 		input  testInput
@@ -195,6 +200,19 @@ func TestS3ApiController_PutBucketOwnershipControls(t *testing.T) {
 			input: testInput{
 				locals: defaultLocals,
 				body:   invalidRuleCountBody,
+			},
+			output: testOutput{
+				response: &Response{
+					MetaOpts: &MetaOptions{BucketOwner: "root"},
+				},
+				err: s3err.GetAPIError(s3err.ErrMalformedXML),
+			},
+		},
+		{
+			name: "empty rules count",
+			input: testInput{
+				locals: defaultLocals,
+				body:   emptyRulesBody,
 			},
 			output: testOutput{
 				response: &Response{
@@ -737,7 +755,7 @@ func TestS3ApiController_CreateBucket(t *testing.T) {
 						BucketOwner: adminAcc.Access,
 					},
 				},
-				err: s3err.GetAPIError(s3err.ErrInvalidBucketName),
+				err: s3err.GetBucketErr(s3err.ErrInvalidBucketName, "invalid_bucket_name"),
 			},
 		},
 		{
@@ -770,7 +788,7 @@ func TestS3ApiController_CreateBucket(t *testing.T) {
 				response: &Response{
 					MetaOpts: &MetaOptions{BucketOwner: adminAcc.Access},
 				},
-				err: s3err.GetAPIError(s3err.ErrInvalidArgument),
+				err: s3err.GetInvalidArgumentErr(s3err.InvalidArgCannedAcl, "invalid_acl"),
 			},
 		},
 		{
@@ -786,7 +804,7 @@ func TestS3ApiController_CreateBucket(t *testing.T) {
 				response: &Response{
 					MetaOpts: &MetaOptions{BucketOwner: adminAcc.Access},
 				},
-				err: s3err.GetAPIError(s3err.ErrInvalidLocationConstraint),
+				err: s3err.GetInvalidLocationConstraintErr("us-west-1"),
 			},
 		},
 		{
@@ -805,11 +823,7 @@ func TestS3ApiController_CreateBucket(t *testing.T) {
 						BucketOwner: adminAcc.Access,
 					},
 				},
-				err: s3err.APIError{
-					Code:           "InvalidArgument",
-					Description:    "Invalid x-amz-object-ownership header: invalid_ownership",
-					HTTPStatusCode: http.StatusBadRequest,
-				},
+				err: s3err.GetInvalidArgObjectOwnership("invalid_ownership"),
 			},
 		},
 		{
@@ -1110,7 +1124,7 @@ func TestS3ApiController_PutBucketAcl(t *testing.T) {
 						BucketOwner: "root",
 					},
 				},
-				err: s3err.GetAPIError(s3err.ErrInvalidArgument),
+				err: s3err.GetInvalidArgumentErr(s3err.InvalidArgCannedAcl, "invalid_acl"),
 			},
 		},
 		{
