@@ -20,6 +20,7 @@ load ./bats-assert/load
 source ./tests/setup.sh
 source ./tests/drivers/create_bucket/create_bucket_rest.sh
 
+# tags: curl,GetObjectLegalHold,legal-hold,object-lock,invalid-header
 @test "REST - legal hold, get without config" {
   if [ "$RECREATE_BUCKETS" == "false" ]; then
     skip "test requires object lock not to be enabled"
@@ -38,10 +39,11 @@ source ./tests/drivers/create_bucket/create_bucket_rest.sh
   run put_object "rest" "$TEST_FILE_FOLDER/$test_file" "$bucket_name" "$test_file"
   assert_success
 
-  run check_legal_hold_without_lock_enabled "$bucket_name" "$test_file" "InvalidRequest"
+  run check_legal_hold_without_lock_enabled "$bucket_name" "$test_file" "InvalidRequest" "Bucket is missing Object Lock Configuration"
   assert_success
 }
 
+# tags: curl,GetObjectLegalHold,legal-hold,object-lock,invalid-header
 @test "REST - legal hold, object lock enabled w/o specific object lock set" {
   run get_file_name
   assert_success
@@ -60,6 +62,6 @@ source ./tests/drivers/create_bucket/create_bucket_rest.sh
   run put_object "rest" "$TEST_FILE_FOLDER/$test_file" "$bucket_name" "$test_file"
   assert_success
 
-  run check_legal_hold_without_lock_enabled "$bucket_name" "$test_file" "NoSuchObjectLockConfiguration"
+  run check_legal_hold_without_lock_enabled "$bucket_name" "$test_file" "NoSuchObjectLockConfiguration" "does not have a ObjectLock configuration"
   assert_success
 }

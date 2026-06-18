@@ -4,14 +4,14 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
-func writeArchiveError(c *fiber.Ctx, status int, message string) error {
+func writeArchiveError(c fiber.Ctx, status int, message string) error {
 	return c.Status(status).SendString(message)
 }
 
-func writeArchiveErrorFrom(c *fiber.Ctx, err error, fallbackStatus int) error {
+func writeArchiveErrorFrom(c fiber.Ctx, err error, fallbackStatus int) error {
 	if err == nil {
 		return nil
 	}

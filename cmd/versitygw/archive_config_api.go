@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/archiveconfig"
 	"github.com/versity/versitygw/s3api"
 )
@@ -18,7 +18,7 @@ func archiveConfigRouteOptions() []s3api.Option {
 }
 
 func archiveConfigGetHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, path, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
@@ -37,7 +37,7 @@ func archiveConfigGetHandler() fiber.Handler {
 }
 
 func archiveConfigPutHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		current, path, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
@@ -65,7 +65,7 @@ func archiveConfigPutHandler() fiber.Handler {
 	}
 }
 
-func authorizeArchiveConfigRequest(c *fiber.Ctx) (archiveconfig.File, string, bool, error) {
+func authorizeArchiveConfigRequest(c fiber.Ctx) (archiveconfig.File, string, bool, error) {
 	cfg, path, err := archiveconfig.Load("")
 	if err != nil {
 		return archiveconfig.File{}, "", false, fiber.NewError(http.StatusInternalServerError, err.Error())
@@ -75,7 +75,7 @@ func authorizeArchiveConfigRequest(c *fiber.Ctx) (archiveconfig.File, string, bo
 	return cfg, path, archiveconfig.CheckBasicAuth(header, cfg), nil
 }
 
-func writeArchiveConfigUnauthorized(c *fiber.Ctx) error {
+func writeArchiveConfigUnauthorized(c fiber.Ctx) error {
 	c.Set("WWW-Authenticate", `Basic realm="optical-archive-config"`)
 	return writeArchiveError(c, http.StatusUnauthorized, "archive config authentication required")
 }

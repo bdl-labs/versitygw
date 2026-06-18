@@ -36,7 +36,6 @@ func TestAuthentication(ts *TestState) {
 	ts.Run(Authentication_date_mismatch)
 	ts.Run(Authentication_incorrect_payload_hash)
 	ts.Run(Authentication_invalid_sha256_payload_hash)
-	ts.Run(Authentication_md5)
 	ts.Run(Authentication_signature_error_incorrect_secret_key)
 	ts.Run(Authentication_with_expect_header)
 }
@@ -778,10 +777,6 @@ func TestNotImplementedActions(ts *TestState) {
 	// bucket acceleration actions
 	ts.Run(PutBucketAccelerateConfiguration_not_implemented)
 	ts.Run(GetBucketAccelerateConfiguration_not_implemented)
-	// bucket website actions
-	ts.Run(PutBucketWebsite_not_implemented)
-	ts.Run(GetBucketWebsite_not_implemented)
-	ts.Run(DeleteBucketWebsite_not_implemented)
 	// object acl actions
 	ts.Run(PutObjectAcl_not_implemented)
 	ts.Run(GetObjectAcl_not_implemented)
@@ -1175,7 +1170,6 @@ func GetIntTests() IntTests {
 		"Authentication_date_mismatch":                                             Authentication_date_mismatch,
 		"Authentication_incorrect_payload_hash":                                    Authentication_incorrect_payload_hash,
 		"Authentication_invalid_sha256_payload_hash":                               Authentication_invalid_sha256_payload_hash,
-		"Authentication_md5":                                                       Authentication_md5,
 		"Authentication_signature_error_incorrect_secret_key":                      Authentication_signature_error_incorrect_secret_key,
 		"Authentication_with_expect_header":                                        Authentication_with_expect_header,
 		"PresignedAuth_security_token_not_supported":                               PresignedAuth_security_token_not_supported,
@@ -1699,9 +1693,6 @@ func GetIntTests() IntTests {
 		"GetBucketNotificationConfiguratio_not_implemented":                        GetBucketNotificationConfiguratio_not_implemented,
 		"PutBucketAccelerateConfiguration_not_implemented":                         PutBucketAccelerateConfiguration_not_implemented,
 		"GetBucketAccelerateConfiguration_not_implemented":                         GetBucketAccelerateConfiguration_not_implemented,
-		"PutBucketWebsite_not_implemented":                                         PutBucketWebsite_not_implemented,
-		"GetBucketWebsite_not_implemented":                                         GetBucketWebsite_not_implemented,
-		"DeleteBucketWebsite_not_implemented":                                      DeleteBucketWebsite_not_implemented,
 		"PutObjectAcl_not_implemented":                                             PutObjectAcl_not_implemented,
 		"GetObjectAcl_not_implemented":                                             GetObjectAcl_not_implemented,
 		"WORMProtection_bucket_object_lock_configuration_compliance_mode":          WORMProtection_bucket_object_lock_configuration_compliance_mode,

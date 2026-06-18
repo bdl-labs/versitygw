@@ -18,7 +18,7 @@ import (
 	"io"
 	"strconv"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
@@ -27,13 +27,17 @@ import (
 func VerifyPresignedV4Signature(root RootUserConfig, iam auth.IAMService, region string, streamBody bool) fiber.Handler {
 	acct := accounts{root: root, iam: iam}
 
-	return func(ctx *fiber.Ctx) error {
+	return func(ctx fiber.Ctx) error {
 		// The bucket is public, no need to check this signature
 		if utils.ContextKeyPublicBucket.IsSet(ctx) {
 			return nil
 		}
 		if !utils.IsPresignedURLAuth(ctx) {
 			return nil
+		}
+		if utils.IsPresignedURLAuthV2(ctx) {
+			// SigV2 authorization is not supported by the gateway
+			return s3err.GetAPIError(s3err.ErrUnsupportedAuthorizationMechanism)
 		}
 
 		if ctx.Request().URI().QueryArgs().Has("X-Amz-Security-Token") {
@@ -54,13 +58,13 @@ func VerifyPresignedV4Signature(root RootUserConfig, iam auth.IAMService, region
 
 		account, err := acct.getAccount(authData.Access)
 		if err == auth.ErrNoSuchUser {
-			return s3err.GetAPIError(s3err.ErrInvalidAccessKeyID)
+			return s3err.GetInvalidAccessKeyIdErr(authData.Access)
 		}
 		if err != nil {
 			return err
 		}
 		utils.ContextKeyAccount.Set(ctx, account)
-		ctx.Context().SetUserValue("account", account)
+		ctx.Locals("account", account)
 
 		var contentLength int64
 		contentLengthStr := ctx.Get("Content-Length")
@@ -72,7 +76,15 @@ func VerifyPresignedV4Signature(root RootUserConfig, iam auth.IAMService, region
 			}
 		}
 
+		err = utils.CheckPresignedSignature(ctx, authData, account.Secret)
+		if err != nil {
+			return err
+		}
+
 		if streamBody {
+			wrapBodyReader(ctx, func(r io.Reader) io.Reader {
+				return r
+			})
 			// Content-Length has to be set for data uploads: PutObject, UploadPart
 			if contentLengthStr == "" {
 				return s3err.GetAPIError(s3err.ErrMissingContentLength)
@@ -80,18 +92,8 @@ func VerifyPresignedV4Signature(root RootUserConfig, iam auth.IAMService, region
 			// the upload limit for big data actions: PutObject, UploadPart
 			// is 5gb. If the size exceeds the limit, return 'EntityTooLarge' err
 			if contentLength > maxObjSizeLimit {
-				return s3err.GetAPIError(s3err.ErrEntityTooLarge)
+				return s3err.GetEntityTooLargeErr(contentLength, maxObjSizeLimit)
 			}
-			wrapBodyReader(ctx, func(r io.Reader) io.Reader {
-				return utils.NewPresignedAuthReader(ctx, r, authData, account.Secret)
-			})
-
-			return nil
-		}
-
-		err = utils.CheckPresignedSignature(ctx, authData, account.Secret, streamBody)
-		if err != nil {
-			return err
 		}
 
 		return nil

@@ -2887,7 +2887,7 @@ func (b *BurnBridge) ListParts(_ context.Context, input *s3.ListPartsInput) (s3r
 	if input.PartNumberMarker != nil && strings.TrimSpace(*input.PartNumberMarker) != "" {
 		partNumberMarker, err = strconv.Atoi(strings.TrimSpace(*input.PartNumberMarker))
 		if err != nil {
-			return s3response.ListPartsResult{}, s3err.GetInvalidMaxLimiterErr("part-number-marker")
+			return s3response.ListPartsResult{}, s3err.GetInvalidArgMaxLimiter("part-number-marker", *input.PartNumberMarker)
 		}
 	}
 	maxParts := int(listDefaultMaxKeys)
@@ -4479,7 +4479,7 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 	}
 
 	if input.PartNumber != nil && *input.PartNumber > 1 {
-		return nil, s3err.GetAPIError(s3err.ErrInvalidPartNumber)
+		return nil, s3err.GetInvalidPartNumberRangeErr(1, *input.PartNumber)
 	}
 
 	idx := objectLockIndex(bucket, key)

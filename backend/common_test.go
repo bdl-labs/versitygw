@@ -15,11 +15,144 @@
 package backend
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 
 	"github.com/versity/versitygw/s3err"
 )
+
+func TestMpUploadMetadataRawGzipRoundTrip(t *testing.T) {
+	want := MpUploadMetadata{
+		UploadID: "upload-id",
+		Parts:    []int64{5, 12, 12},
+	}
+
+	stored, err := MarshalMpUploadMetadata(want, false)
+	if err != nil {
+		t.Fatalf("MarshalMpUploadMetadata: %v", err)
+	}
+	if len(stored) < 2 || stored[0] != 0x1f || stored[1] != 0x8b {
+		t.Fatalf("stored metadata should contain raw gzip payload: %q", stored)
+	}
+	if bytes.HasPrefix(stored, []byte("{")) {
+		t.Fatalf("stored metadata should not be raw JSON: %q", stored)
+	}
+
+	got, err := UnmarshalMpUploadMetadata(stored, false)
+	if err != nil {
+		t.Fatalf("UnmarshalMpUploadMetadata: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata mismatch: got %+v want %+v", got, want)
+	}
+}
+
+func TestMpUploadMetadataBase64RoundTrip(t *testing.T) {
+	want := MpUploadMetadata{
+		UploadID: "azure-upload-id",
+		Parts:    []int64{10, 20, 35},
+	}
+
+	stored, err := MarshalMpUploadMetadata(want, true)
+	if err != nil {
+		t.Fatalf("MarshalMpUploadMetadata: %v", err)
+	}
+	if len(stored) >= 2 && stored[0] == 0x1f && stored[1] == 0x8b {
+		t.Fatalf("stored metadata should not contain raw gzip bytes: %q", stored)
+	}
+
+	got, err := UnmarshalMpUploadMetadata(stored, true)
+	if err != nil {
+		t.Fatalf("UnmarshalMpUploadMetadata: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata mismatch: got %+v want %+v", got, want)
+	}
+}
+
+func TestUnmarshalMpUploadMetadataLegacyJSON(t *testing.T) {
+	want := MpUploadMetadata{
+		UploadID: "legacy-upload-id",
+		Parts:    []int64{1, 3, 6},
+	}
+
+	stored, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+
+	got, err := UnmarshalMpUploadMetadata(stored, false)
+	if err != nil {
+		t.Fatalf("UnmarshalMpUploadMetadata: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata mismatch: got %+v want %+v", got, want)
+	}
+	got, err = UnmarshalMpUploadMetadata(stored, true)
+	if err != nil {
+		t.Fatalf("UnmarshalMpUploadMetadata: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("metadata mismatch: got %+v want %+v", got, want)
+	}
+}
+
+func TestUnmarshalMpUploadMetadataInvalid(t *testing.T) {
+	_, err := UnmarshalMpUploadMetadata([]byte("not-gzip-or-json"), false)
+	if err == nil {
+		t.Fatal("expected invalid metadata error")
+	}
+}
+
+func TestWebsiteConfigRawGzipRoundTrip(t *testing.T) {
+	want := []byte(`<WebsiteConfiguration><IndexDocument><Suffix>index.html</Suffix></IndexDocument></WebsiteConfiguration>`)
+
+	stored, err := MarshalWebsiteConfig(want, false)
+	if err != nil {
+		t.Fatalf("MarshalWebsiteConfig: %v", err)
+	}
+	if len(stored) < 2 || stored[0] != 0x1f || stored[1] != 0x8b {
+		t.Fatalf("stored website config should contain raw gzip payload: %q", stored)
+	}
+
+	got, err := UnmarshalWebsiteConfig(stored, false)
+	if err != nil {
+		t.Fatalf("UnmarshalWebsiteConfig: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("website config mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestWebsiteConfigBase64RoundTrip(t *testing.T) {
+	want := []byte(`<WebsiteConfiguration><RedirectAllRequestsTo><HostName>example.com</HostName></RedirectAllRequestsTo></WebsiteConfiguration>`)
+
+	stored, err := MarshalWebsiteConfig(want, true)
+	if err != nil {
+		t.Fatalf("MarshalWebsiteConfig: %v", err)
+	}
+	if len(stored) >= 2 && stored[0] == 0x1f && stored[1] == 0x8b {
+		t.Fatalf("stored website config should not contain raw gzip bytes: %q", stored)
+	}
+
+	got, err := UnmarshalWebsiteConfig(stored, true)
+	if err != nil {
+		t.Fatalf("UnmarshalWebsiteConfig: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("website config mismatch: got %q want %q", got, want)
+	}
+}
+
+func TestUnmarshalWebsiteConfigInvalid(t *testing.T) {
+	_, err := UnmarshalWebsiteConfig([]byte("not-gzip"), false)
+	if err == nil {
+		t.Fatal("expected invalid website config error")
+	}
+}
 
 func TestParseCopySource(t *testing.T) {
 	tests := []struct {
@@ -29,7 +162,7 @@ func TestParseCopySource(t *testing.T) {
 		wantObject       string
 		wantVersionId    string
 		wantErr          bool
-		wantErrCode      s3err.ErrorCode
+		wantErrValue     error
 	}{
 		{
 			name:             "simple path",
@@ -88,13 +221,45 @@ func TestParseCopySource(t *testing.T) {
 			wantErr:          false,
 		},
 		{
+			name:             "percent-encoded slash as bucket/key separator",
+			copySourceHeader: "my-namespace-test-container%2Ftest-blob",
+			wantBucket:       "my-namespace-test-container",
+			wantObject:       "test-blob",
+			wantVersionId:    "",
+			wantErr:          false,
+		},
+		{
+			name:             "percent-encoded slash separator with leading slash",
+			copySourceHeader: "/my-namespace-test-container%2Ftest-blob",
+			wantBucket:       "my-namespace-test-container",
+			wantObject:       "test-blob",
+			wantVersionId:    "",
+			wantErr:          false,
+		},
+		{
+			name:             "percent-encoded slash separator with versionId",
+			copySourceHeader: "my-bucket%2Fmy-object?versionId=abc123",
+			wantBucket:       "my-bucket",
+			wantObject:       "my-object",
+			wantVersionId:    "abc123",
+			wantErr:          false,
+		},
+		{
+			name:             "percent-encoded slash separator with encoded object key",
+			copySourceHeader: "my-bucket%2Fmy%20folder%2Fmy%20object",
+			wantBucket:       "my-bucket",
+			wantObject:       "my folder/my object",
+			wantVersionId:    "",
+			wantErr:          false,
+		},
+		{
 			name:             "invalid URL encoding - incomplete escape",
 			copySourceHeader: "mybucket/object%",
 			wantBucket:       "",
 			wantObject:       "",
 			wantVersionId:    "",
 			wantErr:          true,
-			wantErrCode:      s3err.ErrInvalidCopySourceEncoding,
+			wantErrValue:     s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceEncoding, "mybucket/object%"),
 		},
 		{
 			name:             "invalid URL encoding - invalid hex",
@@ -103,7 +268,16 @@ func TestParseCopySource(t *testing.T) {
 			wantObject:       "",
 			wantVersionId:    "",
 			wantErr:          true,
-			wantErrCode:      s3err.ErrInvalidCopySourceEncoding,
+			wantErrValue:     s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceEncoding, "mybucket/object%ZZ"),
+		},
+		{
+			name:             "empty string",
+			copySourceHeader: "",
+			wantBucket:       "",
+			wantObject:       "",
+			wantVersionId:    "",
+			wantErr:          true,
+			wantErrValue:     s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceBucket, ""),
 		},
 		{
 			name:             "missing object",
@@ -112,7 +286,7 @@ func TestParseCopySource(t *testing.T) {
 			wantObject:       "",
 			wantVersionId:    "",
 			wantErr:          true,
-			wantErrCode:      s3err.ErrInvalidCopySourceBucket,
+			wantErrValue:     s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceBucket, "mybucket"),
 		},
 	}
 
@@ -125,8 +299,8 @@ func TestParseCopySource(t *testing.T) {
 					t.Errorf("ParseCopySource() error = nil, wantErr %v", tt.wantErr)
 					return
 				}
-				if !errors.Is(err, s3err.GetAPIError(tt.wantErrCode)) {
-					t.Errorf("ParseCopySource() error = %v, want error code %v", err, tt.wantErrCode)
+				if !errors.Is(err, tt.wantErrValue) {
+					t.Errorf("ParseCopySource() error = %v, want error %v", err, tt.wantErrValue)
 				}
 				return
 			}

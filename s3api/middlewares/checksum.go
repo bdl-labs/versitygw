@@ -20,7 +20,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/s3api/utils"
 	"github.com/versity/versitygw/s3err"
 )
@@ -32,19 +32,25 @@ import (
 // it wraps the body reader to handle Content-MD5:
 // the x-amz-checksum-* headers are explicitly processed by the backend.
 func VerifyChecksums(streamBody bool, requireBody bool, requireChecksum bool) fiber.Handler {
-	return func(ctx *fiber.Ctx) error {
-		md5sum := ctx.Get("Content-Md5")
+	return func(ctx fiber.Ctx) error {
+		md5Header := ctx.Request().Header.Peek("Content-Md5")
+		hasMD5Header := md5Header != nil
+		md5sum := string(md5Header)
+
+		if hasMD5Header && md5sum == "" {
+			return s3err.GetInvalidDigestErr(md5sum)
+		}
 
 		if streamBody {
 			// for large data actions(PutObject, UploadPart)
 			// only stack the md5 reader,as x-amz-checksum-*
 			// calculation is explicitly handled in back-end
-			if md5sum == "" {
+			if !hasMD5Header {
 				return nil
 			}
 
 			if !isValidMD5(md5sum) {
-				return s3err.GetAPIError(s3err.ErrInvalidDigest)
+				return s3err.GetInvalidDigestErr(md5sum)
 			}
 
 			var err error
@@ -58,7 +64,7 @@ func VerifyChecksums(streamBody bool, requireBody bool, requireChecksum bool) fi
 			return nil
 		}
 
-		body := ctx.Body()
+		body := ctx.BodyRaw()
 		if requireBody && len(body) == 0 {
 			return s3err.GetAPIError(s3err.ErrMissingRequestBody)
 		}
@@ -67,7 +73,7 @@ func VerifyChecksums(streamBody bool, requireBody bool, requireChecksum bool) fi
 		var err error
 		if md5sum != "" {
 			if !isValidMD5(md5sum) {
-				return s3err.GetAPIError(s3err.ErrInvalidDigest)
+				return s3err.GetInvalidDigestErr(md5sum)
 			}
 
 			rdr, err = utils.NewHashReader(bytes.NewReader(body), md5sum, utils.HashTypeContentMD5)

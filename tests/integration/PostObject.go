@@ -49,7 +49,7 @@ func PostObject_invalid_content_type(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrPreconditionFailed))
+		return checkHTTPResponseApiErr(resp, s3err.GetPreconditionFailedErr(s3err.ConditionPostBucket))
 	})
 }
 
@@ -123,7 +123,7 @@ func PostObject_invalid_algorithm(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrOnlyAws4HmacSha256))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidArgumentErr(s3err.InvalidArgOnlyAws4HmacSha256, "invalid"))
 	})
 }
 
@@ -143,7 +143,7 @@ func PostObject_invalid_date(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidDateHeader))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidArgumentErr(s3err.InvalidArgDateHeader, "invalid_date"))
 	})
 }
 
@@ -163,7 +163,7 @@ func PostObject_invalid_credential_format(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.PostAuth.MalformedCredential())
+		return checkHTTPResponseApiErr(resp, s3err.PostAuth.MalformedCredential("malformed-no-slashes"))
 	})
 }
 
@@ -186,18 +186,20 @@ func PostObject_incorrect_region(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.PostAuth.IncorrectRegion(s.awsRegion, wrongRegion))
+		expectedCreds := fmt.Sprintf("%s/%s/%s/s3/aws4_request", s.awsID, time.Now().UTC().Format("20060102"), wrongRegion)
+		return checkHTTPResponseApiErr(resp, s3err.PostAuth.IncorrectRegion(expectedCreds, s.awsRegion, wrongRegion))
 	})
 }
 
 func PostObject_non_existing_access_key(s *S3Conf) error {
 	testName := "PostObject_non_existing_access_key"
 	return actionHandlerNoSetup(s, testName, func(s3client *s3.Client, bucket string) error {
+		accessKeyID := "this_access_key_id_can_not_really_exist"
 		resp, err := sendPostObject(PostRequestConfig{
 			bucket:      bucket,
 			key:         "test-object",
 			s3Conf:      s,
-			access:      "this_access_key_id_can_not_really_exist",
+			access:      accessKeyID,
 			secret:      "a_very_secure_secret_access_key",
 			fileContent: []byte("data"),
 		})
@@ -205,28 +207,57 @@ func PostObject_non_existing_access_key(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidAccessKeyID))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidAccessKeyIdErr(accessKeyID))
 	})
 }
 
 func PostObject_signature_mismatch(s *S3Conf) error {
 	testName := "PostObject_signature_mismatch"
 	return actionHandlerNoSetup(s, testName, func(s3client *s3.Client, bucket string) error {
-		resp, err := sendPostObject(PostRequestConfig{
+		const signature = "incorrect_signature"
+		req, fields, err := newPostObjectRequest(PostRequestConfig{
 			bucket:      bucket,
 			key:         "test-object",
 			s3Conf:      s,
 			fileContent: []byte("data"),
 			extraFields: map[string]string{
-				"x-amz-signature": "incorrect_signature",
+				"x-amz-signature": signature,
 			},
 		})
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrSignatureDoesNotMatch))
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+
+		var errResp APIErrorResponse
+		err = xml.Unmarshal(body, &errResp)
+		if err != nil {
+			return err
+		}
+
+		expected := s3err.GetSignatureDoesNotMatchErr(s.awsID, fields["policy"], signature, hexBytes(fields["policy"]), "", "")
+
+		if resp.StatusCode != expected.HTTPStatusCode {
+			return fmt.Errorf("expected response status code to be %v, instead got %v", expected.HTTPStatusCode, resp.StatusCode)
+		}
+		return compareS3ApiErrFields(
+			compareErrField("AWSAccessKeyId", expected.AWSAccessKeyId, errResp.AWSAccessKeyId),
+			compareErrField("StringToSign", expected.StringToSign, errResp.StringToSign),
+			compareErrField("SignatureProvided", expected.SignatureProvided, errResp.SignatureProvided),
+			compareErrField("StringToSignBytes", expected.StringToSignBytes, errResp.StringToSignBytes),
+			checkErrFieldEmptiness("CanonicalRequest", expected.CanonicalRequest, false),
+			checkErrFieldEmptiness("CanonicalRequestBytes", expected.CanonicalRequestBytes, false),
+		)
 	})
 }
 
@@ -275,6 +306,44 @@ func PostObject_access_denied(s *S3Conf) error {
 		}
 
 		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrAccessDenied))
+	})
+}
+
+func PostObject_invalid_object_names(s *S3Conf) error {
+	testName := "PostObject_invalid_object_names"
+	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
+		for _, obj := range []string{
+			".",
+			"..",
+			"./",
+			"/.",
+			"//",
+			"../",
+			"/..",
+			"../.",
+			"../../../.",
+			"../../../etc/passwd",
+			"../../../../tmp/foo",
+			"for/../../bar/",
+			"a/a/a/../../../../../etc/passwd",
+			"/a/../../b/../../c/../../../etc/passwd",
+		} {
+			resp, err := sendPostObject(PostRequestConfig{
+				bucket:      bucket,
+				key:         obj,
+				s3Conf:      s,
+				fileContent: []byte("data"),
+			})
+			if err != nil {
+				return err
+			}
+
+			if err := checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrBadRequest)); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	})
 }
 
@@ -466,7 +535,7 @@ func PostObject_invalid_policy_document(s *S3Conf) error {
 			policy     *string
 			expiration time.Time
 			conditions []any
-			err        s3err.APIError
+			err        s3err.S3Error
 		}{
 			// empty policy document
 			{getPtr(""), time.Time{}, []any{}, s3err.InvalidPolicyDocument.EmptyPolicy()},
@@ -616,7 +685,7 @@ func PostObject_policy_content_length_too_large(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrEntityTooLarge))
+		return checkHTTPResponseApiErr(resp, s3err.GetEntityTooLargeErr(10, 5))
 	})
 }
 
@@ -637,7 +706,7 @@ func PostObject_policy_content_length_too_small(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrEntityTooSmall))
+		return checkHTTPResponseApiErr(resp, s3err.GetEntityTooSmallErr(2, 100))
 	})
 }
 
@@ -818,6 +887,7 @@ func PostObject_success_with_meta_properties(s *S3Conf) error {
 		cLanguage := "en-US"
 		cDisposition := "inline"
 		cEncoding := "gzip"
+		redirectLocation := "/post-object-redirect"
 
 		resp, err := sendPostObject(PostRequestConfig{
 			bucket:      bucket,
@@ -831,18 +901,20 @@ func PostObject_success_with_meta_properties(s *S3Conf) error {
 				[]any{"eq", "$Content-Encoding", cEncoding},
 				[]any{"eq", "$Cache-Control", cacheControl},
 				[]any{"eq", "$Expires", expires},
+				[]any{"eq", "$x-amz-website-redirect-location", redirectLocation},
 				[]any{"eq", "$x-amz-meta-foo", "bar"},
 				[]any{"eq", "$x-amz-meta-baz", "quxx"},
 			},
 			extraFields: map[string]string{
-				"Content-Type":        cType,
-				"Cache-Control":       cacheControl,
-				"Expires":             expires,
-				"Content-Language":    cLanguage,
-				"Content-Disposition": cDisposition,
-				"Content-Encoding":    cEncoding,
-				"x-amz-meta-foo":      "bar",
-				"x-amz-meta-baz":      "quxx",
+				"Content-Type":                    cType,
+				"Cache-Control":                   cacheControl,
+				"Expires":                         expires,
+				"Content-Language":                cLanguage,
+				"Content-Disposition":             cDisposition,
+				"Content-Encoding":                cEncoding,
+				"x-amz-website-redirect-location": redirectLocation,
+				"x-amz-meta-foo":                  "bar",
+				"x-amz-meta-baz":                  "quxx",
 			},
 		})
 		if err != nil {
@@ -886,6 +958,10 @@ func PostObject_success_with_meta_properties(s *S3Conf) error {
 			return fmt.Errorf("expected Cache-Control %s, instead got %s",
 				cacheControl, getString(out.CacheControl))
 		}
+		if getString(out.WebsiteRedirectLocation) != redirectLocation {
+			return fmt.Errorf("expected WebsiteRedirectLocation %s, instead got %s",
+				redirectLocation, getString(out.WebsiteRedirectLocation))
+		}
 
 		expectedMeta := map[string]string{
 			"foo": "bar",
@@ -897,6 +973,30 @@ func PostObject_success_with_meta_properties(s *S3Conf) error {
 		}
 
 		return nil
+	})
+}
+
+func PostObject_invalid_website_redirect_location(s *S3Conf) error {
+	testName := "PostObject_invalid_website_redirect_location"
+	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
+		redirectLocation := "ftp://example.com"
+		resp, err := sendPostObject(PostRequestConfig{
+			bucket:      bucket,
+			key:         "test-object",
+			s3Conf:      s,
+			fileContent: []byte("data"),
+			policyConditions: []any{
+				[]any{"eq", "$x-amz-website-redirect-location", redirectLocation},
+			},
+			extraFields: map[string]string{
+				"x-amz-website-redirect-location": redirectLocation,
+			},
+		})
+		if err != nil {
+			return err
+		}
+
+		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidRedirectLocation))
 	})
 }
 

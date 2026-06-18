@@ -35,6 +35,11 @@ type BucketLockConfig struct {
 	CreatedAt        *time.Time
 }
 
+const (
+	maxObjectLockRetentionDays  int32 = 36500
+	maxObjectLockRetentionYears int32 = 100
+)
+
 func ParseBucketLockConfigurationInput(input []byte) ([]byte, error) {
 	var lockConfig types.ObjectLockConfiguration
 	if err := xml.Unmarshal(input, &lockConfig); err != nil {
@@ -60,10 +65,16 @@ func ParseBucketLockConfigurationInput(input []byte) ([]byte, error) {
 		}
 
 		if retention.Days != nil && *retention.Days <= 0 {
-			return nil, s3err.GetAPIError(s3err.ErrObjectLockInvalidRetentionPeriod)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectLockRetentionDays, fmt.Sprint(*retention.Days))
+		}
+		if retention.Days != nil && *retention.Days > maxObjectLockRetentionDays {
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectLockRetentionDaysTooLarge, fmt.Sprint(*retention.Days))
 		}
 		if retention.Years != nil && *retention.Years <= 0 {
-			return nil, s3err.GetAPIError(s3err.ErrObjectLockInvalidRetentionPeriod)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectLockRetentionYears, fmt.Sprint(*retention.Years))
+		}
+		if retention.Years != nil && *retention.Years > maxObjectLockRetentionYears {
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectLockRetentionYearsTooLarge, fmt.Sprint(*retention.Years))
 		}
 
 		config.DefaultRetention = retention
@@ -102,7 +113,7 @@ func ParseObjectLockRetentionInput(input []byte) (*s3response.PutObjectRetention
 
 	if retention.RetainUntilDate.Before(time.Now()) {
 		debuglogger.Logf("object lock retain until date must be in the future")
-		return nil, s3err.GetAPIError(s3err.ErrPastObjectLockRetainDate)
+		return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgPastObjectLockRetainDate, retention.RetainUntilDate.Format(time.RFC3339))
 	}
 	switch retention.Mode {
 	case types.ObjectLockRetentionModeCompliance:
@@ -173,7 +184,7 @@ func IsObjectLockRetentionPutAllowed(ctx context.Context, be backend.Backend, bu
 		debuglogger.Logf("failed to get the bucket policy: %v", err)
 		return s3err.GetAPIError(s3err.ErrObjectLocked)
 	}
-	err = VerifyBucketPolicy(policy, userAccess, bucket, object, BypassGovernanceRetentionAction)
+	err = VerifyBucketPolicy(policy, userAccess, bucket, object, be.NormalizeObjectKey, BypassGovernanceRetentionAction)
 	if err != nil {
 		// if user doesn't have "s3:BypassGovernanceRetention" permission
 		// return object is locked
@@ -316,9 +327,9 @@ func CheckObjectAccess(ctx context.Context, bucket, userAccess string, objects [
 							return err
 						}
 						if isBucketPublic {
-							err = VerifyPublicBucketPolicy(policy, bucket, key, BypassGovernanceRetentionAction)
+							err = VerifyPublicBucketPolicy(policy, bucket, key, be.NormalizeObjectKey, BypassGovernanceRetentionAction)
 						} else {
-							err = VerifyBucketPolicy(policy, userAccess, bucket, key, BypassGovernanceRetentionAction)
+							err = VerifyBucketPolicy(policy, userAccess, bucket, key, be.NormalizeObjectKey, BypassGovernanceRetentionAction)
 						}
 						if err != nil {
 							return s3err.GetAPIError(s3err.ErrObjectLocked)
@@ -362,9 +373,9 @@ func CheckObjectAccess(ctx context.Context, bucket, userAccess string, objects [
 						return err
 					}
 					if isBucketPublic {
-						err = VerifyPublicBucketPolicy(policy, bucket, key, BypassGovernanceRetentionAction)
+						err = VerifyPublicBucketPolicy(policy, bucket, key, be.NormalizeObjectKey, BypassGovernanceRetentionAction)
 					} else {
-						err = VerifyBucketPolicy(policy, userAccess, bucket, key, BypassGovernanceRetentionAction)
+						err = VerifyBucketPolicy(policy, userAccess, bucket, key, be.NormalizeObjectKey, BypassGovernanceRetentionAction)
 					}
 					if err != nil {
 						return s3err.GetAPIError(s3err.ErrObjectLocked)

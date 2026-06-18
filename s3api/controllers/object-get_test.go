@@ -455,7 +455,7 @@ func TestS3ApiController_ListParts(t *testing.T) {
 						BucketOwner: "root",
 					},
 				},
-				err: s3err.GetInvalidMaxLimiterErr(utils.LimiterTypePartNumberMarker),
+				err: s3err.GetInvalidArgMaxLimiter(string(utils.LimiterTypePartNumberMarker), "foo"),
 			},
 		},
 		{
@@ -472,7 +472,7 @@ func TestS3ApiController_ListParts(t *testing.T) {
 						BucketOwner: "root",
 					},
 				},
-				err: s3err.GetNegativeMaxLimiterErr(utils.LimiterTypeMaxParts),
+				err: s3err.GetInvalidArgNegativeMaxLimiter(string(utils.LimiterTypeMaxParts), "-1"),
 			},
 		},
 		{
@@ -580,7 +580,7 @@ func TestS3ApiController_GetObjectAttributes(t *testing.T) {
 						BucketOwner: "root",
 					},
 				},
-				err: s3err.GetAPIError(s3err.ErrInvalidObjectAttributes),
+				err: s3err.GetInvalidArgumentErr(s3err.InvalidArgObjectAttributes, "invalid_attribute"),
 			},
 		},
 		{
@@ -719,7 +719,7 @@ func TestS3ApiController_GetObject(t *testing.T) {
 						BucketOwner: "root",
 					},
 				},
-				err: s3err.GetAPIError(s3err.ErrInvalidPartNumber),
+				err: s3err.GetInvalidArgumentErr(s3err.InvalidArgPartNumber, "-2"),
 			},
 		},
 		{
@@ -794,6 +794,7 @@ func TestS3ApiController_GetObject(t *testing.T) {
 						"Content-Language":                    nil,
 						"Cache-Control":                       nil,
 						"Expires":                             nil,
+						"x-amz-website-redirect-location":     nil,
 						"x-amz-checksum-crc32":                nil,
 						"x-amz-checksum-crc64nvme":            nil,
 						"x-amz-checksum-crc32c":               nil,
@@ -844,6 +845,7 @@ func TestS3ApiController_GetObject(t *testing.T) {
 						"Content-Language":                    nil,
 						"Cache-Control":                       nil,
 						"Expires":                             nil,
+						"x-amz-website-redirect-location":     nil,
 						"x-amz-checksum-crc32":                nil,
 						"x-amz-checksum-crc64nvme":            nil,
 						"x-amz-checksum-crc32c":               nil,

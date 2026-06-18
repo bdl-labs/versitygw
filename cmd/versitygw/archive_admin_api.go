@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/archiveconfig"
 	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
 	"github.com/versity/versitygw/s3api"
@@ -38,7 +38,7 @@ func archiveAdminRouteOptions() []s3api.Option {
 }
 
 func archiveVersionHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
@@ -49,12 +49,12 @@ func archiveVersionHandler() fiber.Handler {
 
 		response := archiveVersionResponse{
 			Gateway: map[string]any{
-				"serviceName":  "VersityGW",
+				"serviceName":    "VersityGW",
 				"serviceVersion": Version,
-				"build":        Build,
-				"buildTime":    BuildTime,
-				"goVersion":    runtime.Version(),
-				"osArch":       runtime.GOOS + "/" + runtime.GOARCH,
+				"build":          Build,
+				"buildTime":      BuildTime,
+				"goVersion":      runtime.Version(),
+				"osArch":         runtime.GOOS + "/" + runtime.GOARCH,
 			},
 		}
 
@@ -72,7 +72,7 @@ func archiveVersionHandler() fiber.Handler {
 }
 
 func archiveLicenseUploadHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, path, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
@@ -111,7 +111,7 @@ func archiveLicenseUploadHandler() fiber.Handler {
 }
 
 func archiveUpgradeUploadHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
@@ -153,7 +153,7 @@ func archiveUpgradeUploadHandler() fiber.Handler {
 }
 
 func archiveUpgradeApplyHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)

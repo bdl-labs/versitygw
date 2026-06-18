@@ -18,6 +18,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -37,10 +39,17 @@ func VerifyObjectCopyAccess(ctx context.Context, be backend.Backend, copySource 
 	if err := VerifyAccess(ctx, be, opts); err != nil {
 		return err
 	}
-	// Verify source bucket access
-	srcBucket, srcObject, found := strings.Cut(copySource, "/")
+	// Verify source bucket access.
+	// URL-decode the copy source before splitting so that clients which send
+	// the bucket/key separator as "%2F" are handled correctly.
+	// Callers are expected to have already stripped any leading '/'.
+	decodedSrc, err := url.QueryUnescape(copySource)
+	if err != nil {
+		return s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceEncoding, copySource)
+	}
+	srcBucket, srcObject, found := strings.Cut(decodedSrc, "/")
 	if !found {
-		return s3err.GetAPIError(s3err.ErrInvalidCopySourceBucket)
+		return s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceBucket, copySource)
 	}
 
 	// Get source bucket ACL
@@ -105,7 +114,7 @@ func VerifyAccess(ctx context.Context, be backend.Backend, opts AccessOptions) e
 			return policyErr
 		}
 	} else {
-		return VerifyBucketPolicy(policy, opts.Acc.Access, opts.Bucket, opts.Object, opts.Actions...)
+		return VerifyBucketPolicy(policy, opts.Acc.Access, opts.Bucket, opts.Object, be.NormalizeObjectKey, opts.Actions...)
 	}
 
 	if err := verifyACL(opts.Acl, opts.Acc.Access, opts.AclPermission, opts.DisableACL); err != nil {
@@ -113,13 +122,6 @@ func VerifyAccess(ctx context.Context, be backend.Backend, opts AccessOptions) e
 	}
 
 	return nil
-}
-
-// Detects if the action is policy related
-// e.g.
-// 'GetBucketPolicy', 'PutBucketPolicy'
-func isPolicyAction(action Action) bool {
-	return action == GetBucketPolicyAction || action == PutBucketPolicyAction
 }
 
 // VerifyPublicAccess checks if the bucket is publically accessible by ACL or Policy
@@ -130,12 +132,22 @@ func VerifyPublicAccess(ctx context.Context, be backend.Backend, action Action, 
 		return err
 	}
 	if err == nil {
-		err = VerifyPublicBucketPolicy(policy, bucket, object, action)
+		err = VerifyPublicBucketPolicy(policy, bucket, object, be.NormalizeObjectKey, action)
+		if errors.Is(err, errExplicitDeny) {
+			// Explicit public-policy Deny has higher precedence than any
+			// public ACL grant, so do not continue to ACL fallback.
+			return s3err.GetAPIError(s3err.ErrAccessDenied)
+		}
 		if err == nil {
 			// if ACLs are disabled, and the bucket grants public access,
 			// policy actions should return 'MethodNotAllowed'
-			if isPolicyAction(action) {
-				return s3err.GetAPIError(s3err.ErrMethodNotAllowed)
+			switch action {
+			case GetBucketPolicyAction:
+				return s3err.GetMethodNotAllowedErr(http.MethodGet, s3err.ResourceTypeBucketPolicy, nil)
+			case PutBucketPolicyAction:
+				return s3err.GetMethodNotAllowedErr(http.MethodPut, s3err.ResourceTypeBucketPolicy, nil)
+			case DeleteBucketPolicyAction:
+				return s3err.GetMethodNotAllowedErr(http.MethodDelete, s3err.ResourceTypeBucketPolicy, nil)
 			}
 
 			return nil

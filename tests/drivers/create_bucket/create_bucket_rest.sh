@@ -125,13 +125,16 @@ get_bucket_prefix() {
   if ! check_param_count_v2 "bucket prefix or name" 1 $#; then
     return 1
   fi
+  local prefix
+
   if [ "$RECREATE_BUCKETS" == "true" ]; then
-    # remove date/time suffix
-    prefix="$(echo "$1" | awk '{print substr($0, 1, length($0)-15)}')"
+    # remove buckets with suffix
+    prefix="$1-"
   else
     prefix="$1"
   fi
   echo "$prefix"
+  return 0
 }
 
 setup_bucket_v2() {
@@ -163,7 +166,7 @@ setup_bucket_v3() {
     return 1
   fi
   if ! error=$(bucket_cleanup_if_bucket_exists_v2 "$1" 2>&1); then
-    log 2 "error cleaning up bucket(s), if it/they exist(s): $error"
+    log 2 "error cleaning up bucket(s), if it/they exist(s): '$error'"
     return 1
   fi
   if [ "$RECREATE_BUCKETS" == "false" ]; then

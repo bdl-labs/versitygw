@@ -23,7 +23,19 @@ import (
 	"github.com/versity/versitygw/s3err"
 )
 
-var ErrAccessDenied = errors.New("access denied")
+var errAccessDenied = errors.New("access denied")
+var errExplicitDeny = errors.New("explicit deny")
+
+// policyDecision preserves the difference between "not allowed" and "denied".
+// Public bucket authorization needs that distinction so no-match can fall back
+// to ACLs while explicit Deny cannot.
+type policyDecision int
+
+const (
+	policyDecisionNoMatch policyDecision = iota
+	policyDecisionAllow
+	policyDecisionDeny
+)
 
 type policyErr string
 
@@ -47,6 +59,8 @@ type BucketPolicy struct {
 	Version   PolicyVersion      `json:"Version"`
 	Statement []BucketPolicyItem `json:"Statement"`
 }
+
+type objectKeyNormalizer func(bucket, object string) string
 
 func (bp *BucketPolicy) UnmarshalJSON(data []byte) error {
 	var tmp struct {
@@ -89,10 +103,10 @@ func (bp *BucketPolicy) Validate(bucket string, iam IAMService) error {
 	return nil
 }
 
-func (bp *BucketPolicy) isAllowed(principal string, action Action, resource string) bool {
+func (bp *BucketPolicy) isAllowed(principal string, action Action, resource string, normalizeObjectKey objectKeyNormalizer) bool {
 	var isAllowed bool
 	for _, statement := range bp.Statement {
-		if statement.findMatch(principal, action, resource) {
+		if statement.findMatch(principal, action, resource, normalizeObjectKey) {
 			switch statement.Effect {
 			case BucketPolicyAccessTypeAllow:
 				isAllowed = true
@@ -105,22 +119,24 @@ func (bp *BucketPolicy) isAllowed(principal string, action Action, resource stri
 	return isAllowed
 }
 
-// IsPublicFor checks if the bucket policy statements contain
-// an entity granting public access to the given resource and action
-func (bp *BucketPolicy) isPublicFor(resource string, action Action) bool {
+func (bp *BucketPolicy) publicDecisionFor(resource string, action Action, normalizeObjectKey objectKeyNormalizer) policyDecision {
 	var isAllowed bool
 	for _, statement := range bp.Statement {
-		if statement.isPublicFor(resource, action) {
+		if statement.isPublicFor(resource, action, normalizeObjectKey) {
 			switch statement.Effect {
 			case BucketPolicyAccessTypeAllow:
 				isAllowed = true
 			case BucketPolicyAccessTypeDeny:
-				return false
+				return policyDecisionDeny
 			}
 		}
 	}
 
-	return isAllowed
+	// A matching Allow grants access only when no matching Deny was found.
+	if isAllowed {
+		return policyDecisionAllow
+	}
+	return policyDecisionNoMatch
 }
 
 // IsPublic checks if one of bucket policy statments grant
@@ -172,18 +188,18 @@ func (bpi *BucketPolicyItem) Validate(bucket string, iam IAMService) error {
 	return nil
 }
 
-func (bpi *BucketPolicyItem) findMatch(principal string, action Action, resource string) bool {
-	if bpi.Principals.Contains(principal) && bpi.Actions.FindMatch(action) && bpi.Resources.FindMatch(resource) {
+func (bpi *BucketPolicyItem) findMatch(principal string, action Action, resource string, normalizeObjectKey objectKeyNormalizer) bool {
+	if bpi.Principals.Contains(principal) && bpi.Actions.FindMatch(action) && bpi.Resources.FindMatch(resource, normalizeObjectKey) {
 		return true
 	}
 
 	return false
 }
 
-// isPublicFor checks if the bucket policy statemant grants public access
+// isPublicFor checks if the bucket policy statement grants public access
 // for given resource and action
-func (bpi *BucketPolicyItem) isPublicFor(resource string, action Action) bool {
-	return bpi.Principals.isPublic() && bpi.Actions.FindMatch(action) && bpi.Resources.FindMatch(resource)
+func (bpi *BucketPolicyItem) isPublicFor(resource string, action Action, normalizeObjectKey objectKeyNormalizer) bool {
+	return bpi.Principals.isPublic() && bpi.Actions.FindMatch(action) && bpi.Resources.FindMatch(resource, normalizeObjectKey)
 }
 
 // isPublic checks if the statement grants public access
@@ -234,7 +250,7 @@ func ValidatePolicyDocument(policyBin []byte, bucket string, iam IAMService) err
 	return nil
 }
 
-func VerifyBucketPolicy(policy []byte, access, bucket, object string, actions ...Action) error {
+func VerifyBucketPolicy(policy []byte, access, bucket, object string, normalizeObjectKey objectKeyNormalizer, actions ...Action) error {
 	if len(actions) == 0 {
 		return s3err.GetAPIError(s3err.ErrAccessDenied)
 	}
@@ -244,13 +260,10 @@ func VerifyBucketPolicy(policy []byte, access, bucket, object string, actions ..
 		return fmt.Errorf("failed to parse the bucket policy: %w", err)
 	}
 
-	resource := bucket
-	if object != "" {
-		resource += "/" + object
-	}
+	resource := makePolicyResource(bucket, object, normalizeObjectKey)
 
 	for _, action := range actions {
-		if !bucketPolicy.isAllowed(access, action, resource) {
+		if !bucketPolicy.isAllowed(access, action, resource, normalizeObjectKey) {
 			return s3err.GetAPIError(s3err.ErrAccessDenied)
 		}
 	}
@@ -259,22 +272,38 @@ func VerifyBucketPolicy(policy []byte, access, bucket, object string, actions ..
 }
 
 // Checks if the bucket policy grants public access
-func VerifyPublicBucketPolicy(policy []byte, bucket, object string, action Action) error {
+func VerifyPublicBucketPolicy(policy []byte, bucket, object string, normalizeObjectKey objectKeyNormalizer, action Action) error {
 	var bucketPolicy BucketPolicy
 	if err := json.Unmarshal(policy, &bucketPolicy); err != nil {
 		return err
 	}
 
-	resource := bucket
-	if object != "" {
-		resource += "/" + object
+	resource := makePolicyResource(bucket, object, normalizeObjectKey)
+
+	switch bucketPolicy.publicDecisionFor(resource, action, normalizeObjectKey) {
+	case policyDecisionAllow:
+		return nil
+	case policyDecisionDeny:
+		return errExplicitDeny
+	default:
+		return errAccessDenied
+	}
+}
+
+func makePolicyResource(bucket, object string, normalizeObjectKey objectKeyNormalizer) string {
+	if object == "" {
+		return bucket
 	}
 
-	if !bucketPolicy.isPublicFor(resource, action) {
-		return ErrAccessDenied
+	return bucket + "/" + normalizePolicyObjectKey(bucket, object, normalizeObjectKey)
+}
+
+func normalizePolicyObjectKey(bucket, key string, normalizeObjectKey objectKeyNormalizer) string {
+	if key == "" || normalizeObjectKey == nil {
+		return key
 	}
 
-	return nil
+	return normalizeObjectKey(bucket, key)
 }
 
 // matchPattern checks if the input string matches the given pattern with wildcard(`*`) and any character(`?`).

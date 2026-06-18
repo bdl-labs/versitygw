@@ -20,7 +20,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/s3api/utils"
@@ -49,7 +49,7 @@ type PostObjectResult struct {
 func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string) fiber.Handler {
 	acct := accounts{root: root, iam: iam}
 
-	return func(ctx *fiber.Ctx) error {
+	return func(ctx fiber.Ctx) error {
 		contentLengthStr := ctx.Get("Content-Length")
 		reqContentLength, err := strconv.ParseInt(contentLengthStr, 10, 64)
 		if err != nil {
@@ -60,7 +60,7 @@ func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string
 		mediaType, params, err := mime.ParseMediaType(ctx.Get("Content-Type"))
 		if err != nil || mediaType != fiber.MIMEMultipartForm {
 			debuglogger.Logf("invalid POST object Content-Type %q: mediaType=%q err=%v", ctx.Get("Content-Type"), mediaType, err)
-			return s3err.GetAPIError(s3err.ErrPreconditionFailed)
+			return s3err.GetPreconditionFailedErr(s3err.ConditionPostBucket)
 		}
 
 		boundary := params["boundary"]
@@ -71,7 +71,7 @@ func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string
 
 		bodyRdr := ctx.Request().BodyStream()
 		if bodyRdr == nil {
-			bodyRdr = bytes.NewReader(ctx.Body())
+			bodyRdr = bytes.NewReader(ctx.BodyRaw())
 		}
 
 		mpParser, err := utils.NewMultipartParser(bodyRdr, boundary, reqContentLength)
@@ -85,6 +85,16 @@ func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string
 		}
 
 		fields := result.Fields
+
+		if fields["key"] == "" {
+			debuglogger.Logf("missing object key")
+			return s3err.PostAuth.MissingField("key")
+		}
+
+		if !utils.IsObjectNameValid(fields["key"]) {
+			debuglogger.Logf("invalid POST object key: %q", fields["key"])
+			return s3err.GetAPIError(s3err.ErrBadRequest)
+		}
 
 		policyB64 := fields[formFieldPolicy]
 		algorithm := fields[formFieldAlgorithm]
@@ -127,14 +137,14 @@ func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string
 
 			if algorithm != aws4HMACSHA256 {
 				debuglogger.Logf("unsupported POST object signing algorithm: %s", algorithm)
-				return s3err.GetAPIError(s3err.ErrOnlyAws4HmacSha256)
+				return s3err.GetInvalidArgumentErr(s3err.InvalidArgOnlyAws4HmacSha256, algorithm)
 			}
 
 			// Parse the date and check the date validity
 			tdate, err := time.Parse(iso8601Format, amzDate)
 			if err != nil {
 				debuglogger.Logf("invalid POST object x-amz-date %q: %v", amzDate, err)
-				return s3err.GetAPIError(s3err.ErrInvalidDateHeader)
+				return s3err.GetInvalidArgumentErr(s3err.InvalidArgDateHeader, amzDate)
 			}
 
 			// the signing date can't be older than an hour
@@ -151,13 +161,13 @@ func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string
 
 			if region != creds.Region {
 				debuglogger.Logf("incorrect POST object credential region: got %q want %q", creds.Region, region)
-				return s3err.PostAuth.IncorrectRegion(region, creds.Region)
+				return s3err.PostAuth.IncorrectRegion(credentialStr, region, creds.Region)
 			}
 
 			account, err := acct.getAccount(creds.Access)
 			if err == auth.ErrNoSuchUser {
 				debuglogger.Logf("POST object access key not found: %s", creds.Access)
-				return s3err.GetAPIError(s3err.ErrInvalidAccessKeyID)
+				return s3err.GetInvalidAccessKeyIdErr(creds.Access)
 			}
 			if err != nil {
 				debuglogger.Logf("failed to resolve POST object account %q: %v", creds.Access, err)
@@ -166,7 +176,7 @@ func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string
 
 			utils.ContextKeyAccount.Set(ctx, account)
 			utils.ContextKeyIsRoot.Set(ctx, account.Access == root.Access)
-			ctx.Context().SetUserValue("account", account)
+			ctx.Locals("account", account)
 
 			expectedSig, err := utils.SignPostPolicy(policyB64, creds.Date, region, account.Secret)
 			if err != nil {
@@ -175,7 +185,10 @@ func AuthorizePostObject(root RootUserConfig, iam auth.IAMService, region string
 
 			if expectedSig != signatureHex {
 				debuglogger.Logf("POST object signature mismatch: expected %s got %s", expectedSig, signatureHex)
-				return s3err.GetAPIError(s3err.ErrSignatureDoesNotMatch)
+				// The String to sign for POST request is the base64 encoded policy
+				// For POST incorrect signature no canonical request and canonical request bytes are returned
+				// as the calculation is not based on canonical request string
+				return s3err.GetSignatureDoesNotMatchErr(account.Access, policyB64, signatureHex, utils.HexBytes(policyB64), "", "")
 			}
 
 			// Mark this request as authenticated so that

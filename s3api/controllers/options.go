@@ -16,8 +16,9 @@ package controllers
 
 import (
 	"errors"
+	"net/http"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/auth"
 	"github.com/versity/versitygw/debuglogger"
 	"github.com/versity/versitygw/s3api/middlewares"
@@ -25,13 +26,14 @@ import (
 	"github.com/versity/versitygw/s3err"
 )
 
-func (s S3ApiController) CORSOptions(ctx *fiber.Ctx) (*Response, error) {
+func (s S3ApiController) CORSOptions(ctx fiber.Ctx) (*Response, error) {
 	bucket := ctx.Params("bucket")
 	parsedAcl := utils.ContextKeyParsedAcl.Get(ctx).(auth.ACL)
 	// get headers
 	origin := ctx.Get("Origin")
 	method := auth.CORSHTTPMethod(ctx.Get("Access-Control-Request-Method"))
 	headers := ctx.Get("Access-Control-Request-Headers")
+	resourceType := utils.DetectResourceType(ctx)
 
 	// Origin is required
 	if origin == "" {
@@ -63,11 +65,12 @@ func (s S3ApiController) CORSOptions(ctx *fiber.Ctx) (*Response, error) {
 		}, err
 	}
 
-	cors, err := s.be.GetBucketCors(ctx.Context(), bucket)
+	cors, err := s.be.GetBucketCors(ctx.RequestCtx(), bucket)
 	if err != nil {
 		debuglogger.Logf("failed to get bucket cors: %v", err)
 		if errors.Is(err, s3err.GetAPIError(s3err.ErrNoSuchCORSConfiguration)) {
-			err = s3err.GetAPIError(s3err.ErrCORSIsNotEnabled)
+			// weirdly s3 always returns BUCKET resource type
+			err = s3err.GetAccessForbiddenErr(s3err.ErrCORSIsNotEnabled, http.MethodOptions, s3err.ResourceTypeBucket)
 			debuglogger.Logf("bucket cors is not set: %v", err)
 		}
 		return &Response{
@@ -86,7 +89,7 @@ func (s S3ApiController) CORSOptions(ctx *fiber.Ctx) (*Response, error) {
 		}, err
 	}
 
-	allowConfig, err := corsConfig.IsAllowed(origin, method, parsedHeaders)
+	allowConfig, err := corsConfig.IsAllowed(origin, method, parsedHeaders, resourceType)
 	if err != nil {
 		debuglogger.Logf("cors access forbidden: %v", err)
 		return &Response{

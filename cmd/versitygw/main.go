@@ -1269,12 +1269,15 @@ func runGateway(ctx context.Context, be backend.Backend) error {
 			webOpts = append(webOpts, webui.WithSocketPerm(parsedSocketPerm))
 		}
 
-		webSrv = webui.NewServer(&webui.ServerConfig{
+		webSrv, err = webui.NewServer(&webui.ServerConfig{
 			Gateways:             gateways,
 			AdminGateways:        adminGateways,
 			Region:               region,
 			ForceSinglePutUpload: true,
 		}, webOpts...)
+		if err != nil {
+			return fmt.Errorf("init webui: %w", err)
+		}
 	}
 
 	if !quiet {

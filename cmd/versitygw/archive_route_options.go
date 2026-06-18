@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/s3api"
 	"github.com/versity/versitygw/s3api/middlewares"
 )
@@ -24,7 +24,7 @@ func archiveRoute(method, path string, handlers ...fiber.Handler) []s3api.Option
 }
 
 func archiveRouteCORSHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if err := middlewares.ApplyDefaultCORS(corsAllowOrigin)(c); err != nil {
 			return err
 		}
@@ -33,7 +33,7 @@ func archiveRouteCORSHandler() fiber.Handler {
 }
 
 func archiveRoutePreflightHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		if err := middlewares.ApplyDefaultCORSPreflight(corsAllowOrigin)(c); err != nil {
 			return err
 		}

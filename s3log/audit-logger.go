@@ -27,11 +27,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 )
 
 type AuditLogger interface {
-	Log(ctx *fiber.Ctx, err error, body []byte, meta LogMeta)
+	Log(ctx fiber.Ctx, err error, body []byte, meta LogMeta)
 	HangUp() error
 	Shutdown() error
 }
@@ -44,12 +44,12 @@ type LogMeta struct {
 }
 
 type LogConfig struct {
-	LogFile      string
-	WebhookURL   string
-	AdminLogFile string
-	FileSizeMb   int
-	MaxBackups   int
-	RetentionDays int
+	LogFile          string
+	WebhookURL       string
+	AdminLogFile     string
+	FileSizeMb       int
+	MaxBackups       int
+	RetentionDays    int
 	CompressArchives bool
 
 	// FlashEmmcOptimized stores access/admin logs under FlashLogDir (default /dev/shm/app-log)
@@ -95,6 +95,7 @@ type AdminLogFields struct {
 	RemoteIP           string
 	Requester          string
 	RequestID          string
+	HostID             string
 	Operation          string
 	RequestURI         string
 	HttpStatus         int

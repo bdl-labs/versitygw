@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/archiveconfig"
 	"github.com/versity/versitygw/s3api"
 )
@@ -37,7 +37,7 @@ func archiveLogRouteOptions() []s3api.Option {
 }
 
 func archiveLogsListHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
@@ -62,7 +62,7 @@ func archiveLogsListHandler() fiber.Handler {
 }
 
 func archiveLogsDownloadHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
@@ -93,7 +93,7 @@ func archiveLogsDownloadHandler() fiber.Handler {
 }
 
 func archiveLogsRotateHandler() fiber.Handler {
-	return func(c *fiber.Ctx) error {
+	return func(c fiber.Ctx) error {
 		cfg, _, ok, err := authorizeArchiveConfigRequest(c)
 		if err != nil {
 			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)

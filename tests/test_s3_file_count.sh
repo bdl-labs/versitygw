@@ -17,9 +17,11 @@
 load ./bats-support/load
 load ./bats-assert/load
 
+source ./tests/drivers/list_objects/list_objects.sh
 source ./tests/drivers/put_bucket_ownership_controls/put_bucket_ownership_controls_rest.sh
 source ./tests/test_common.sh
 
+# tags: s3, ListObjects, max-keys
 @test "test_list_objects_file_count" {
   test_common_list_objects_file_count "s3"
 }

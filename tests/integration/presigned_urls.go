@@ -20,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -200,7 +201,7 @@ func PresignedAuth_malformed_creds_invalid_parts(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.MalformedCredential())
+		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.MalformedCredential(""))
 	})
 }
 
@@ -229,7 +230,7 @@ func PresignedAuth_creds_invalid_terminal(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.IncorrectTerminal("aws5_request"))
+		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.IncorrectTerminal("", "aws5_request"))
 	})
 }
 
@@ -258,7 +259,7 @@ func PresignedAuth_creds_incorrect_service(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.IncorrectService("sns"))
+		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.IncorrectService("", "sns"))
 	})
 }
 
@@ -321,13 +322,14 @@ func PresignedAuth_creds_invalid_date(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.InvalidDateFormat("32234Z34"))
+		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.InvalidDateFormat("", "32234Z34"))
 	})
 }
 
 func PresignedAuth_non_existing_access_key_id(s *S3Conf) error {
 	testName := "PresignedAuth_non_existing_access_key_id"
 	return presignedAuthHandler(s, testName, func(client *s3.PresignClient, bucket string) error {
+		accessKeyID := "a_rarely_existing_access_key_id890asd6f807as6ydf870say"
 		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
 		v4req, err := client.PresignDeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: &bucket})
 		cancel()
@@ -335,7 +337,7 @@ func PresignedAuth_non_existing_access_key_id(s *S3Conf) error {
 			return err
 		}
 
-		uri, err := changeAuthCred(v4req.URL, "a_rarely_existing_access_key_id890asd6f807as6ydf870say", credAccess)
+		uri, err := changeAuthCred(v4req.URL, accessKeyID, credAccess)
 		if err != nil {
 			return err
 		}
@@ -350,7 +352,7 @@ func PresignedAuth_non_existing_access_key_id(s *S3Conf) error {
 			return err
 		}
 
-		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrInvalidAccessKeyID))
+		return checkHTTPResponseApiErr(resp, s3err.GetInvalidAccessKeyIdErr(accessKeyID))
 	})
 }
 
@@ -454,6 +456,66 @@ func PresignedAuth_missing_signed_headers_query_param(s *S3Conf) error {
 		}
 
 		return checkHTTPResponseApiErr(resp, s3err.QueryAuthErrors.MissingRequiredParams())
+	})
+}
+
+func PresignedAuth_unsigned_required_header(s *S3Conf) error {
+	testName := "PresignedAuth_unsigned_required_header"
+	return presignedAuthHandler(s, testName, func(client *s3.PresignClient, bucket string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
+		v4req, err := client.PresignPutObject(ctx, &s3.PutObjectInput{Bucket: &bucket, Key: getPtr("my-obj")})
+		cancel()
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequest(v4req.Method, v4req.URL, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("X-Amz-Copy-Source", "source-bucket/source-key")
+		req.Header.Set("X-Amz-Tagging", "a=b")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+
+		return checkHTTPResponseApiErr(resp, s3err.GetHeadersNotSignedErr([]string{"x-amz-copy-source", "x-amz-tagging"}))
+	})
+}
+
+func PresignedAuth_unsigned_non_required_header(s *S3Conf) error {
+	testName := "PresignedAuth_unsigned_non_required_header"
+	return presignedAuthHandler(s, testName, func(client *s3.PresignClient, bucket string) error {
+		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
+		v4req, err := client.PresignPutObject(ctx, &s3.PutObjectInput{Bucket: &bucket, Key: getPtr("my-obj")})
+		cancel()
+		if err != nil {
+			return err
+		}
+
+		req, err := http.NewRequest(v4req.Method, v4req.URL, nil)
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("X-Custom-Header", "value")
+		req.Header.Set("X-Another-Custom-Header", "value")
+
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("expected response status code to be %v, instead got %v", http.StatusOK, resp.StatusCode)
+		}
+
+		return nil
 	})
 }
 
@@ -609,6 +671,10 @@ func PresignedAuth_expired_request(s *S3Conf) error {
 		queries := urlParsed.Query()
 		queries.Set("X-Amz-Date", expDate)
 		urlParsed.RawQuery = queries.Encode()
+		xAmzExpires, err := strconv.Atoi(queries.Get("X-Amz-Expires"))
+		if err != nil {
+			return err
+		}
 
 		uri, err := changeAuthCred(urlParsed.String(), expDate[:8], credDate)
 		if err != nil {
@@ -625,7 +691,7 @@ func PresignedAuth_expired_request(s *S3Conf) error {
 			return err
 		}
 
-		if err := checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrExpiredPresignRequest)); err != nil {
+		if err := checkHTTPResponseApiErr(resp, s3err.GetExpiredPresignedURLError(xAmzExpires, "", "")); err != nil {
 			return err
 		}
 
@@ -662,6 +728,29 @@ func PresignedAuth_incorrect_secret_key(s *S3Conf) error {
 		}
 
 		return nil
+	})
+}
+
+func PresignedAuth_sigv2_not_supported(s *S3Conf) error {
+	testName := "PresignedAuth_sigv2_not_supported"
+	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
+		expires := time.Now().UTC().Add(time.Hour).Unix()
+		uri := fmt.Sprintf("%s/%s/object?AWSAccessKeyId=%s&Expires=%d&Signature=my-signature", s.endpoint, bucket, s.awsID, expires)
+
+		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, uri, nil)
+		if err != nil {
+			cancel()
+			return err
+		}
+
+		resp, err := s.httpClient.Do(req)
+		cancel()
+		if err != nil {
+			return err
+		}
+
+		return checkHTTPResponseApiErr(resp, s3err.GetAPIError(s3err.ErrUnsupportedAuthorizationMechanism))
 	})
 }
 

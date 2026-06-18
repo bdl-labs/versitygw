@@ -15,8 +15,12 @@
 package backend
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/md5"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -85,10 +89,7 @@ func TrimEtag(etag *string) *string {
 }
 
 var (
-	errInvalidRange           = s3err.GetAPIError(s3err.ErrInvalidRange)
-	errInvalidCopySourceRange = s3err.GetAPIError(s3err.ErrInvalidCopySourceRange)
-	errPreconditionFailed     = s3err.GetAPIError(s3err.ErrPreconditionFailed)
-	errNotModified            = s3err.GetAPIError(s3err.ErrNotModified)
+	errNotModified = s3err.GetAPIError(s3err.ErrNotModified)
 )
 
 // ParseObjectRange parses input range header and returns startoffset, length, isValid
@@ -117,7 +118,7 @@ func ParseObjectRange(size int64, acceptRange string) (int64, int64, bool, error
 	// Parse start; empty start indicates a suffix-byte-range-spec (e.g. bytes=-100)
 	startOffset, err := strconv.ParseInt(bRange[0], 10, strconv.IntSize)
 	if startOffset > int64(math.MaxInt) || startOffset < int64(math.MinInt) {
-		return 0, size, false, errInvalidRange
+		return 0, size, false, s3err.GetInvalidRangeErr(acceptRange, size)
 	}
 	if err != nil && bRange[0] != "" { // invalid numeric start (non-empty) -> ignore range
 		return 0, size, false, nil
@@ -130,7 +131,7 @@ func ParseObjectRange(size int64, acceptRange string) (int64, int64, bool, error
 		}
 		// start beyond or at size is unsatisfiable -> error (RequestedRangeNotSatisfiable)
 		if startOffset >= size {
-			return 0, 0, false, errInvalidRange
+			return 0, 0, false, s3err.GetInvalidRangeErr(acceptRange, size)
 		}
 		// bytes=100- => from start to end
 		return startOffset, size - startOffset, true, nil
@@ -138,7 +139,7 @@ func ParseObjectRange(size int64, acceptRange string) (int64, int64, bool, error
 
 	endOffset, err := strconv.ParseInt(bRange[1], 10, strconv.IntSize)
 	if endOffset > int64(math.MaxInt) {
-		return 0, size, false, errInvalidRange
+		return 0, size, false, s3err.GetInvalidRangeErr(acceptRange, size)
 	}
 	if err != nil { // invalid numeric end -> ignore range
 		return 0, size, false, nil
@@ -148,7 +149,7 @@ func ParseObjectRange(size int64, acceptRange string) (int64, int64, bool, error
 	if bRange[0] == "" {
 		// Disallow -0 (always unsatisfiable)
 		if endOffset == 0 {
-			return 0, 0, false, errInvalidRange
+			return 0, 0, false, s3err.GetInvalidRangeErr(acceptRange, size)
 		}
 		// For zero-sized objects any positive suffix is treated as invalid (ignored, no error)
 		if size == 0 {
@@ -165,7 +166,7 @@ func ParseObjectRange(size int64, acceptRange string) (int64, int64, bool, error
 	}
 	// Start beyond or at end of object -> error
 	if startOffset >= size {
-		return 0, 0, false, errInvalidRange
+		return 0, 0, false, s3err.GetInvalidRangeErr(acceptRange, size)
 	}
 	// Adjust end beyond object size (trim)
 	if endOffset >= size {
@@ -181,6 +182,7 @@ func ParseCopySourceRange(size int64, acceptRange string) (int64, int64, error) 
 		return 0, size, nil
 	}
 
+	errInvalidCopySourceRange := s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceRange, acceptRange)
 	rangeKv := strings.Split(acceptRange, "=")
 
 	if len(rangeKv) != 2 {
@@ -202,7 +204,7 @@ func ParseCopySourceRange(size int64, acceptRange string) (int64, int64, error) 
 	}
 
 	if startOffset >= size {
-		return 0, 0, s3err.CreateExceedingRangeErr(size)
+		return 0, 0, s3err.GetInvalidArgExceedingRange(size)
 	}
 
 	if bRange[1] == "" {
@@ -219,7 +221,7 @@ func ParseCopySourceRange(size int64, acceptRange string) (int64, int64, error) 
 	}
 
 	if endOffset >= size {
-		return 0, 0, s3err.CreateExceedingRangeErr(size)
+		return 0, 0, s3err.GetInvalidArgExceedingRange(size)
 	}
 
 	return startOffset, endOffset - startOffset + 1, nil
@@ -228,33 +230,36 @@ func ParseCopySourceRange(size int64, acceptRange string) (int64, int64, error) 
 // ParseCopySource parses x-amz-copy-source header and returns source bucket,
 // source object, versionId, error respectively
 func ParseCopySource(copySourceHeader string) (string, string, string, error) {
+	if copySourceHeader == "" {
+		return "", "", "", s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceBucket, copySourceHeader)
+	}
+
 	if copySourceHeader[0] == '/' {
 		copySourceHeader = copySourceHeader[1:]
 	}
 
-	var copySource, versionId string
+	// Split the raw header on the versionId query parameter before any
+	// URL-decoding so that the '?' delimiter is not percent-encoded.
+	var rawSource, versionId string
 	i := strings.LastIndex(copySourceHeader, "?versionId=")
 	if i == -1 {
-		copySource = copySourceHeader
+		rawSource = copySourceHeader
 	} else {
-		copySource = copySourceHeader[:i]
+		rawSource = copySourceHeader[:i]
 		versionId = copySourceHeader[i+11:]
 	}
 
-	srcBucket, srcObject, ok := strings.Cut(copySource, "/")
-	if !ok {
-		return "", "", "", s3err.GetAPIError(s3err.ErrInvalidCopySourceBucket)
+	// URL-decode the entire source path first so that clients that send the
+	// bucket/key separator as "%2F" (e.g. AWS .NET SDK v4) are handled
+	// correctly before we split on a literal '/'.
+	decoded, err := url.QueryUnescape(rawSource)
+	if err != nil {
+		return "", "", "", s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceEncoding, rawSource)
 	}
 
-	var err error
-	// URL-decode the bucket and object names to handle special characters
-	srcBucket, err = url.QueryUnescape(srcBucket)
-	if err != nil {
-		return "", "", "", s3err.GetAPIError(s3err.ErrInvalidCopySourceEncoding)
-	}
-	srcObject, err = url.QueryUnescape(srcObject)
-	if err != nil {
-		return "", "", "", s3err.GetAPIError(s3err.ErrInvalidCopySourceEncoding)
+	srcBucket, srcObject, ok := strings.Cut(decoded, "/")
+	if !ok {
+		return "", "", "", s3err.GetInvalidArgumentErr(s3err.InvalidArgCopySourceBucket, rawSource)
 	}
 
 	return srcBucket, srcObject, versionId, nil
@@ -278,47 +283,47 @@ func ParseObjectTags(tagging string) (map[string]string, error) {
 		}
 
 		key, value, found := strings.Cut(tag, "=")
-		// if key is empty, but "=" is present, return invalid url ecnoding err
+		// if key is empty, but "=" is present, return invalid url encoding err
 		if found && key == "" {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidURLEncodedTagging)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgURLEncodedTagging, tagging)
 		}
 
 		// return invalid tag key, if the key is longer than 128
 		if len(key) > 128 {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagKey, key, "")
 		}
 
 		// return invalid tag value, if tag value is longer than 256
 		if len(value) > 256 {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagValue)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagValue, key, value)
 		}
 
 		// query unescape tag key
 		key, err := url.QueryUnescape(key)
 		if err != nil {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidURLEncodedTagging)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgURLEncodedTagging, tagging)
 		}
 
 		// query unescape tag value
 		value, err = url.QueryUnescape(value)
 		if err != nil {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidURLEncodedTagging)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgURLEncodedTagging, tagging)
 		}
 
 		// check tag key to be valid
 		if !isValidTagComponent(key) {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagKey, key, "")
 		}
 
 		// check tag value to be valid
 		if !isValidTagComponent(value) {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagValue)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagValue, key, value)
 		}
 
 		// duplicate keys are not allowed: return invalid url encoding err
 		_, ok := tagSet[key]
 		if ok {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidURLEncodedTagging)
+			return nil, s3err.GetInvalidArgumentErr(s3err.InvalidArgURLEncodedTagging, tagging)
 		}
 
 		tagSet[key] = value
@@ -344,23 +349,23 @@ func ParseCreateBucketTags(tagging []types.Tag) (map[string]string, error) {
 		// validate tag key length
 		key := GetStringFromPtr(tag.Key)
 		if len(key) == 0 || len(key) > 128 {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagKey, key, "")
 		}
 
 		// validate tag key string chars
 		if !isValidTagComponent(key) {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagKey)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagKey, key, "")
 		}
 
 		// validate tag value length
 		value := GetStringFromPtr(tag.Value)
 		if len(value) > 256 {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagValue)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagValue, key, value)
 		}
 
 		// validate tag value string chars
 		if !isValidTagComponent(value) {
-			return nil, s3err.GetAPIError(s3err.ErrInvalidTagValue)
+			return nil, s3err.GetInvalidTagErr(s3err.ErrInvalidTagValue, key, value)
 		}
 
 		// make sure there are no duplicate keys
@@ -387,9 +392,15 @@ func isValidTagComponent(str string) bool {
 func GetMultipartMD5(parts []types.CompletedPart) (string, error) {
 	var partsEtagBytes []byte
 	for _, part := range parts {
+		if part.ETag == nil {
+			return "", s3err.GetAPIError(s3err.ErrMalformedXML)
+		}
+		if part.PartNumber == nil {
+			return "", s3err.GetAPIError(s3err.ErrMalformedXML)
+		}
 		bts, err := getEtagBytes(*part.ETag)
 		if err != nil {
-			return "", fmt.Errorf("decode etag: %w", err)
+			return "", s3err.GetAPIError(s3err.ErrInvalidPart)
 		}
 		partsEtagBytes = append(partsEtagBytes, bts...)
 	}
@@ -415,6 +426,129 @@ type MpUploadMetadata struct {
 	UploadID string  `json:"uploadId"`
 	ETag     string  `json:"etag,omitempty"`
 	Parts    []int64 `json:"parts"`
+}
+
+// MarshalMpUploadMetadata returns a compressed representation of multipart
+// metadata. When base64Encode is true, the compressed bytes are base64-encoded
+// so they can be sent in azure string-only metadata headers
+func MarshalMpUploadMetadata(mpMeta MpUploadMetadata, base64Encode bool) ([]byte, error) {
+	mpMetaJSON, err := json.Marshal(mpMeta)
+	if err != nil {
+		return nil, fmt.Errorf("marshal mp metadata: %w", err)
+	}
+
+	compressed, err := CompressData(mpMetaJSON)
+	if err != nil {
+		return nil, fmt.Errorf("compress mp metadata: %w", err)
+	}
+
+	if !base64Encode {
+		return compressed, nil
+	}
+
+	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(compressed)))
+	base64.StdEncoding.Encode(encoded, compressed)
+	return encoded, nil
+}
+
+// UnmarshalMpUploadMetadata decodes metadata produced by MarshalMpUploadMetadata.
+// It also accepts the legacy raw JSON form so existing multipart objects remain readable
+func UnmarshalMpUploadMetadata(data []byte, base64Decode bool) (MpUploadMetadata, error) {
+	if base64Decode {
+		compressed, err := base64.StdEncoding.DecodeString(string(data))
+		if err == nil {
+			if mpMeta, err := unmarshalCompressedMpUploadMetadata(compressed); err == nil {
+				return mpMeta, nil
+			}
+		}
+	} else if mpMeta, err := unmarshalCompressedMpUploadMetadata(data); err == nil {
+		return mpMeta, nil
+	}
+
+	var mpMeta MpUploadMetadata
+	if err := json.Unmarshal(data, &mpMeta); err != nil {
+		return mpMeta, fmt.Errorf("unmarshal mp metadata: %w", err)
+	}
+	return mpMeta, nil
+}
+
+// MarshalWebsiteConfig returns a compressed representation of a website
+// configuration. When base64Encode is true, the compressed bytes are
+// base64-encoded so they can be stored in azure string-only metadata values.
+func MarshalWebsiteConfig(website []byte, base64Encode bool) ([]byte, error) {
+	compressed, err := CompressData(website)
+	if err != nil {
+		return nil, fmt.Errorf("compress website config: %w", err)
+	}
+
+	if !base64Encode {
+		return compressed, nil
+	}
+
+	encoded := make([]byte, base64.StdEncoding.EncodedLen(len(compressed)))
+	base64.StdEncoding.Encode(encoded, compressed)
+	return encoded, nil
+}
+
+// UnmarshalWebsiteConfig decodes data produced by MarshalWebsiteConfig.
+func UnmarshalWebsiteConfig(data []byte, base64Decode bool) ([]byte, error) {
+	if base64Decode {
+		compressed, err := base64.StdEncoding.DecodeString(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("decode website config: %w", err)
+		}
+		data = compressed
+	}
+
+	website, err := DecompressData(data)
+	if err != nil {
+		return nil, fmt.Errorf("decompress website config: %w", err)
+	}
+
+	return website, nil
+}
+
+func CompressData(data []byte) ([]byte, error) {
+	var compressed bytes.Buffer
+	gz := gzip.NewWriter(&compressed)
+	if _, err := gz.Write(data); err != nil {
+		_ = gz.Close()
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return compressed.Bytes(), nil
+}
+
+func DecompressData(data []byte) ([]byte, error) {
+	gz, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return nil, err
+	}
+	decompressed, err := io.ReadAll(gz)
+	closeErr := gz.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+
+	return decompressed, nil
+}
+
+func unmarshalCompressedMpUploadMetadata(compressed []byte) (MpUploadMetadata, error) {
+	var mpMeta MpUploadMetadata
+	decompressed, err := DecompressData(compressed)
+	if err != nil {
+		return mpMeta, fmt.Errorf("decompress mp metadata: %w", err)
+	}
+
+	if err := json.Unmarshal(decompressed, &mpMeta); err != nil {
+		return mpMeta, fmt.Errorf("unmarshal mp metadata: %w", err)
+	}
+	return mpMeta, nil
 }
 
 type FileSectionReadCloser struct {
@@ -510,6 +644,7 @@ type PreConditions struct {
 // - if-modified-since
 // - if-unmodified-since
 // if-match and if-none-match are ETag comparisons
+// if-match "*" matches any ETag, and if-none-match "*" matches no ETag
 // if-modified-since and if-unmodified-since are last modifed time comparisons
 func EvaluatePreconditions(etag string, modTime time.Time, preconditions PreConditions) error {
 	if preconditions.IfMatch == nil && preconditions.IfNoneMatch == nil && preconditions.IfModSince == nil && preconditions.IfUnmodeSince == nil {
@@ -521,10 +656,10 @@ func EvaluatePreconditions(etag string, modTime time.Time, preconditions PreCond
 	// convert all conditions to *bool to evaluate the conditions
 	var ifMatch, ifNoneMatch, ifModSince, ifUnmodeSince *bool
 	if preconditions.IfMatch != nil {
-		ifMatch = getBoolPtr(*preconditions.IfMatch == etag)
+		ifMatch = getBoolPtr(*preconditions.IfMatch == "*" || *preconditions.IfMatch == etag)
 	}
 	if preconditions.IfNoneMatch != nil {
-		ifNoneMatch = getBoolPtr(*preconditions.IfNoneMatch != etag)
+		ifNoneMatch = getBoolPtr(*preconditions.IfNoneMatch != "*" && *preconditions.IfNoneMatch != etag)
 	}
 	if preconditions.IfModSince != nil {
 		ifModSince = getBoolPtr(preconditions.IfModSince.UTC().Before(modTime.UTC()))
@@ -534,9 +669,9 @@ func EvaluatePreconditions(etag string, modTime time.Time, preconditions PreCond
 	}
 
 	if ifMatch != nil {
-		// if `if-match` doesn't matches, return PreconditionFailed
+		// if `if-match` doesn't match, return PreconditionFailed
 		if !*ifMatch {
-			return errPreconditionFailed
+			return s3err.GetPreconditionFailedErr(s3err.ConditionIfMatch)
 		}
 
 		// if-match matches
@@ -566,7 +701,7 @@ func EvaluatePreconditions(etag string, modTime time.Time, preconditions PreCond
 			// if `if-none-match` is true, but `if-unmodified-since` is false
 			// return PreconditionFailed
 			if ifUnmodeSince != nil && !*ifUnmodeSince {
-				return errPreconditionFailed
+				return s3err.GetPreconditionFailedErr(s3err.ConditionIfUnmodifiedSince)
 			}
 
 			// ignore `if-modified-since` as `if-none-match` is true
@@ -575,7 +710,7 @@ func EvaluatePreconditions(etag string, modTime time.Time, preconditions PreCond
 			// if `if-none-match` is false and `if-unmodified-since` is false
 			// return PreconditionFailed
 			if ifUnmodeSince != nil && !*ifUnmodeSince {
-				return errPreconditionFailed
+				return s3err.GetPreconditionFailedErr(s3err.ConditionIfUnmodifiedSince)
 			}
 
 			// in all other cases when `if-none-match` is false return NotModified
@@ -587,7 +722,7 @@ func EvaluatePreconditions(etag string, modTime time.Time, preconditions PreCond
 		// if both `if-modified-since` and `if-unmodified-since` are false
 		// return PreconditionFailed
 		if ifUnmodeSince != nil && !*ifUnmodeSince {
-			return errPreconditionFailed
+			return s3err.GetPreconditionFailedErr(s3err.ConditionIfUnmodifiedSince)
 		}
 
 		// if only `if-modified-since` is false, return NotModified
@@ -596,20 +731,7 @@ func EvaluatePreconditions(etag string, modTime time.Time, preconditions PreCond
 
 	// if `if-unmodified-since` is false return PreconditionFailed
 	if ifUnmodeSince != nil && !*ifUnmodeSince {
-		return errPreconditionFailed
-	}
-
-	return nil
-}
-
-// EvaluateMatchPreconditions evaluates if-match and if-none-match preconditions
-func EvaluateMatchPreconditions(etag string, ifMatch, ifNoneMatch *string) error {
-	etag = strings.Trim(etag, `"`)
-	if ifMatch != nil && *ifMatch != etag {
-		return errPreconditionFailed
-	}
-	if ifNoneMatch != nil && *ifNoneMatch == etag {
-		return errPreconditionFailed
+		return s3err.GetPreconditionFailedErr(s3err.ConditionIfUnmodifiedSince)
 	}
 
 	return nil
@@ -623,15 +745,15 @@ func EvaluateObjectPutPreconditions(etag string, ifMatch, ifNoneMatch *string, o
 	}
 
 	if ifNoneMatch != nil && *ifNoneMatch != "*" {
-		return s3err.GetAPIError(s3err.ErrNotImplemented)
+		return s3err.GetNotImplementedErr("If-None-Match", s3err.NmpAdditionalMessageIfNoneMatch)
 	}
 
 	if ifNoneMatch != nil && ifMatch != nil {
-		return s3err.GetAPIError(s3err.ErrNotImplemented)
+		return s3err.GetNotImplementedErr("If-Match,If-None-Match", s3err.NmpAdditionalMessageMultipleCondHeaders)
 	}
 
 	if ifNoneMatch != nil && objExists {
-		return s3err.GetAPIError(s3err.ErrPreconditionFailed)
+		return s3err.GetPreconditionFailedErr(s3err.ConditionIfNoneMatch)
 	}
 
 	if ifMatch != nil && !objExists {
@@ -641,7 +763,7 @@ func EvaluateObjectPutPreconditions(etag string, ifMatch, ifNoneMatch *string, o
 	etag = strings.Trim(etag, `"`)
 
 	if ifMatch != nil && *ifMatch != etag {
-		return s3err.GetAPIError(s3err.ErrPreconditionFailed)
+		return s3err.GetPreconditionFailedErr(s3err.ConditionIfMatch)
 	}
 
 	return nil
@@ -658,17 +780,17 @@ func EvaluateObjectDeletePreconditions(etag string, modTime time.Time, size int6
 	etag = strings.Trim(etag, `"`)
 	ifMatch := preconditions.IfMatch
 	if ifMatch != nil && *ifMatch != etag {
-		return errPreconditionFailed
+		return s3err.GetPreconditionFailedErr(s3err.ConditionIfMatch)
 	}
 
 	ifMatchTime := preconditions.IfMatchLastModTime
 	if ifMatchTime != nil && ifMatchTime.Unix() != modTime.Unix() {
-		return errPreconditionFailed
+		return s3err.GetPreconditionFailedErr(s3err.ConditionIfMatchLastModTime)
 	}
 
 	ifMatchSize := preconditions.IfMatchSize
 	if ifMatchSize != nil && *ifMatchSize != size {
-		return errPreconditionFailed
+		return s3err.GetPreconditionFailedErr(s3err.ConditionIfMatchSize)
 	}
 
 	return nil

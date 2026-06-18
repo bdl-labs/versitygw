@@ -539,6 +539,19 @@ func GetObject_conditional_reads(s *S3Conf) error {
 			{nil, &etagTrimmed, nil, &before, errCond},
 			{nil, &etagTrimmed, nil, &after, errMod},
 			{nil, &etagTrimmed, nil, nil, errMod},
+
+			// if-match and if-none-match with asterisk
+			{getPtr("*"), nil, nil, nil, nil},
+			{getPtr("*"), nil, &after, nil, errMod},
+			{getPtr("*"), getPtr("invalid_etag"), nil, nil, nil},
+			{getPtr("*"), etag, nil, nil, errMod},
+			{getPtr("*"), getPtr("*"), nil, nil, errMod},
+			{getPtr("*"), getPtr("*"), nil, &before, errMod},
+			{nil, getPtr("*"), nil, nil, errMod},
+			{nil, getPtr("*"), &before, nil, errMod},
+			{nil, getPtr("*"), nil, &after, errMod},
+			{nil, getPtr("*"), nil, &before, errCond},
+			{getPtr("invalid_etag"), getPtr("*"), nil, nil, errCond},
 		} {
 			ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
 			_, err := s3client.GetObject(ctx, &s3.GetObjectInput{
@@ -574,22 +587,24 @@ func GetObject_success(s *S3Conf) error {
 		dataLength, obj := int64(1234567), "my-obj"
 		ctype, cDisp, cEnc, cLang := defaultContentType, "cont-desp", "json", "eng"
 		cacheControl, expires := "cache-ctrl", time.Now().Add(time.Hour*2)
+		redirectLocation := "/get-object-redirect"
 		meta := map[string]string{
 			"foo": "bar",
 			"baz": "quxx",
 		}
 
 		r, err := putObjectWithData(dataLength, &s3.PutObjectInput{
-			Bucket:             &bucket,
-			Key:                &obj,
-			ContentType:        &ctype,
-			ContentDisposition: &cDisp,
-			ContentEncoding:    &cEnc,
-			ContentLanguage:    &cLang,
-			Expires:            &expires,
-			CacheControl:       &cacheControl,
-			Metadata:           meta,
-			Tagging:            getPtr("key=value&key1=val1"),
+			Bucket:                  &bucket,
+			Key:                     &obj,
+			ContentType:             &ctype,
+			ContentDisposition:      &cDisp,
+			ContentEncoding:         &cEnc,
+			ContentLanguage:         &cLang,
+			Expires:                 &expires,
+			CacheControl:            &cacheControl,
+			WebsiteRedirectLocation: &redirectLocation,
+			Metadata:                meta,
+			Tagging:                 getPtr("key=value&key1=val1"),
 		}, s3client)
 		if err != nil {
 			return err
@@ -631,6 +646,10 @@ func GetObject_success(s *S3Conf) error {
 		if getString(out.CacheControl) != cacheControl {
 			return fmt.Errorf("expected Cache-Control %v, instead got %v",
 				cacheControl, getString(out.CacheControl))
+		}
+		if getString(out.WebsiteRedirectLocation) != redirectLocation {
+			return fmt.Errorf("expected WebsiteRedirectLocation %v, instead got %v",
+				redirectLocation, getString(out.WebsiteRedirectLocation))
 		}
 		if out.StorageClass != types.StorageClassStandard {
 			return fmt.Errorf("expected the storage class to be %v, instead got %v",
@@ -729,6 +748,7 @@ func GetObject_by_range_resp_status(s *S3Conf) error {
 				s.awsSecret,
 				"s3",
 				s.awsRegion,
+				"",
 				nil,
 				time.Now(),
 				map[string]string{"Range": rng},
@@ -826,6 +846,34 @@ func GetObject_not_enabled_checksum_mode(s *S3Conf) error {
 		}
 
 		return nil
+	})
+}
+
+// GetObject_incidental_dir_object verifies that a directory created incidentally
+// as a parent during object upload (i.e. never explicitly PUT via S3 with a
+// trailing-slash key) is not accessible via GetObject.
+func GetObject_incidental_dir_object(s *S3Conf) error {
+	testName := "GetObject_incidental_dir_object"
+	return actionHandler(s, testName, func(s3client *s3.Client, bucket string) error {
+		// Upload an object under a prefix; this creates the parent directory
+		// incidentally on posix but the directory was never PUT as an S3 object.
+		obj := "my-dir/my-obj"
+		_, err := putObjectWithData(int64(64), &s3.PutObjectInput{
+			Bucket: &bucket,
+			Key:    &obj,
+		}, s3client)
+		if err != nil {
+			return err
+		}
+
+		dir := "my-dir/"
+		ctx, cancel := context.WithTimeout(context.Background(), shortTimeout)
+		_, err = s3client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: &bucket,
+			Key:    &dir,
+		})
+		cancel()
+		return checkSdkApiErr(err, "NoSuchKey")
 	})
 }
 
@@ -1047,6 +1095,7 @@ func GetObject_overrides_presign_success(s *S3Conf) error {
 				s.awsSecret,
 				"s3",
 				s.awsRegion,
+				"",
 				nil,
 				time.Now(),
 				nil,
@@ -1093,6 +1142,7 @@ func GetObject_overrides_presign_success(s *S3Conf) error {
 			s.awsSecret,
 			"s3",
 			s.awsRegion,
+			"",
 			nil,
 			time.Now(),
 			nil,
@@ -1266,7 +1316,7 @@ func GetObject_invalid_part_number(s *S3Conf) error {
 			PartNumber: getPtr(int32(-3)),
 		})
 
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrInvalidPartNumber))
+		return checkApiErr(err, s3err.GetInvalidArgumentErr(s3err.InvalidArgPartNumber, "-3"))
 	})
 }
 
@@ -1341,7 +1391,7 @@ func GetObject_mp_part_number_exceeds_parts_count(s *S3Conf) error {
 			PartNumber: &pn,
 		})
 		cancel()
-		return checkApiErr(err, s3err.GetAPIError(s3err.ErrInvalidPartNumberRange))
+		return checkApiErr(err, s3err.GetInvalidPartNumberRangeErr(int32(partCount), pn))
 	})
 }
 
@@ -1602,6 +1652,7 @@ func GetObject_mp_part_number_resp_status(s *S3Conf) error {
 			s.awsSecret,
 			"s3",
 			s.awsRegion,
+			"",
 			nil,
 			time.Now(),
 			nil,

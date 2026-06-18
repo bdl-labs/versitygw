@@ -17,6 +17,8 @@
 load ./bats-support/load
 load ./bats-assert/load
 
+source ./tests/drivers/list_buckets/list_buckets.sh
+source ./tests/drivers/list_buckets/list_buckets_s3api.sh
 source ./tests/drivers/put_bucket_ownership_controls/put_bucket_ownership_controls_rest.sh
 source ./tests/drivers/user.sh
 source ./tests/test_user_common.sh
@@ -24,18 +26,22 @@ source ./tests/test_user_common.sh
 export RUN_S3CMD=true
 export RUN_USERS=true
 
+# tags: s3cmd, user
 @test "test_admin_user_s3cmd" {
   test_admin_user "s3cmd"
 }
 
+# tags: s3cmd, user, invalid-request
 @test "test_create_user_already_exists_s3cmd" {
   test_create_user_already_exists "s3cmd"
 }
 
+# tags: s3cmd, user
 @test "test_user_user_s3cmd" {
   test_user_user "s3cmd"
 }
 
+# tags: s3cmd, user
 @test "test_userplus_operation_s3cmd" {
   test_userplus_operation "s3cmd"
 }

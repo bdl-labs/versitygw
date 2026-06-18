@@ -712,7 +712,7 @@ class VersityAPI {
    * @param {string} contentType - Content type for the request
    * @param {Object} additionalHeaders - Additional headers to include
    */
-  async request(method, path, queryParams = {}, body = '', useAdminEndpoint = false, contentType = 'application/xml', additionalHeaders = {}) {
+  async request(method, path, queryParams = {}, body = '', useAdminEndpoint = false, contentType = 'application/xml', additionalHeaders = {}, signal = null) {
     if (!this.credentials) {
       throw new Error('Not authenticated');
     }
@@ -729,11 +729,13 @@ class VersityAPI {
         method,
         headers,
         body: body || undefined,
+        signal: signal || undefined,
       });
     } catch (e) {
-      // Browsers surface CORS blocks as a generic TypeError.
+      // Browsers surface network-level failures (CORS, TLS/certificate errors,
+      // unreachable host) as a generic TypeError with no further detail.
       if (e instanceof TypeError) {
-        throw new Error(`CORS blocked by gateway. Allow origin ${window.location.origin} and headers Authorization, X-Amz-Date, X-Amz-Content-Sha256, Content-Type.`);
+        throw new Error(`Network error: cannot reach gateway. Common causes: CORS policy (gateway must allow origin ${window.location.origin}), TLS/certificate error (untrusted or self-signed certificate rejected by the browser), or the gateway is unreachable.`);
       }
       throw e;
     }
@@ -802,9 +804,9 @@ class VersityAPI {
       await this.listBucketsS3();
       this.setAdminRole(false);
     } catch (s3Error) {
-      // If the gateway is reachable but the browser blocks the response due to CORS,
-      // surface that as an error so the UI can show a useful message.
-      if (s3Error && typeof s3Error.message === 'string' && s3Error.message.includes('CORS blocked')) {
+      // If the request failed at the network level (CORS, TLS, or unreachable),
+      // surface that error so the UI can show a useful diagnostic message.
+      if (s3Error && typeof s3Error.message === 'string' && s3Error.message.startsWith('Network error:')) {
         throw s3Error;
       }
       return 'none';
@@ -1028,8 +1030,10 @@ class VersityAPI {
     try {
       httpResponse = await fetch(presignedUrl, { method: 'GET' });
     } catch (e) {
+      // Browsers surface network-level failures (CORS, TLS/certificate errors,
+      // unreachable host) as a generic TypeError with no further detail.
       if (e instanceof TypeError) {
-        throw new Error(`CORS blocked by gateway. Allow origin ${window.location.origin} for S3 responses (GET / and bucket/object operations).`);
+        throw new Error(`Network error: cannot reach gateway. Common causes: CORS policy (gateway must allow origin ${window.location.origin}), TLS/certificate error (untrusted or self-signed certificate rejected by the browser), or the gateway is unreachable.`);
       }
       throw e;
     }
@@ -1145,7 +1149,7 @@ class VersityAPI {
   /**
    * List objects in a bucket (S3 ListObjectsV2)
    */
-  async listObjectsV2(bucket, prefix = '', delimiter = '/', maxKeys = 1000, continuationToken = null) {
+  async listObjectsV2(bucket, prefix = '', delimiter = '/', maxKeys = 1000, continuationToken = null, signal = null) {
     const params = {
       'list-type': '2',
       'prefix': prefix,
@@ -1157,7 +1161,7 @@ class VersityAPI {
       params['continuation-token'] = continuationToken;
     }
 
-    const response = await this.request('GET', `/${bucket}`, params);
+    const response = await this.request('GET', `/${bucket}`, params, '', false, 'application/xml', {}, signal);
     return this.parseListObjectsV2Response(response);
   }
 
@@ -1713,7 +1717,7 @@ class VersityAPI {
   /**
    * List all versions of objects in a bucket
    */
-  async listObjectVersions(bucket, prefix = '', delimiter = '/', maxKeys = 1000, keyMarker = null, versionIdMarker = null) {
+  async listObjectVersions(bucket, prefix = '', delimiter = '/', maxKeys = 1000, keyMarker = null, versionIdMarker = null, signal = null) {
     const params = {
       versions: '',
       prefix: prefix,
@@ -1724,7 +1728,7 @@ class VersityAPI {
     if (keyMarker) params['key-marker'] = keyMarker;
     if (versionIdMarker) params['version-id-marker'] = versionIdMarker;
 
-    const response = await this.request('GET', `/${bucket}`, params);
+    const response = await this.request('GET', `/${bucket}`, params, '', false, 'application/xml', {}, signal);
     return this.parseListObjectVersionsResponse(response);
   }
 

@@ -25,7 +25,9 @@ source ./tests/commands/put_object.sh
 source ./tests/drivers/file.sh
 source ./tests/drivers/head_object/head_object_s3api.sh
 source ./tests/drivers/create_bucket/create_bucket_rest.sh
+source ./tests/drivers/get_object_legal_hold/get_object_legal_hold.sh
 source ./tests/drivers/get_object_tagging/get_object_tagging.sh
+source ./tests/drivers/list_multipart_uploads/list_multipart_uploads_s3api.sh
 source ./tests/drivers/put_bucket_ownership_controls/put_bucket_ownership_controls_rest.sh
 source ./tests/util/util_multipart.sh
 source ./tests/util/util_multipart_abort.sh
@@ -34,6 +36,7 @@ source ./tests/util/util_multipart_before_completion.sh
 export RUN_USERS=true
 
 # abort-multipart-upload
+# tags: s3api, multipart, CreateMultipartUpload, AbortMultipartUpload
 @test "test_abort_multipart_upload" {
   run setup_bucket_and_large_file_v3 "$BUCKET_ONE_NAME"
   assert_success
@@ -47,6 +50,7 @@ export RUN_USERS=true
 }
 
 # complete-multipart-upload
+# tags: s3api, multipart, CreateMultipartUpload, UploadPart, CompleteMultipartUpload, GetObject
 @test "test_complete_multipart_upload" {
   run setup_bucket_and_large_file_v3 "$BUCKET_ONE_NAME" 20
   assert_success
@@ -60,6 +64,7 @@ export RUN_USERS=true
 }
 
 # create-multipart-upload
+# tags: s3api, multipart, CreateMultipartUpload, UploadPart, CompleteMultipartUpload, tagging, legal-hold, retention, Content-Type, x-amz-meta
 @test "test_create_multipart_upload_properties" {
   run get_file_name
   assert_success
@@ -103,6 +108,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: s3api, multipart, UploadPartCopy, CompleteMultipartUpload
 @test "test-multipart-upload-from-bucket" {
   run setup_bucket_and_large_file_v3 "$BUCKET_ONE_NAME" 20
   assert_success
@@ -115,6 +121,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: s3api, multipart, UploadPartCopy, range, invalid-header
 @test "test_multipart_upload_from_bucket_range_too_large" {
   run setup_bucket_and_large_file_v3 "$BUCKET_ONE_NAME" 20
   assert_success
@@ -124,6 +131,7 @@ export RUN_USERS=true
   assert_success
 }
 
+# tags: s3api, multipart, UploadPartCopy, range
 @test "test_multipart_upload_from_bucket_range_valid" {
   run setup_bucket_and_large_file_v3 "$BUCKET_ONE_NAME" 20
   assert_success
@@ -134,6 +142,7 @@ export RUN_USERS=true
 }
 
 # test multi-part upload list parts command
+# tags: s3api, multipart, CreateMultipartUpload, ListParts, AbortMultipartUpload
 @test "test-multipart-upload-list-parts" {
   local bucket_file="bucket-file"
   run dd if=/dev/urandom of="$TEST_FILE_FOLDER/$bucket_file" bs=5M count=1
@@ -150,18 +159,63 @@ export RUN_USERS=true
 }
 
 # test listing of active uploads
+# tags: s3api, multipart, ListMultipartUploads
 @test "test-multipart-upload-list-uploads" {
-  if [[ $RECREATE_BUCKETS == false ]]; then
-    run abort_all_multipart_uploads "$BUCKET_ONE_NAME"
-    assert_success
-  fi
-
-  local bucket_file_one="bucket-file-one"
-  local bucket_file_two="bucket-file-two"
-  run setup_bucket_and_files "$BUCKET_ONE_NAME" "$bucket_file_one" "$bucket_file_two"
+  run setup_bucket_and_files_v3 "$BUCKET_ONE_NAME" 2
   assert_success
+  read -r bucket_name bucket_file_one bucket_file_two <<< "$output"
 
-  run create_list_check_multipart_uploads "$BUCKET_ONE_NAME" "$bucket_file_one" "$bucket_file_two"
+  run create_list_check_multipart_uploads "$bucket_name" "$bucket_file_one" "$bucket_file_two"
   assert_success
 }
 
+@test "s3api - ListMultipartUploads with upload ID" {
+  run get_bucket_prefix "$BUCKET_ONE_NAME"
+  assert_success
+  prefix="$output"
+
+  run bucket_cleanup_if_bucket_exists_v2 "$prefix"
+  assert_success
+
+  run get_bucket_name "$BUCKET_ONE_NAME"
+  assert_success
+  bucket_name="$output"
+
+  if [ "$RECREATE_BUCKETS" == "true" ]; then
+    run create_bucket "s3api" "$bucket_name"
+    assert_success
+  fi
+
+  run create_test_files_with_prefix "file" 2
+  assert_success
+  read -r file_one file_two <<< "$output"
+
+  run create_multipart_upload_s3api "$bucket_name" "$file_one"
+  assert_success
+  upload_id_one="$output"
+
+  run create_multipart_upload_s3api "$bucket_name" "$file_two"
+  assert_success
+  upload_id_two="$output"
+
+  local first_key first_upload_id second_key second_upload_id
+  if [[ "$file_one" < "$file_two" ]]; then
+    first_key="$file_one"
+    first_upload_id="$upload_id_one"
+    second_key="$file_two"
+    second_upload_id="$upload_id_two"
+  else
+    first_key="$file_two"
+    first_upload_id="$upload_id_two"
+    second_key="$file_one"
+    second_upload_id="$upload_id_one"
+  fi
+
+  run list_multipart_uploads_check_key_id_get_next_token "$bucket_name" "$first_key" "$first_upload_id"
+  assert_success
+  first_token="$output"
+
+  run list_multipart_uploads_check_key_id_get_next_token "$bucket_name" "$second_key" "$second_upload_id" "$first_token"
+  assert_success
+  assert_output "null"
+}
