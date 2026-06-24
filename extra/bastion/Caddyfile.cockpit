@@ -1,0 +1,18 @@
+:443 {
+    tls /etc/caddy/burnbridge-bastion.crt /etc/caddy/burnbridge-bastion.key
+
+    reverse_proxy https://127.0.0.1:9090 {
+        transport http {
+            tls_insecure_skip_verify
+        }
+    }
+
+    encode gzip
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Frame-Options DENY
+        X-Content-Type-Options nosniff
+        Referrer-Policy no-referrer
+    }
+}

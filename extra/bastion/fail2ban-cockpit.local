@@ -1,0 +1,12 @@
+[sshd]
+enabled = true
+
+[burnbridge-cockpit]
+enabled = true
+filter = burnbridge-cockpit
+backend = systemd
+journalmatch = _SYSTEMD_UNIT=cockpit.service + _SYSTEMD_UNIT=cockpit.socket
+port = https
+maxretry = 5
+findtime = 600
+bantime = 86400
