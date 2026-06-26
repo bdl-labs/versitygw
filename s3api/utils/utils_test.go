@@ -335,8 +335,10 @@ func TestIsValidBucketName(t *testing.T) {
 
 func TestSetBucketNameValidationStrict(t *testing.T) {
 	SetBucketNameValidationStrict(true)
+	SetBucketNameValidationRelaxedUppercase(false)
 	t.Cleanup(func() {
 		SetBucketNameValidationStrict(true)
+		SetBucketNameValidationRelaxedUppercase(false)
 	})
 
 	invalidBucket := "Invalid_Bucket"
@@ -352,6 +354,30 @@ func TestSetBucketNameValidationStrict(t *testing.T) {
 	SetBucketNameValidationStrict(true)
 	if IsValidBucketName(invalidBucket) {
 		t.Fatalf("expected %q to be invalid after re-enabling strict validation", invalidBucket)
+	}
+}
+
+func TestSetBucketNameValidationRelaxedUppercase(t *testing.T) {
+	SetBucketNameValidationStrict(true)
+	SetBucketNameValidationRelaxedUppercase(false)
+	t.Cleanup(func() {
+		SetBucketNameValidationStrict(true)
+		SetBucketNameValidationRelaxedUppercase(false)
+	})
+
+	uppercaseBucket := "406HAPU231312"
+	if IsValidBucketName(uppercaseBucket) {
+		t.Fatalf("expected %q to be invalid with default strict validation", uppercaseBucket)
+	}
+
+	SetBucketNameValidationRelaxedUppercase(true)
+	if !IsValidBucketName(uppercaseBucket) {
+		t.Fatalf("expected %q to be valid with relaxed uppercase validation", uppercaseBucket)
+	}
+
+	invalidBucket := "Invalid_Bucket"
+	if IsValidBucketName(invalidBucket) {
+		t.Fatalf("expected %q to remain invalid with relaxed uppercase validation", invalidBucket)
 	}
 }
 

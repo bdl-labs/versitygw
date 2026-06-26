@@ -11,6 +11,7 @@ import (
 	"github.com/urfave/cli/v2"
 	"github.com/versity/versitygw/archiveconfig"
 	"github.com/versity/versitygw/backend/burnbridge"
+	"github.com/versity/versitygw/s3api/utils"
 )
 
 var (
@@ -184,6 +185,8 @@ func burnbridgeCommand() *cli.Command {
 }
 
 func runBurnbridge(ctx *cli.Context) error {
+	utils.SetBucketNameValidationRelaxedUppercase(true)
+
 	dbPath := burnbridgeDBPath
 	if dbPath == "" {
 		dbPath = "./burnbridge-meta.db"

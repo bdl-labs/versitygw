@@ -41,11 +41,13 @@ import (
 )
 
 var (
-	bucketNameRegexp   = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]+[a-z0-9]$`)
-	bucketNameIpRegexp = regexp.MustCompile(`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`)
+	bucketNameRegexp             = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]+[a-z0-9]$`)
+	relaxedUpperBucketNameRegexp = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9.-]+[A-Za-z0-9]$`)
+	bucketNameIpRegexp           = regexp.MustCompile(`^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$`)
 )
 
 var strictBucketNameValidation atomic.Bool
+var relaxedUpperBucketNameValidation atomic.Bool
 
 func init() {
 	strictBucketNameValidation.Store(true)
@@ -53,6 +55,10 @@ func init() {
 
 func SetBucketNameValidationStrict(strict bool) {
 	strictBucketNameValidation.Store(strict)
+}
+
+func SetBucketNameValidationRelaxedUppercase(relaxed bool) {
+	relaxedUpperBucketNameValidation.Store(relaxed)
 }
 
 // maximum allowed size (2 KB) for all user-defined
@@ -333,9 +339,13 @@ func IsValidBucketName(bucket string) bool {
 		debuglogger.Logf("bucket name length should be in 3-63 range, got: %v\n", len(bucket))
 		return false
 	}
-	// Checks to contain only digits, lowercase letters, dot, hyphen.
-	// Checks to start and end with only digits and lowercase letters.
-	if !bucketNameRegexp.MatchString(bucket) {
+	// Checks to contain only digits, letters, dot, hyphen.
+	// Checks to start and end with only digits and letters.
+	nameRegexp := bucketNameRegexp
+	if relaxedUpperBucketNameValidation.Load() {
+		nameRegexp = relaxedUpperBucketNameRegexp
+	}
+	if !nameRegexp.MatchString(bucket) {
 		debuglogger.Logf("invalid bucket name: %v\n", bucket)
 		return false
 	}
