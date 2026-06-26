@@ -44,36 +44,36 @@ type Gateway struct {
 }
 
 type Recorder struct {
-	DriveIndex                 int    `json:"DriveIndex"`
-	LayoutDbPath               string `json:"LayoutDbPath"`
-	MetadataDbFileNameTemplate string `json:"MetadataDbFileNameTemplate"`
-	GrpcChunkSize              int    `json:"GrpcChunkSize"`
-	MaxReceiveMessageSize      int    `json:"MaxReceiveMessageSize"`
-	MaxSendMessageSize         int    `json:"MaxSendMessageSize"`
-	Http2InitialConnectionWindowSize int `json:"Http2InitialConnectionWindowSize"`
-	Http2InitialStreamWindowSize     int `json:"Http2InitialStreamWindowSize"`
-	FinalizeReservePercent     int    `json:"FinalizeReservePercent"`
-	FinalizeReserveBytes       int64  `json:"FinalizeReserveBytes"`
-	DiscSerialStrategy         string `json:"DiscSerialStrategy"`
-	VolumeLabelStrategy        string `json:"VolumeLabelStrategy"`
-	SerialPrefix               string `json:"SerialPrefix"`
-	VolumeLabelPrefix          string `json:"VolumeLabelPrefix"`
-	GeneratedSerialLength      int    `json:"GeneratedSerialLength"`
-	GeneratedVolumeLabelLength int    `json:"GeneratedVolumeLabelLength"`
-	AllowCreateBucketBinding   bool   `json:"AllowCreateBucketBinding"`
-	LicenseFilePath            string `json:"LicenseFilePath"`
+	DriveIndex                       int    `json:"DriveIndex"`
+	LayoutDbPath                     string `json:"LayoutDbPath"`
+	MetadataDbFileNameTemplate       string `json:"MetadataDbFileNameTemplate"`
+	GrpcChunkSize                    int    `json:"GrpcChunkSize"`
+	MaxReceiveMessageSize            int    `json:"MaxReceiveMessageSize"`
+	MaxSendMessageSize               int    `json:"MaxSendMessageSize"`
+	Http2InitialConnectionWindowSize int    `json:"Http2InitialConnectionWindowSize"`
+	Http2InitialStreamWindowSize     int    `json:"Http2InitialStreamWindowSize"`
+	FinalizeReservePercent           int    `json:"FinalizeReservePercent"`
+	FinalizeReserveBytes             int64  `json:"FinalizeReserveBytes"`
+	DiscSerialStrategy               string `json:"DiscSerialStrategy"`
+	VolumeLabelStrategy              string `json:"VolumeLabelStrategy"`
+	SerialPrefix                     string `json:"SerialPrefix"`
+	VolumeLabelPrefix                string `json:"VolumeLabelPrefix"`
+	GeneratedSerialLength            int    `json:"GeneratedSerialLength"`
+	GeneratedVolumeLabelLength       int    `json:"GeneratedVolumeLabelLength"`
+	AllowCreateBucketBinding         bool   `json:"AllowCreateBucketBinding"`
+	LicenseFilePath                  string `json:"LicenseFilePath"`
 }
 
 type Runtime struct {
-	SectorSizeBytes           int   `json:"SectorSizeBytes"`
-	BlocksPerTransfer         int   `json:"BlocksPerTransfer"`
-	SessionCacheCapacityBytes int64 `json:"SessionCacheCapacityBytes"`
-	WriteBufferBytes          int   `json:"WriteBufferBytes"`
-	WriteBufferSlotCount      int   `json:"WriteBufferSlotCount"`
-	GlobalWriteQueueCapacity  int   `json:"GlobalWriteQueueCapacity"`
-	ReadQueueCapacity         int   `json:"ReadQueueCapacity"`
-	RedundancyReadWindowBlocks int  `json:"RedundancyReadWindowBlocks"`
-	PlainReadWindowBlocks      int  `json:"PlainReadWindowBlocks"`
+	SectorSizeBytes            int   `json:"SectorSizeBytes"`
+	BlocksPerTransfer          int   `json:"BlocksPerTransfer"`
+	SessionCacheCapacityBytes  int64 `json:"SessionCacheCapacityBytes"`
+	WriteBufferBytes           int   `json:"WriteBufferBytes"`
+	WriteBufferSlotCount       int   `json:"WriteBufferSlotCount"`
+	GlobalWriteQueueCapacity   int   `json:"GlobalWriteQueueCapacity"`
+	ReadQueueCapacity          int   `json:"ReadQueueCapacity"`
+	RedundancyReadWindowBlocks int   `json:"RedundancyReadWindowBlocks"`
+	PlainReadWindowBlocks      int   `json:"PlainReadWindowBlocks"`
 }
 
 type Redundancy struct {
@@ -117,20 +117,20 @@ type Logging struct {
 }
 
 type GatewayLogging struct {
-	AccessLogPath      string `json:"AccessLogPath"`
-	AdminLogPath       string `json:"AdminLogPath"`
-	FileSizeMb         int    `json:"FileSizeMb"`
-	MaxBackups         int    `json:"MaxBackups"`
-	RetentionDays      int    `json:"RetentionDays"`
-	EnableCompression  bool   `json:"EnableCompression"`
+	AccessLogPath     string `json:"AccessLogPath"`
+	AdminLogPath      string `json:"AdminLogPath"`
+	FileSizeMb        int    `json:"FileSizeMb"`
+	MaxBackups        int    `json:"MaxBackups"`
+	RetentionDays     int    `json:"RetentionDays"`
+	EnableCompression bool   `json:"EnableCompression"`
 }
 
 type RecorderLogging struct {
-	LogDirectory       string `json:"LogDirectory"`
-	FileSizeMb         int    `json:"FileSizeMb"`
-	RetentionDays      int    `json:"RetentionDays"`
-	EnableCompression  bool   `json:"EnableCompression"`
-	MinLevel           string `json:"MinLevel"`
+	LogDirectory      string `json:"LogDirectory"`
+	FileSizeMb        int    `json:"FileSizeMb"`
+	RetentionDays     int    `json:"RetentionDays"`
+	EnableCompression bool   `json:"EnableCompression"`
+	MinLevel          string `json:"MinLevel"`
 }
 
 func DefaultFile(path string) File {
@@ -145,38 +145,38 @@ func DefaultFile(path string) File {
 				ConfigApiUsername:     DefaultConfigUsername,
 				ConfigApiPassword:     DefaultConfigPassword,
 				ConfigFilePath:        resolved,
-				BurnServerConfigPath:  "D:\\BRS\\primoburner-net\\samples\\BurnServer\\appsettings.json",
+				BurnServerConfigPath:  "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\appsettings.json",
 				GatewayMetadataDbPath: "D:\\BRS\\versitygw\\burnbridge-meta.db",
 			},
 			ReadMountPath: "",
 			Recorder: Recorder{
-				DriveIndex:                 0,
-				LayoutDbPath:               "D:\\BRS\\primoburner-net\\samples\\BurnServer\\udf-layout.db",
-				MetadataDbFileNameTemplate: "__archive_{bucket}.sqlite3",
-				GrpcChunkSize:              65536,
-				MaxReceiveMessageSize:      81920,
-				MaxSendMessageSize:         81920,
+				DriveIndex:                       0,
+				LayoutDbPath:                     "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\udf-layout.db",
+				MetadataDbFileNameTemplate:       "__archive_{bucket}.sqlite3",
+				GrpcChunkSize:                    65536,
+				MaxReceiveMessageSize:            81920,
+				MaxSendMessageSize:               81920,
 				Http2InitialConnectionWindowSize: 4194304,
 				Http2InitialStreamWindowSize:     2097152,
-				FinalizeReservePercent:     3,
-				FinalizeReserveBytes:       67108864,
-				DiscSerialStrategy:         "hash",
-				VolumeLabelStrategy:        "serial",
-				SerialPrefix:               "OA",
-				VolumeLabelPrefix:          "DISC",
-				GeneratedSerialLength:      24,
-				GeneratedVolumeLabelLength: 24,
-				AllowCreateBucketBinding:   true,
-				LicenseFilePath:            "D:\\BRS\\primoburner-net\\samples\\BurnServer\\license.xml",
+				FinalizeReservePercent:           3,
+				FinalizeReserveBytes:             67108864,
+				DiscSerialStrategy:               "hash",
+				VolumeLabelStrategy:              "serial",
+				SerialPrefix:                     "OA",
+				VolumeLabelPrefix:                "DISC",
+				GeneratedSerialLength:            24,
+				GeneratedVolumeLabelLength:       24,
+				AllowCreateBucketBinding:         true,
+				LicenseFilePath:                  "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\license.xml",
 			},
 			Runtime: Runtime{
-				SectorSizeBytes:           2048,
-				BlocksPerTransfer:         32,
-				SessionCacheCapacityBytes: 67108864,
-				WriteBufferBytes:          33554432,
-				WriteBufferSlotCount:      2,
-				GlobalWriteQueueCapacity:  4,
-				ReadQueueCapacity:         1,
+				SectorSizeBytes:            2048,
+				BlocksPerTransfer:          32,
+				SessionCacheCapacityBytes:  67108864,
+				WriteBufferBytes:           33554432,
+				WriteBufferSlotCount:       2,
+				GlobalWriteQueueCapacity:   4,
+				ReadQueueCapacity:          1,
 				RedundancyReadWindowBlocks: 320,
 				PlainReadWindowBlocks:      320,
 			},
@@ -211,14 +211,14 @@ func DefaultFile(path string) File {
 			},
 			Upgrade: Upgrade{
 				GatewayStagingDirectory:  "D:\\BRS\\versitygw\\upgrade",
-				RecorderStagingDirectory: "D:\\BRS\\primoburner-net\\samples\\BurnServer\\upgrade",
+				RecorderStagingDirectory: "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\upgrade",
 				GatewayApplyCommand:      "",
 				RecorderApplyCommand:     "",
 			},
 			LinuxServices: LinuxServices{
 				ManageRecorderProcessLocally: false,
 				RecorderServiceName:          "optical-archive-recorder.service",
-				RecorderProcessPattern:       "BurnServer.dll",
+				RecorderProcessPattern:       "optical-recorder",
 				RecorderStartCommand:         "",
 				RecorderWorkingDirectory:     "",
 				RecorderHealthCheckSeconds:   30,

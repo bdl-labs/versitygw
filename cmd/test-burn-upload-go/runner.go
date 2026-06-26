@@ -234,7 +234,7 @@ type interruptRetrySummary struct {
 }
 
 const multipartMinPartSize int64 = 5 * 1024 * 1024
-const defaultMultipartPartSize int64 = 64 * 1024 * 1024
+const defaultMultipartPartSize int64 = 32 * 1024 * 1024
 const burnbridgeBucketTypeTagKey = "burnbridge:bucket-type"
 const burnbridgeBucketTypeControl = "control"
 const burnbridgeBucketTypeData = "data"
@@ -280,13 +280,13 @@ var errSimulatedDisconnect = errors.New("simulated upload disconnect")
 
 func newRunner(opts cliOptions) (*runner, error) {
 	opts.bucket = strings.TrimSpace(strings.ToUpper(opts.bucket))
-	if opts.interruptRetryOnly || opts.multipartRetryOnly || opts.mode == modeMultipartFlow {
+	if opts.interruptRetryOnly || opts.multipartRetryOnly || opts.mode == modeMultipartFlow || opts.mode == modePutObjectFlow {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || info.IsDir() {
 			return nil, fmt.Errorf("data file not found: %s", opts.dataDir)
 		}
 	}
-	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
+	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modePutObjectFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("data directory not found: %s", opts.dataDir)
@@ -471,6 +471,8 @@ func (r *runner) run() (err error) {
 		err = r.runMultipartInterruptRetry(dataBucket, controlBucket)
 	case r.opts.mode == modeMultipartFlow:
 		err = r.runMultipartFlow(dataBucket, controlBucket)
+	case r.opts.mode == modePutObjectFlow:
+		err = r.runPutObjectFlow(dataBucket, controlBucket)
 	case strings.TrimSpace(r.opts.singleObjectKey) != "":
 		err = r.runSingleObjectDownload(dataBucket)
 	default:
@@ -834,7 +836,7 @@ func (r *runner) runSingleObjectDownload(bucket string) error {
 }
 
 func (r *runner) runInterruptRetry(bucket, controlBucket string) error {
-	source, err := buildSingleFileSource(r.opts.dataDir)
+	source, err := buildSingleFileSource(r.opts.dataDir, true)
 	if err != nil {
 		return err
 	}
@@ -988,7 +990,7 @@ func (r *runner) runInterruptRetry(bucket, controlBucket string) error {
 }
 
 func (r *runner) runMultipartInterruptRetry(bucket, controlBucket string) error {
-	source, err := buildSingleFileSource(r.opts.dataDir)
+	source, err := buildSingleFileSource(r.opts.dataDir, true)
 	if err != nil {
 		return err
 	}
@@ -1211,7 +1213,7 @@ func (r *runner) runMultipartInterruptRetry(bucket, controlBucket string) error 
 
 func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 	testStart := time.Now()
-	source, err := buildSingleFileSource(r.opts.dataDir)
+	source, err := buildSingleFileSource(r.opts.dataDir, !r.opts.skipMD5Verify)
 	if err != nil {
 		return err
 	}
@@ -1229,7 +1231,11 @@ func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 	r.logf("  objectKey      : %s", objectKey)
 	r.logf("  filePath       : %s", source.FullPath)
 	r.logf("  fileSizeBytes  : %d", source.Size)
-	r.logf("  fileMd5        : %s", source.MD5)
+	if r.opts.skipMD5Verify {
+		r.logf("  fileMd5        : skipped")
+	} else {
+		r.logf("  fileMd5        : %s", source.MD5)
+	}
 	r.logf("  partSizeBytes  : %d", partSize)
 
 	if stop, reason := r.shouldStopForFinalize(controlBucket, source.Size); stop {
@@ -1345,6 +1351,132 @@ func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 	return nil
 }
 
+func (r *runner) runPutObjectFlow(bucket, controlBucket string) error {
+	testStart := time.Now()
+	source, err := buildSingleFileSource(r.opts.dataDir, !r.opts.skipMD5Verify)
+	if err != nil {
+		return err
+	}
+	objectKey := source.RelativePath
+	if strings.TrimSpace(objectKey) == "" {
+		objectKey = filepath.Base(source.FullPath)
+	}
+
+	finalizeOutputPath := filepath.Join(r.runRoot, "finalize-layout-response.json")
+	downloadPath := resolveSingleObjectOutputPath(r.cfg.verifyDownloadRoot, bucket, objectKey, "")
+
+	r.logf("[3/8] Preparing PutObject source file...")
+	r.logf("  objectKey      : %s", objectKey)
+	r.logf("  filePath       : %s", source.FullPath)
+	r.logf("  fileSizeBytes  : %d", source.Size)
+	if r.opts.skipMD5Verify {
+		r.logf("  fileMd5        : skipped")
+	} else {
+		r.logf("  fileMd5        : %s", source.MD5)
+	}
+
+	if stop, reason := r.shouldStopForFinalize(controlBucket, source.Size); stop {
+		r.logf("  PutObject source would cross finalize threshold (%s); running FinalizeLayout without CloseDisc", reason)
+		_, err := r.finalizeLayoutOnly(controlBucket, finalizeOutputPath)
+		return err
+	}
+
+	r.logf("[4/8] Uploading with single PutObject request...")
+	uploadStart := time.Now()
+	if err := r.putObject(bucket, objectKey, source.FullPath); err != nil {
+		if isCapacityInsufficientError(err) {
+			r.logf("  PutObject rejected because current writable capacity is insufficient; finalizing and closing disc")
+			_, finalizeErr := r.finalizeAndCloseDisc(controlBucket, finalizeOutputPath)
+			if finalizeErr != nil {
+				return finalizeErr
+			}
+		}
+		return err
+	}
+	uploadSeconds := roundSeconds(time.Since(uploadStart))
+	r.logf("  putobject elapsed : %.3fs @ %.3f MiB/s", uploadSeconds, rateMiBPerSecond(source.Size, uploadSeconds))
+
+	r.logf("[7/8] Triggering FinalizeLayout...")
+	finalizeStart := time.Now()
+	controlKey, finalizeRaw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
+	if err != nil {
+		return err
+	}
+	finalizeSeconds := roundSeconds(time.Since(finalizeStart))
+	r.logf("  finalize control key : %s", controlKey)
+	r.logf("  finalize elapsed     : %.3fs", finalizeSeconds)
+	r.writeFinalizeSummary(finalizeRaw, bucket)
+
+	r.logf("[8/8] Downloading PutObject object and verifying result...")
+	if err := ensureDir(filepath.Dir(downloadPath)); err != nil {
+		return err
+	}
+	downloadStart := time.Now()
+	if err := r.downloadObjectToFile(bucket, objectKey, downloadPath, defaultReadTimeout); err != nil {
+		return err
+	}
+	downloadSeconds := roundSeconds(time.Since(downloadStart))
+	info, err := os.Stat(downloadPath)
+	if err != nil {
+		return fmt.Errorf("downloaded file missing: %s", objectKey)
+	}
+	if info.Size() != source.Size {
+		return fmt.Errorf("downloaded size mismatch for %s", objectKey)
+	}
+
+	actualMD5 := ""
+	if !r.opts.skipMD5Verify {
+		actualMD5, err = computeMD5(downloadPath)
+		if err != nil {
+			return err
+		}
+		if actualMD5 != source.MD5 {
+			return fmt.Errorf("downloaded MD5 mismatch for %s", objectKey)
+		}
+	}
+
+	summary := &runSummary{
+		Status:                  "Success",
+		Bucket:                  bucket,
+		RequestedBucket:         r.opts.bucket,
+		DataDirectory:           r.opts.dataDir,
+		RemoteOnly:              false,
+		FileCount:               1,
+		TotalBytes:              source.Size,
+		TotalMiB:                roundFloat(float64(source.Size)/(1024*1024), 3),
+		UploadSeconds:           roundFloat(uploadSeconds, 3),
+		UploadMiBPerSecond:      rateMiBPerSecond(source.Size, uploadSeconds),
+		FinalizeLayoutSeconds:   roundFloat(finalizeSeconds, 3),
+		DownloadSeconds:         roundFloat(downloadSeconds, 3),
+		DownloadMiBPerSecond:    rateMiBPerSecond(source.Size, downloadSeconds),
+		TotalTestSeconds:        roundSeconds(time.Since(testStart)),
+		RunRoot:                 r.runRoot,
+		MetricsCSVPath:          r.metricsCSVPath,
+		MemoryCSVPath:           r.memoryCSVPath,
+		MemorySummaryPath:       r.memorySummaryPath,
+		FinalizeResponsePath:    finalizeOutputPath,
+		VerifyDownloadDirectory: filepath.Dir(downloadPath),
+		RecorderLogDirectory:    r.cfg.runtimeRecorderLogDir,
+		GatewayLogDirectory:     r.cfg.runtimeGatewayLogDir,
+	}
+	if err := writeJSONFile(r.summaryJSONPath, summary); err != nil {
+		return err
+	}
+
+	r.logf("")
+	r.logf("PutObject flow summary:")
+	r.logf("  object           : %s", objectKey)
+	r.logf("  total size       : %.3f MiB", summary.TotalMiB)
+	r.logf("  upload total     : %.3fs @ %.3f MiB/s", summary.UploadSeconds, summary.UploadMiBPerSecond)
+	r.logf("  finalize total   : %.3fs", summary.FinalizeLayoutSeconds)
+	r.logf("  download total   : %.3fs @ %.3f MiB/s", summary.DownloadSeconds, summary.DownloadMiBPerSecond)
+	if !r.opts.skipMD5Verify {
+		r.logf("  md5              : %s", actualMD5)
+	}
+	r.logf("  summary json     : %s", r.summaryJSONPath)
+	return nil
+}
+
 func (r *runner) effectiveMultipartPartSize() int64 {
 	partSize := r.opts.multipartPartBytes
 	if partSize <= 0 {
@@ -1401,35 +1533,48 @@ func (r *runner) uploadMultipartObject(bucket, objectKey string, source sourceIt
 
 	r.logf("  multipart start  : key=%s uploadId=%s partSize=%s MiB", objectKey, uploadID, formatSizeMiB(partSize))
 
-	var (
-		offset     int64
-		partNumber int32 = 1
-	)
-	for offset < source.Size {
-		size := partSize
-		remaining := source.Size - offset
-		if remaining < size {
-			size = remaining
+	file, err := os.Open(source.FullPath)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	defer file.Close()
+
+	prefetchCtx, cancelPrefetch := context.WithCancel(context.Background())
+	defer cancelPrefetch()
+	prefetchCh := make(chan multipartPrefetchedPart, 1)
+	prefetchDone := make(chan struct{})
+	go func() {
+		defer close(prefetchDone)
+		prefetchMultipartParts(prefetchCtx, file, source.Size, partSize, prefetchCh)
+	}()
+	defer func() {
+		cancelPrefetch()
+		<-prefetchDone
+	}()
+
+	for prefetched := range prefetchCh {
+		if prefetched.err != nil {
+			return 0, 0, "", prefetched.err
+		}
+		if prefetched.size <= 0 {
+			continue
 		}
 
 		start := time.Now()
-		partOut, err := r.uploadPartFromFile(bucket, objectKey, uploadID, partNumber, source.FullPath, offset, size)
+		partOut, err := r.uploadPartFromBytes(bucket, objectKey, uploadID, prefetched.partNumber, prefetched.data, prefetched.size)
 		if err != nil {
 			return 0, 0, "", err
 		}
 		seconds := roundSeconds(time.Since(start))
-		rate := rateMiBPerSecond(size, seconds)
+		rate := rateMiBPerSecond(prefetched.size, seconds)
 		etag := strings.TrimSpace(awsString(partOut.ETag))
 		completedStats = append(completedStats, completedPartStat{
-			partNumber: partNumber,
+			partNumber: prefetched.partNumber,
 			etag:       etag,
-			size:       size,
+			size:       prefetched.size,
 			seconds:    seconds,
 		})
-		r.logf("    part %d | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s | etag=%s", partNumber, formatSizeMiB(size), seconds, rate, etag)
-
-		offset += size
-		partNumber++
+		r.logf("    part %d | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s | etag=%s", prefetched.partNumber, formatSizeMiB(prefetched.size), seconds, rate, etag)
 	}
 
 	completedParts := make([]types.CompletedPart, 0, len(completedStats))
@@ -1461,6 +1606,51 @@ func (r *runner) uploadMultipartObject(bucket, objectKey string, source sourceIt
 	}
 
 	return uploadSeconds, roundSeconds(time.Since(completeStart)), strings.TrimSpace(awsString(completeOut.ETag)), nil
+}
+
+type multipartPrefetchedPart struct {
+	partNumber int32
+	size       int64
+	data       []byte
+	err        error
+}
+
+func prefetchMultipartParts(ctx context.Context, file *os.File, sourceSize, partSize int64, out chan<- multipartPrefetchedPart) {
+	defer close(out)
+
+	var offset int64
+	var partNumber int32 = 1
+	for offset < sourceSize {
+		size := partSize
+		if remaining := sourceSize - offset; remaining < size {
+			size = remaining
+		}
+
+		data := make([]byte, size)
+		if _, err := file.ReadAt(data, offset); err != nil && !errors.Is(err, io.EOF) {
+			sendPrefetchedPart(ctx, out, multipartPrefetchedPart{partNumber: partNumber, size: size, err: err})
+			return
+		}
+
+		if !sendPrefetchedPart(ctx, out, multipartPrefetchedPart{
+			partNumber: partNumber,
+			size:       size,
+			data:       data,
+		}) {
+			return
+		}
+		offset += size
+		partNumber++
+	}
+}
+
+func sendPrefetchedPart(ctx context.Context, out chan<- multipartPrefetchedPart, part multipartPrefetchedPart) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case out <- part:
+		return true
+	}
 }
 
 func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) (*runSummary, float64, string, error) {
@@ -1509,12 +1699,26 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 	} else if r.opts.skipUpload {
 		r.logf("[4/8] Uploading directory %s ... skipped", r.opts.dataDir)
 	} else {
+		remoteSnapshot, err := r.getRemoteObjectMap(bucket)
+		if err != nil {
+			return nil, 0, "", fmt.Errorf("build remote resume snapshot: %w", err)
+		}
+		r.logf("Remote resume snapshot object count: %d", len(remoteSnapshot.Items))
+
 		if r.opts.mode == modeMixedFlow {
 			r.logf("[4/8] Uploading directory %s with mixed strategy...", r.opts.dataDir)
 		} else {
 			r.logf("[4/8] Uploading directory %s ...", r.opts.dataDir)
 		}
 		for idx, item := range snapshot.Items {
+			if remoteItem, ok := remoteSnapshot.Map[item.RelativePath]; ok && remoteItem.Size == item.Size {
+				metric := metrics[item.RelativePath]
+				metric.Status = "SkippedExisting"
+				metric.Notes = "remote object already exists with matching size"
+				r.uploadedKeys[item.RelativePath] = struct{}{}
+				r.logf("  skip existing %s | size=%s MiB", item.RelativePath, formatSizeMiB(item.Size))
+				continue
+			}
 			if reject, reason := r.shouldRejectForCapacity(controlBucket, item.Size); reject {
 				r.logf("  stopping uploads before %s because it does not fit current writable capacity (%s)", item.RelativePath, reason)
 				stoppedForCapacity = true
@@ -2304,7 +2508,7 @@ func getLocalFileMap(root string, computeHashes bool) (fileSnapshot, error) {
 	return fileSnapshot{Root: resolvedRoot, Items: items, Map: itemMap}, nil
 }
 
-func buildSingleFileSource(path string) (sourceItem, error) {
+func buildSingleFileSource(path string, includeMD5 bool) (sourceItem, error) {
 	fullPath, err := filepath.Abs(path)
 	if err != nil {
 		return sourceItem{}, err
@@ -2316,9 +2520,12 @@ func buildSingleFileSource(path string) (sourceItem, error) {
 	if info.IsDir() {
 		return sourceItem{}, fmt.Errorf("expected file path, got directory: %s", fullPath)
 	}
-	md5Value, err := computeMD5(fullPath)
-	if err != nil {
-		return sourceItem{}, err
+	md5Value := ""
+	if includeMD5 {
+		md5Value, err = computeMD5(fullPath)
+		if err != nil {
+			return sourceItem{}, err
+		}
 	}
 	return sourceItem{
 		RelativePath: filepath.Base(fullPath),
@@ -2468,6 +2675,23 @@ func (r *runner) uploadPartFromFile(bucket, key, uploadID string, partNumber int
 		UploadId:      &uploadID,
 		PartNumber:    &partNumber,
 		Body:          reader,
+		ContentLength: int64Ptr(size),
+	})
+}
+
+func (r *runner) uploadPartFromBytes(bucket, key, uploadID string, partNumber int32, data []byte, size int64) (*s3.UploadPartOutput, error) {
+	if size < 0 || int64(len(data)) < size {
+		return nil, fmt.Errorf("invalid prefetched multipart payload: part=%d size=%d buffer=%d", partNumber, size, len(data))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	defer cancel()
+	return r.client.UploadPart(ctx, &s3.UploadPartInput{
+		Bucket:        &bucket,
+		Key:           &key,
+		UploadId:      &uploadID,
+		PartNumber:    &partNumber,
+		Body:          bytes.NewReader(data[:size]),
 		ContentLength: int64Ptr(size),
 	})
 }
@@ -2864,7 +3088,7 @@ param(
 $ErrorActionPreference = 'Continue'
 while ($true) {
     $timestamp = [DateTime]::UtcNow.ToString('o')
-    $processes = Get-Process optical-recorder,BurnServer,versitygw -ErrorAction SilentlyContinue
+    $processes = Get-Process optical-recorder,versitygw -ErrorAction SilentlyContinue
     foreach ($proc in @($processes)) {
         $line = '{0},{1},{2},{3},{4},{5},{6},{7}' -f $timestamp,$proc.ProcessName,$proc.Id,$proc.WorkingSet64,$proc.PrivateMemorySize64,$proc.PagedMemorySize64,$proc.HandleCount,$proc.Threads.Count
         [System.IO.File]::AppendAllText($Path, $line + [Environment]::NewLine)

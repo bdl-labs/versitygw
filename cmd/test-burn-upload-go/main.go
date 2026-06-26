@@ -36,6 +36,7 @@ const (
 	modeDownload       mode = "download"
 	modeRemoteDownload mode = "remote-download"
 	modeMultipartFlow  mode = "multipart"
+	modePutObjectFlow  mode = "putobject"
 	modeListObjects    mode = "listobjects"
 	modeDriveInfo      mode = "driveinfo"
 	modeDiscInfo       mode = "discinfo"
@@ -126,10 +127,18 @@ func parseInvocation(args []string) (cliOptions, error) {
 	case "remote-download-nomd5", "rdl-nomd5":
 		return parseRemoteDownload(args[1:], true), nil
 	case "multipart", "mp":
+		return parseMultipartFlow(args[1:], true)
+	case "multipart-md5", "mp-md5":
 		return parseMultipartFlow(args[1:], false)
 	case "multipart-nomd5", "mp-nomd5":
 		return parseMultipartFlow(args[1:], true)
+	case "putobject", "put", "po":
+		return parsePutObjectFlow(args[1:], true)
+	case "putobject-md5", "put-md5", "po-md5":
+		return parsePutObjectFlow(args[1:], false)
 	case "mixed", "mix":
+		return parseMixedFlow(args[1:], true)
+	case "mixed-md5", "mix-md5":
 		return parseMixedFlow(args[1:], false)
 	case "mixed-nomd5", "mix-nomd5":
 		return parseMixedFlow(args[1:], true)
@@ -183,6 +192,7 @@ func parseFullFlow(args []string) cliOptions {
 		awsProfile:       profile,
 		configPath:       resolveConfigPath(configPath),
 		skipBucketCreate: false,
+		skipMD5Verify:    true,
 	}
 }
 
@@ -228,7 +238,7 @@ func parseMultipartFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	}
 
 	bucket := positionalOrDefault(args, 1, defaultBucket)
-	partSizeMiBRaw := positionalOrDefault(args, 2, "64")
+	partSizeMiBRaw := positionalOrDefault(args, 2, "32")
 	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
 	if err != nil || partSizeMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
@@ -246,17 +256,35 @@ func parseMultipartFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	}, nil
 }
 
+func parsePutObjectFlow(args []string, skipMD5 bool) (cliOptions, error) {
+	dataFile := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(dataFile) == "" {
+		return cliOptions{}, errors.New("data file is required")
+	}
+
+	bucket := positionalOrDefault(args, 1, defaultBucket)
+	profile, configPath := parseProfileConfig(args, 2, 3)
+	return cliOptions{
+		mode:          modePutObjectFlow,
+		dataDir:       dataFile,
+		bucket:        bucket,
+		awsProfile:    profile,
+		configPath:    resolveConfigPath(configPath),
+		skipMD5Verify: skipMD5,
+	}, nil
+}
+
 func parseMixedFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	dataDir := positionalOrDefault(args, 0, defaultDataDir)
 	bucket := positionalOrDefault(args, 1, defaultBucket)
 
-	thresholdMiBRaw := positionalOrDefault(args, 2, "64")
+	thresholdMiBRaw := positionalOrDefault(args, 2, "32")
 	thresholdMiB, err := strconv.ParseInt(strings.TrimSpace(thresholdMiBRaw), 10, 64)
 	if err != nil || thresholdMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid multipartThresholdMiB: %s", thresholdMiBRaw)
 	}
 
-	partSizeMiBRaw := positionalOrDefault(args, 3, "64")
+	partSizeMiBRaw := positionalOrDefault(args, 3, "32")
 	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
 	if err != nil || partSizeMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
@@ -535,8 +563,12 @@ func printUsage(stream *os.File) {
 		"Compatibility usage:",
 		"  test-burn-upload-go.exe [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe mixed [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe mixed-md5 [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe mixed-nomd5 [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe putobject [DataFile] [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe putobject-md5 [DataFile] [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe multipart-md5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart-nomd5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe download [DataDir] [Bucket] [AwsProfile] [ConfigPath] [nomd5]",
 		"  test-burn-upload-go.exe download-nomd5 [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
@@ -559,7 +591,7 @@ func printUsage(stream *os.File) {
 		"",
 		"Short aliases:",
 		"  ls=listobjects, drive=driveinfo, disc=discinfo, open=tray-open, close=tray-close",
-		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, mp=multipart, mix=mixed",
+		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, put=putobject, po=putobject, mp=multipart, mix=mixed",
 		"",
 		"Config resolution:",
 		"  1. explicit ConfigPath argument",
@@ -569,16 +601,28 @@ func printUsage(stream *os.File) {
 		"",
 		"Modes:",
 		"  full-flow",
-		"    Upload local files, validate ListObjects and HeadObject, call FinalizeLayout, then download.",
+		"    Upload local files, validate ListObjects and HeadObject, call FinalizeLayout, then download. MD5 is skipped by default.",
 		"",
 		"  mixed",
-		"    Upload one directory serially with size-based strategy: large files use multipart, small files use PutObject.",
+		"    Upload one directory serially with size-based strategy: large files use multipart, small files use PutObject. MD5 is skipped by default.",
+		"",
+		"  mixed-md5",
+		"    Same as mixed, but verify downloaded files with MD5.",
 		"",
 		"  mixed-nomd5",
 		"    Same as mixed, but skip downloaded file MD5 verification.",
 		"",
+		"  putobject",
+		"    Upload one local file through a single S3 PutObject request, finalize, then download size-check.",
+		"",
+		"  putobject-md5",
+		"    Same as putobject, but verify the downloaded file with MD5.",
+		"",
 		"  multipart",
-		"    Upload one local file through standard S3 multipart APIs, complete it, finalize, then download verify.",
+		"    Upload one local file through standard S3 multipart APIs, complete it, finalize, then download size-check. MD5 is skipped by default.",
+		"",
+		"  multipart-md5",
+		"    Same as multipart, but verify the downloaded file with MD5.",
 		"",
 		"  multipart-nomd5",
 		"    Same as multipart, but skip downloaded file MD5 verification.",
@@ -642,8 +686,9 @@ func printUsage(stream *os.File) {
 		`  .\test-burn-upload-go.exe drive`,
 		`  .\test-burn-upload-go.exe open`,
 		`  .\test-burn-upload-go.exe close`,
-		`  .\test-burn-upload-go.exe mix D:\BRS\Publisher\temp\mixed-batch archive-test 64 64`,
-		`  .\test-burn-upload-go.exe mp D:\testdata\10.zip archive-test 64`,
+		`  .\test-burn-upload-go.exe put D:\testdata\large.bin archive-test`,
+		`  .\test-burn-upload-go.exe mix D:\BRS\Publisher\temp\mixed-batch archive-test 32 32`,
+		`  .\test-burn-upload-go.exe mp D:\testdata\10.zip archive-test 32`,
 		`  .\test-burn-upload-go.exe rdl`,
 		`  .\test-burn-upload-go.exe get docs/chat-export.md`,
 	}
