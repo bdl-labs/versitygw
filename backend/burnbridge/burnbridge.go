@@ -398,20 +398,33 @@ var burnbridgeControlBucketReadOnly = s3err.APIError{
 }
 
 func isS3BucketAlnum(b byte) bool {
-	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
 }
 
 // sanitizeS3BucketFromVolumeLabel maps a UDF/optical volume label to a DNS-compliant S3 bucket name.
 func sanitizeS3BucketFromVolumeLabel(raw string) (string, error) {
+	return sanitizeBucketName(raw, false)
+}
+
+func sanitizeUpperBucketFromHardwareID(raw string) (string, error) {
+	return sanitizeBucketName(raw, true)
+}
+
+func sanitizeBucketName(raw string, upper bool) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("empty volume label")
 	}
+	if upper {
+		raw = strings.ToUpper(raw)
+	} else {
+		raw = strings.ToLower(raw)
+	}
 	var b strings.Builder
 	prevHyphen := false
-	for _, r := range strings.ToLower(raw) {
+	for _, r := range raw {
 		switch {
-		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9':
 			b.WriteRune(r)
 			prevHyphen = false
 		case r == '-' || r == '_' || r == ' ' || r == '.':
@@ -438,8 +451,58 @@ func sanitizeS3BucketFromVolumeLabel(raw string) (string, error) {
 	return s, nil
 }
 
-func volumeLabelFromBucketName(bucket string) string {
+func defaultBucketSourceFromReadyResponse(resp *burnbridgev1.TestUnitReadyResponse) string {
+	if resp == nil {
+		return ""
+	}
+	if serial := strings.TrimSpace(resp.GetDiscSerialNumberHex()); serial != "" {
+		return serial
+	}
+	return strings.TrimSpace(resp.GetVolumeLabel())
+}
+
+func defaultDataBucketFromReadyResponse(resp *burnbridgev1.TestUnitReadyResponse) (string, error) {
+	source := defaultBucketSourceFromReadyResponse(resp)
+	if source == "" {
+		return "", fmt.Errorf("empty disc serial number")
+	}
+	return sanitizeUpperBucketFromHardwareID(source)
+}
+
+func normalizeBurnbridgeBucketName(bucket string) string {
 	return strings.TrimSpace(strings.ToUpper(bucket))
+}
+
+func volumeLabelFromBucketName(bucket string) string {
+	return normalizeBurnbridgeBucketName(bucket)
+}
+
+func validateBurnbridgeDataBucketName(bucket string) error {
+	trimmed := strings.TrimSpace(bucket)
+	if trimmed == "" {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if len(trimmed) < 3 || len(trimmed) > 63 {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	if !isS3BucketAlnum(trimmed[0]) || !isS3BucketAlnum(trimmed[len(trimmed)-1]) {
+		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	}
+	prevHyphen := false
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9':
+			prevHyphen = false
+		case r == '-':
+			if prevHyphen {
+				return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+			}
+			prevHyphen = true
+		default:
+			return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+		}
+	}
+	return nil
 }
 
 func sanitizeDriveControlBucketFromSerial(serial string) (string, error) {
@@ -447,11 +510,11 @@ func sanitizeDriveControlBucketFromSerial(serial string) (string, error) {
 	if trimmed == "" {
 		return "", fmt.Errorf("empty drive serial number")
 	}
-	name, err := sanitizeS3BucketFromVolumeLabel(trimmed)
+	name, err := sanitizeUpperBucketFromHardwareID(trimmed)
 	if err == nil {
 		return name, nil
 	}
-	prefixed, prefixedErr := sanitizeS3BucketFromVolumeLabel("drive-" + trimmed)
+	prefixed, prefixedErr := sanitizeUpperBucketFromHardwareID("drive-" + trimmed)
 	if prefixedErr != nil {
 		return "", err
 	}
@@ -571,7 +634,7 @@ func probeRecorderDiscAtStartup(ctx context.Context, client burnbridgev1.BurnBri
 	if raw == "" {
 		return "", "", nil, fmt.Errorf("burnbridge: TestUnitReady returned ready but empty volume_label (recorder must set disc volume label)")
 	}
-	bucket, err = sanitizeS3BucketFromVolumeLabel(raw)
+	bucket, err = defaultDataBucketFromReadyResponse(resp)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("burnbridge: %w", err)
 	}
@@ -1028,6 +1091,72 @@ func ensureWritableCapacity(doc *meta.BurnbridgeDiscInfoDocument, contentLen int
 	return nil
 }
 
+func shouldAutoFinalizeAfterCapacityError(doc *meta.BurnbridgeDiscInfoDocument) bool {
+	if doc == nil {
+		return false
+	}
+	writable := doc.WritableCapacityBytes
+	if writable <= 0 {
+		writable = doc.FreeCapacityBytes
+	}
+	if writable <= 0 {
+		return true
+	}
+	reserve := doc.FinalizeReserveBytes
+	return reserve > 0 && writable <= reserve
+}
+
+func (b *BurnBridge) refreshAndEnsureWritableCapacity(ctx context.Context, bucket string, contentLen int64) error {
+	return b.refreshAndEnsureWritableCapacityWithCleanup(ctx, bucket, contentLen, nil)
+}
+
+func (b *BurnBridge) refreshAndEnsureWritableCapacityWithCleanup(ctx context.Context, bucket string, contentLen int64, beforeFinalize func()) error {
+	if contentLen <= 0 {
+		return nil
+	}
+	if err := b.runRecorderStateProbe(ctx); err != nil {
+		return err
+	}
+	raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	var discInfo meta.BurnbridgeDiscInfoDocument
+	if err := json.Unmarshal(raw, &discInfo); err != nil {
+		return nil
+	}
+	if err := ensureWritableCapacity(&discInfo, contentLen); err != nil {
+		if beforeFinalize != nil {
+			beforeFinalize()
+		}
+		autoFinalize := shouldAutoFinalizeAfterCapacityError(&discInfo)
+		if b.hasCommittedObjects(bucket) && autoFinalize {
+			b.finalizeAndCloseDiscAfterCapacityExceeded(ctx, bucket)
+		} else if !autoFinalize {
+			slog.Warn("burnbridge: requested object exceeds writable capacity but disc still has finalize reserve; leaving disc appendable",
+				"bucket", bucket, "contentLen", contentLen, "writableCapacityBytes", discInfo.WritableCapacityBytes, "finalizeReserveBytes", discInfo.FinalizeReserveBytes)
+		} else {
+			slog.Warn("burnbridge: writable capacity is insufficient but bucket has no committed objects; leaving disc appendable",
+				"bucket", bucket, "contentLen", contentLen)
+		}
+		return err
+	}
+	return nil
+}
+
+func (b *BurnBridge) hasCommittedObjects(bucket string) bool {
+	if b == nil || strings.TrimSpace(bucket) == "" {
+		return false
+	}
+	objects, err := b.meta.ListCommittedObjects(bucket)
+	if err != nil {
+		slog.Warn("burnbridge: failed to inspect committed objects before automatic capacity close",
+			"bucket", bucket, "error", err)
+		return false
+	}
+	return len(objects) > 0
+}
+
 func normalizeOpts(o *Options) {
 	if o.ChunkSize <= 0 {
 		o.ChunkSize = defaultChunkSizeBytes
@@ -1428,7 +1557,7 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 			}
 		}
 
-		sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
+		sanitizedBucket, err := defaultDataBucketFromReadyResponse(resp)
 		if err != nil {
 			b.activeBucket = ""
 			b.volumeLabelRaw = rawVolume
@@ -1475,7 +1604,7 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 		return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
 	}
 
-	sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
+	sanitizedBucket, err := defaultDataBucketFromReadyResponse(resp)
 	if err != nil {
 		b.activeBucket = ""
 		b.volumeLabelRaw = rawVolume
@@ -1517,6 +1646,14 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 		resolvedBucket = requestedBucket
 	}
 	if resolvedBucket == "" {
+		return nil
+	}
+	if requestedBucket != "" && !strings.EqualFold(resolvedBucket, requestedBucket) && !b.importedBucketMatchesCurrentDisc(resolvedBucket, resp.GetUdfVolumeLabel()) {
+		slog.Warn("burnbridge: ignoring imported bucket state because imported bucket does not match current disc identity",
+			"imported_bucket", resolvedBucket,
+			"active_bucket", requestedBucket,
+			"imported_udf_volume_label", strings.TrimSpace(resp.GetUdfVolumeLabel()),
+			"current_volume_label", strings.TrimSpace(b.volumeLabelRaw))
 		return nil
 	}
 	if mountedBucket, ok := b.mountedFallbackBucketHint(); ok && !strings.EqualFold(resolvedBucket, mountedBucket) {
@@ -1602,6 +1739,24 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 	return nil
 }
 
+func (b *BurnBridge) importedBucketMatchesCurrentDisc(importedBucket, importedVolumeLabel string) bool {
+	currentVolume := strings.TrimSpace(b.volumeLabelRaw)
+	if currentVolume == "" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(importedVolumeLabel), currentVolume) {
+		return true
+	}
+	if binding, ok := loadDiscBucketBinding(b.meta, currentVolume); ok && binding != nil {
+		boundBucket := strings.TrimSpace(binding.Bucket)
+		if boundBucket == "" {
+			return true
+		}
+		return strings.EqualFold(boundBucket, strings.TrimSpace(importedBucket))
+	}
+	return true
+}
+
 func (b *BurnBridge) syncImportedBucketMetadata(bucket string, items []*burnbridgev1.ObjectMetadata) error {
 	trimmedBucket := strings.TrimSpace(bucket)
 	if trimmedBucket == "" {
@@ -1639,6 +1794,7 @@ func (b *BurnBridge) pruneOtherBurnbridgeBuckets(activeBucket string) error {
 		trimmed := strings.TrimSpace(bucket)
 		if trimmed == "" ||
 			strings.EqualFold(trimmed, activeBucket) ||
+			strings.EqualFold(trimmed, strings.TrimSpace(b.lastDriveControlBucket)) ||
 			strings.EqualFold(trimmed, meta.BurnbridgeRuntimeBindingBucket) {
 			continue
 		}
@@ -1821,12 +1977,9 @@ func (b *BurnBridge) recordRecorderReadyState(resp *burnbridgev1.TestUnitReadyRe
 
 	bucket := strings.TrimSpace(b.activeBucket)
 	if bucket == "" {
-		rawVolume := strings.TrimSpace(resp.GetVolumeLabel())
-		if rawVolume != "" {
-			sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(rawVolume)
-			if err == nil {
-				bucket = sanitizedBucket
-			}
+		sanitizedBucket, err := defaultDataBucketFromReadyResponse(resp)
+		if err == nil {
+			bucket = sanitizedBucket
 		}
 	}
 
@@ -2101,7 +2254,7 @@ func (b *BurnBridge) maybeRestoreNoDiscBackup(resp *burnbridgev1.TestUnitReadyRe
 }
 
 func (b *BurnBridge) burnbridgeBucketExists(name string) bool {
-	trimmedName := strings.TrimSpace(name)
+	trimmedName := normalizeBurnbridgeBucketName(name)
 	if trimmedName == "" {
 		return false
 	}
@@ -2112,12 +2265,16 @@ func (b *BurnBridge) burnbridgeBucketExists(name string) bool {
 		return false
 	}
 	if mountedBucket, ok := b.mountedFallbackBucketHint(); ok {
-		return strings.EqualFold(trimmedName, mountedBucket)
+		return trimmedName == normalizeBurnbridgeBucketName(mountedBucket)
 	}
-	if trimmedName == strings.TrimSpace(b.activeBucket) {
+	if trimmedName == normalizeBurnbridgeBucketName(b.activeBucket) {
 		return true
 	}
 	return b.restoreBucketStateFromMetadata(trimmedName)
+}
+
+func (b *BurnBridge) canonicalBurnbridgeBucketName(name string) string {
+	return normalizeBurnbridgeBucketName(name)
 }
 
 func (b *BurnBridge) createBucketBindingAllowed() bool {
@@ -2278,6 +2435,7 @@ func (b *BurnBridge) ListBucketsAndOwners(ctx context.Context) ([]s3response.Buc
 }
 
 func (b *BurnBridge) ChangeBucketOwner(ctx context.Context, bucket, owner string) error {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2296,22 +2454,31 @@ func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput
 		}
 	}
 
-	requestedBucket := strings.TrimSpace(*input.Bucket)
+	requestedBucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	if requestedBucket == "" {
 		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
 
 	targetVolumeLabel := volumeLabelFromBucketName(requestedBucket)
-	sanitizedBucket, err := sanitizeS3BucketFromVolumeLabel(targetVolumeLabel)
-	if err != nil || !strings.EqualFold(sanitizedBucket, requestedBucket) {
-		return s3err.GetAPIError(s3err.ErrInvalidBucketName)
+	if err := validateBurnbridgeDataBucketName(requestedBucket); err != nil {
+		return err
 	}
 
 	if len(defaultACL) == 0 {
+		var err error
 		defaultACL, err = json.Marshal(defaultBucketACL(requestedBucket))
 		if err != nil {
 			return fmt.Errorf("marshal default bucket acl: %w", err)
 		}
+	}
+
+	if b.grpc != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := b.requireRecorderReady(ctx); err != nil {
+			cancel()
+			return err
+		}
+		cancel()
 	}
 
 	if strings.TrimSpace(b.activeBucket) == "" {
@@ -2338,7 +2505,7 @@ func (b *BurnBridge) HeadBucket(ctx context.Context, input *s3.HeadBucketInput) 
 	if input == nil || input.Bucket == nil {
 		return nil, fmt.Errorf("bucket required")
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	if b.isDriveControlBucket(bucket) {
 		return &s3.HeadBucketOutput{}, nil
 	}
@@ -2405,6 +2572,7 @@ func shouldRetryRecorderReady(err error) bool {
 
 // DeleteBucket is rejected: the active bucket is tied to loaded optical media (WORM session).
 func (b *BurnBridge) DeleteBucket(_ context.Context, bucket string) error {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2413,6 +2581,7 @@ func (b *BurnBridge) DeleteBucket(_ context.Context, bucket string) error {
 
 // GetBucketOwnershipControls returns a stable default to keep WebUI compatibility.
 func (b *BurnBridge) GetBucketOwnershipControls(_ context.Context, bucket string) (types.ObjectOwnership, error) {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return types.ObjectOwnershipBucketOwnerEnforced, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2421,6 +2590,7 @@ func (b *BurnBridge) GetBucketOwnershipControls(_ context.Context, bucket string
 
 // GetBucketVersioning returns an empty (unconfigured) versioning state.
 func (b *BurnBridge) GetBucketVersioning(_ context.Context, bucket string) (s3response.GetBucketVersioningOutput, error) {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.GetBucketVersioningOutput{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2429,35 +2599,41 @@ func (b *BurnBridge) GetBucketVersioning(_ context.Context, bucket string) (s3re
 
 // GetBucketAcl provides a minimal ACL view for auth middleware compatibility.
 func (b *BurnBridge) GetBucketAcl(ctx context.Context, input *s3.GetBucketAclInput) ([]byte, error) {
-	if input == nil || input.Bucket == nil || !b.burnbridgeBucketExists(*input.Bucket) {
+	if input == nil || input.Bucket == nil {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
+	}
+	bucket := b.canonicalBurnbridgeBucketName(*input.Bucket)
+	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 	if acct, ok := ctx.Value("account").(auth.Account); ok {
 		if strings.TrimSpace(acct.Access) != "" && acct.Role != auth.RoleAdmin {
-			_, raw, err := b.ensureBucketACLForOwner(*input.Bucket, acct.Access)
+			_, raw, err := b.ensureBucketACLForOwner(bucket, acct.Access)
 			return raw, err
 		}
 	}
-	_, raw, err := b.loadBucketACL(*input.Bucket)
+	_, raw, err := b.loadBucketACL(bucket)
 	return raw, err
 }
 
 func (b *BurnBridge) PutBucketAcl(_ context.Context, bucket string, data []byte) error {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	return b.storeBucketACL(bucket, data)
+	return b.storeBucketACL(b.canonicalBurnbridgeBucketName(bucket), data)
 }
 
 // GetBucketTagging returns an empty tag set for compatibility (no backend tag persistence).
 func (b *BurnBridge) GetBucketTagging(_ context.Context, bucket string) (map[string]string, error) {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 	tags := map[string]string{
 		burnbridgeBucketTypeTagKey: burnbridgeBucketTypeData,
 	}
-	if b.isDriveControlBucket(bucket) {
+	if b.isDriveControlBucket(b.canonicalBurnbridgeBucketName(bucket)) {
 		tags[burnbridgeBucketTypeTagKey] = burnbridgeBucketTypeControl
 		tags[burnbridgeControlBucketTagKey] = "true"
 	}
@@ -2465,6 +2641,7 @@ func (b *BurnBridge) GetBucketTagging(_ context.Context, bucket string) (map[str
 }
 
 func (b *BurnBridge) PutBucketTagging(_ context.Context, bucket string, tags map[string]string) error {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2475,6 +2652,7 @@ func (b *BurnBridge) PutBucketTagging(_ context.Context, bucket string, tags map
 }
 
 func (b *BurnBridge) DeleteBucketTagging(_ context.Context, bucket string) error {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2486,6 +2664,7 @@ func (b *BurnBridge) DeleteBucketTagging(_ context.Context, bucket string) error
 
 // GetBucketPolicy reports no bucket policy for burnbridge buckets.
 func (b *BurnBridge) GetBucketPolicy(_ context.Context, bucket string) ([]byte, error) {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2493,6 +2672,7 @@ func (b *BurnBridge) GetBucketPolicy(_ context.Context, bucket string) ([]byte, 
 }
 
 func (b *BurnBridge) DeleteBucketPolicy(_ context.Context, bucket string) error {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2501,6 +2681,7 @@ func (b *BurnBridge) DeleteBucketPolicy(_ context.Context, bucket string) error 
 
 // GetBucketCors returns no per-bucket CORS config so gateway fallback can apply.
 func (b *BurnBridge) GetBucketCors(_ context.Context, bucket string) ([]byte, error) {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2509,6 +2690,7 @@ func (b *BurnBridge) GetBucketCors(_ context.Context, bucket string) ([]byte, er
 
 // GetObjectLockConfiguration returns "not configured" for burnbridge buckets.
 func (b *BurnBridge) GetObjectLockConfiguration(_ context.Context, bucket string) ([]byte, error) {
+	bucket = normalizeBurnbridgeBucketName(bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -2519,7 +2701,7 @@ func (b *BurnBridge) CreateMultipartUpload(ctx context.Context, input s3response
 	if input.Bucket == nil || input.Key == nil {
 		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrInvalidRequest)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	if b.isDriveControlBucket(bucket) {
 		return s3response.InitiateMultipartUploadResult{}, burnbridgeControlBucketReadOnly
@@ -2529,6 +2711,11 @@ func (b *BurnBridge) CreateMultipartUpload(ctx context.Context, input s3response
 	}
 	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
 		return s3response.InitiateMultipartUploadResult{}, err
+	}
+	if objectSize := declaredMultipartObjectSize(input.Metadata); objectSize > 0 {
+		if err := b.refreshAndEnsureWritableCapacity(ctx, bucket, objectSize); err != nil {
+			return s3response.InitiateMultipartUploadResult{}, err
+		}
 	}
 
 	idx := objectLockIndex(bucket, key)
@@ -2589,7 +2776,7 @@ func (b *BurnBridge) UploadPart(ctx context.Context, input *s3.UploadPartInput) 
 	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil || input.PartNumber == nil {
 		return nil, s3err.GetAPIError(s3err.ErrInvalidRequest)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	uploadID := strings.TrimSpace(*input.UploadId)
 	partNumber := int(*input.PartNumber)
@@ -2670,16 +2857,31 @@ func (b *BurnBridge) UploadPart(ctx context.Context, input *s3.UploadPartInput) 
 			additionalBytes = 0
 		}
 	}
-	if additionalBytes > 0 {
-		raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
-		if err == nil && len(raw) > 0 {
-			var discInfo meta.BurnbridgeDiscInfoDocument
-			if uerr := json.Unmarshal(raw, &discInfo); uerr == nil {
-				if err := ensureWritableCapacity(&discInfo, additionalBytes); err != nil {
-					return nil, err
-				}
-			}
+	if err := b.refreshAndEnsureWritableCapacityWithCleanup(ctx, bucket, additionalBytes, func() {
+		_ = b.meta.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+			Bucket:         bucket,
+			ObjectName:     key,
+			UploadID:       uploadID,
+			Kind:           meta.BurnUploadKindMultipart,
+			State:          meta.BurnUploadStateFailed,
+			MediaID:        b.volumeLabelRaw,
+			RecorderJobID:  session.RecorderJobID,
+			ContentLength:  session.ContentLength,
+			BytesReceived:  session.BytesReceived,
+			NextPartNumber: session.NextPartNumber,
+		})
+		cctx, cancel := context.WithTimeout(context.Background(), b.cancelJobTimeout)
+		defer cancel()
+		if _, cancelErr := b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: session.RecorderJobID}); cancelErr != nil {
+			slog.Warn("burnbridge: failed to cancel multipart job before capacity finalize",
+				"bucket", bucket, "key", key, "uploadId", uploadID, "jobId", session.RecorderJobID, "error", cancelErr)
 		}
+		if cleanupErr := b.cleanupMultipartUploadState(bucket, key, uploadID, nil); cleanupErr != nil {
+			slog.Warn("burnbridge: failed to cleanup multipart state before capacity finalize",
+				"bucket", bucket, "key", key, "uploadId", uploadID, "error", cleanupErr)
+		}
+	}); err != nil {
+		return nil, err
 	}
 
 	if existingPart != nil && contentLen > 0 && partBytesReceived == contentLen &&
@@ -2863,7 +3065,7 @@ func (b *BurnBridge) ListParts(_ context.Context, input *s3.ListPartsInput) (s3r
 	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil {
 		return s3response.ListPartsResult{}, s3err.GetAPIError(s3err.ErrInvalidRequest)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	uploadID := strings.TrimSpace(*input.UploadId)
 	if b.isDriveControlBucket(bucket) {
@@ -2945,7 +3147,7 @@ func (b *BurnBridge) CompleteMultipartUpload(ctx context.Context, input *s3.Comp
 	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil || input.MultipartUpload == nil {
 		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidRequest)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	uploadID := strings.TrimSpace(*input.UploadId)
 	if b.isDriveControlBucket(bucket) {
@@ -3119,7 +3321,7 @@ func (b *BurnBridge) AbortMultipartUpload(_ context.Context, input *s3.AbortMult
 	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil {
 		return s3err.GetAPIError(s3err.ErrInvalidRequest)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	uploadID := strings.TrimSpace(*input.UploadId)
 	if !b.burnbridgeBucketExists(bucket) {
@@ -3161,7 +3363,7 @@ func (b *BurnBridge) ListMultipartUploads(_ context.Context, input *s3.ListMulti
 	if input == nil || input.Bucket == nil {
 		return s3response.ListMultipartUploadsResult{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.ListMultipartUploadsResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
@@ -3670,6 +3872,45 @@ func buildFinalizeLayoutResultJSON(bucket string, req *burnbridgeControlRequest,
 	return json.Marshal(doc)
 }
 
+func (b *BurnBridge) finalizeAndCloseDiscAfterCapacityExceeded(ctx context.Context, bucket string) {
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" || b.grpc == nil {
+		return
+	}
+	for _, closeDisc := range []bool{false, true} {
+		action := burnbridgeControlActionFinalizeLayout
+		if closeDisc {
+			action = burnbridgeControlActionCloseDisc
+		}
+		req := &burnbridgeControlRequest{
+			Action:      action,
+			RequestTime: time.Now().UTC().UnixMilli(),
+			RequestID:   uuid.NewString(),
+			Key:         fmt.Sprintf("v1/%s", action),
+		}
+		resp, grpcErr := b.grpc.FinalizeLayout(ctx, &burnbridgev1.FinalizeLayoutRequest{
+			Bucket:         bucket,
+			UdfVolumeLabel: b.udfLabel,
+			CloseDisc:      closeDisc,
+		})
+		payload, err := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, resp, grpcErr)
+		if err == nil {
+			objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
+			if storeErr := b.meta.StoreBurnbridgeFinalizeLayoutJSON(bucket, objectKey, payload); storeErr != nil {
+				slog.Warn("burnbridge: failed to store automatic capacity finalize transcript",
+					"bucket", bucket, "close_disc", closeDisc, "error", storeErr)
+			}
+		}
+		if grpcErr != nil {
+			slog.Warn("burnbridge: automatic capacity finalize failed",
+				"bucket", bucket, "close_disc", closeDisc, "error", grpcErr)
+			return
+		}
+		slog.Info("burnbridge: automatic capacity finalize completed",
+			"bucket", bucket, "close_disc", closeDisc)
+	}
+}
+
 func finalizeObjectKeyForCloseDisc(closeDisc bool) string {
 	if closeDisc {
 		return meta.BurnbridgeCloseDiscObjectKey
@@ -4031,7 +4272,7 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 	if input == nil || input.Bucket == nil || input.Key == nil {
 		return nil, fmt.Errorf("bucket/key required")
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	if controlReq, isControl, err := b.parseControlRequestForBucket(bucket, key); isControl {
 		if err != nil {
@@ -4440,7 +4681,7 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 	if input == nil || input.Bucket == nil || input.Key == nil {
 		return nil, fmt.Errorf("bucket/key required")
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	if controlReq, isControl, err := b.parseControlRequestForBucket(bucket, key); isControl {
 		if err != nil {
@@ -4878,7 +5119,7 @@ func (b *BurnBridge) ListObjects(ctx context.Context, input *s3.ListObjectsInput
 	if input == nil || input.Bucket == nil {
 		return s3response.ListObjectsResult{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	fsys, byKey, err := b.prepareCommittedListing(ctx, bucket)
 	if err != nil {
 		return s3response.ListObjectsResult{}, err
@@ -4924,7 +5165,7 @@ func (b *BurnBridge) ListObjectsV2(ctx context.Context, input *s3.ListObjectsV2I
 	if input == nil || input.Bucket == nil {
 		return s3response.ListObjectsV2Result{}, s3err.GetAPIError(s3err.ErrInvalidBucketName)
 	}
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	fsys, byKey, err := b.prepareCommittedListing(ctx, bucket)
 	if err != nil {
 		return s3response.ListObjectsV2Result{}, err
@@ -5182,6 +5423,20 @@ func buildMultipartInitState(input s3response.CreateMultipartUploadInput) burnbr
 		ChecksumAlgorithm: input.ChecksumAlgorithm,
 		ChecksumType:      input.ChecksumType,
 	}
+}
+
+func declaredMultipartObjectSize(metadata map[string]string) int64 {
+	for key, value := range metadata {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized != "burnbridge-object-size" && normalized != "x-amz-meta-burnbridge-object-size" {
+			continue
+		}
+		size, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err == nil && size > 0 {
+			return size
+		}
+	}
+	return 0
 }
 
 func multipartInitAttribute(uploadID string) string {
@@ -5464,6 +5719,8 @@ func (b *BurnBridge) acceptedSegmentMediaIDs(bucket string) acceptedMediaSet {
 	}
 
 	add(b.volumeLabelRaw)
+	add(bucket)
+	add(b.activeBucket)
 
 	if strings.TrimSpace(bucket) == "" {
 		return accepted
@@ -5737,10 +5994,25 @@ func (b *BurnBridge) grpcUploadMultipartPartStream(
 	partStartOffset, resumeOffset int64,
 ) (int64, *burnbridgev1.UploadObjectAck, uploadRecoveryStats, error) {
 	startedAt := time.Now()
-	stream, err := b.grpc.UploadObject(ctx)
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	stream, err := b.grpc.UploadObject(streamCtx)
 	if err != nil {
+		cancelStream()
 		return resumeOffset, nil, uploadRecoveryStats{}, err
 	}
+	streamClosed := false
+	closeStream := func() error {
+		streamClosed = true
+		return stream.CloseSend()
+	}
+	defer func() {
+		if !streamClosed {
+			cancelStream()
+			_ = stream.CloseSend()
+			return
+		}
+		cancelStream()
+	}()
 	segmentSnapshot, err := b.loadBurnSegmentSnapshot(bucket, segmentKey)
 	if err != nil {
 		return resumeOffset, nil, uploadRecoveryStats{}, err
@@ -5768,7 +6040,7 @@ func (b *BurnBridge) grpcUploadMultipartPartStream(
 		if err := sendEOF(); err != nil {
 			return currentOffset, nil, stats, err
 		}
-		if err := stream.CloseSend(); err != nil {
+		if err := closeStream(); err != nil {
 			return currentOffset, nil, stats, err
 		}
 		final, err := stream.Recv()
@@ -5888,7 +6160,7 @@ func (b *BurnBridge) grpcUploadMultipartPartStream(
 		if err := sendEOF(); err != nil {
 			return currentOffset, nil, stats, err
 		}
-		if err := stream.CloseSend(); err != nil {
+		if err := closeStream(); err != nil {
 			return currentOffset, nil, stats, err
 		}
 		final, err = stream.Recv()
@@ -5899,7 +6171,7 @@ func (b *BurnBridge) grpcUploadMultipartPartStream(
 			return currentOffset, nil, stats, fmt.Errorf("burnbridge: expected upload_complete on multipart part final ack")
 		}
 	} else {
-		if err := stream.CloseSend(); err != nil {
+		if err := closeStream(); err != nil {
 			return currentOffset, nil, stats, err
 		}
 		final = &burnbridgev1.UploadObjectAck{
@@ -5927,10 +6199,25 @@ func (b *BurnBridge) grpcUploadMultipartPartStream(
 
 func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, key string, body io.Reader, _ int64, opts burnbridgeUploadStreamOptions) (int64, *burnbridgev1.UploadObjectAck, uploadRecoveryStats, error) {
 	startedAt := time.Now()
-	stream, err := b.grpc.UploadObject(ctx)
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	stream, err := b.grpc.UploadObject(streamCtx)
 	if err != nil {
+		cancelStream()
 		return 0, nil, uploadRecoveryStats{}, err
 	}
+	streamClosed := false
+	closeStream := func() error {
+		streamClosed = true
+		return stream.CloseSend()
+	}
+	defer func() {
+		if !streamClosed {
+			cancelStream()
+			_ = stream.CloseSend()
+			return
+		}
+		cancelStream()
+	}()
 	segmentSnapshot, err := b.loadBurnSegmentSnapshot(bucket, key)
 	if err != nil {
 		return 0, nil, uploadRecoveryStats{}, err
@@ -5953,7 +6240,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 		if err := sendEOF(); err != nil {
 			return 0, nil, stats, err
 		}
-		if err := stream.CloseSend(); err != nil {
+		if err := closeStream(); err != nil {
 			return 0, nil, stats, err
 		}
 		final, err := stream.Recv()
@@ -6067,7 +6354,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 		if err := sendEOF(); err != nil {
 			return offset, nil, stats, err
 		}
-		if err := stream.CloseSend(); err != nil {
+		if err := closeStream(); err != nil {
 			return offset, nil, stats, err
 		}
 		final, err = stream.Recv()
@@ -6078,7 +6365,7 @@ func (b *BurnBridge) grpcUploadObjectStream(ctx context.Context, jobID, bucket, 
 			return offset, nil, stats, fmt.Errorf("burnbridge: expected upload_complete on final ack")
 		}
 	} else {
-		if err := stream.CloseSend(); err != nil {
+		if err := closeStream(); err != nil {
 			return offset, nil, stats, err
 		}
 		final = &burnbridgev1.UploadObjectAck{
@@ -6160,7 +6447,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		defer cancel()
 	}
 
-	bucket := *input.Bucket
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
 	key := *input.Key
 	if b.isDriveControlBucket(bucket) {
 		return s3response.PutObjectOutput{}, burnbridgeControlBucketReadOnly
@@ -6188,16 +6475,8 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	if input.ContentLength != nil {
 		contentLen = *input.ContentLength
 	}
-	if contentLen > 0 {
-		raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
-		if err == nil && len(raw) > 0 {
-			var discInfo meta.BurnbridgeDiscInfoDocument
-			if uerr := json.Unmarshal(raw, &discInfo); uerr == nil {
-				if err := ensureWritableCapacity(&discInfo, contentLen); err != nil {
-					return s3response.PutObjectOutput{}, err
-				}
-			}
-		}
+	if err := b.refreshAndEnsureWritableCapacity(ctx, bucket, contentLen); err != nil {
+		return s3response.PutObjectOutput{}, err
 	}
 
 	createResp, err := b.grpc.CreateJob(ctx, &burnbridgev1.CreateJobRequest{
@@ -6278,6 +6557,13 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	})
 	if err != nil {
 		return s3response.PutObjectOutput{}, err
+	}
+	if contentLen > 0 && offset != contentLen {
+		return s3response.PutObjectOutput{}, fmt.Errorf(
+			"burnbridge: incomplete PutObject body: received=%d expected=%d: %w",
+			offset,
+			contentLen,
+			io.ErrUnexpectedEOF)
 	}
 
 	if stats.AllSegmentsSkipped() {
@@ -6403,10 +6689,11 @@ func (b *BurnBridge) DeleteObject(_ context.Context, input *s3.DeleteObjectInput
 	if input == nil || input.Bucket == nil || input.Key == nil {
 		return nil, fmt.Errorf("bucket/key required")
 	}
-	if b.isDriveControlBucket(*input.Bucket) {
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
+	if b.isDriveControlBucket(bucket) {
 		return nil, burnbridgeControlBucketReadOnly
 	}
-	if !b.burnbridgeBucketExists(*input.Bucket) {
+	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 	return nil, burnbridgeWORMNoDelete
@@ -6417,10 +6704,11 @@ func (b *BurnBridge) DeleteObjects(_ context.Context, input *s3.DeleteObjectsInp
 	if input == nil || input.Bucket == nil || input.Delete == nil {
 		return s3response.DeleteResult{}, fmt.Errorf("bucket/delete payload required")
 	}
-	if b.isDriveControlBucket(*input.Bucket) {
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
+	if b.isDriveControlBucket(bucket) {
 		return s3response.DeleteResult{}, burnbridgeControlBucketReadOnly
 	}
-	if !b.burnbridgeBucketExists(*input.Bucket) {
+	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.DeleteResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
 	code := burnbridgeWORMNoDelete.Code

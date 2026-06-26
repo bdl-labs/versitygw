@@ -24,6 +24,7 @@ const (
 	defaultBucketReadyTimeout     = 120
 	defaultBucketReadyPollSeconds = 2
 	defaultMemorySampleInterval   = 2
+	defaultFinalizeFreeThreshold  = int64(1024 * 1024 * 1024)
 )
 
 type mode string

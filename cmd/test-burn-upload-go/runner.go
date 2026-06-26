@@ -82,6 +82,7 @@ type runner struct {
 	summaryJSONPath   string
 	logger            *runLogger
 	sampler           *memorySampler
+	uploadedKeys      map[string]struct{}
 }
 
 type runLogger struct {
@@ -112,6 +113,7 @@ type fileMetric struct {
 	UploadMiBPerSecond   float64
 	DownloadSeconds      float64
 	DownloadMiBPerSecond float64
+	RemoteETag           string
 	ActualMD5            string
 	Status               string
 	Notes                string
@@ -277,6 +279,7 @@ type failingReader struct {
 var errSimulatedDisconnect = errors.New("simulated upload disconnect")
 
 func newRunner(opts cliOptions) (*runner, error) {
+	opts.bucket = strings.TrimSpace(strings.ToUpper(opts.bucket))
 	if opts.interruptRetryOnly || opts.multipartRetryOnly || opts.mode == modeMultipartFlow {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || info.IsDir() {
@@ -326,6 +329,7 @@ func newRunner(opts cliOptions) (*runner, error) {
 
 func (r *runner) run() (err error) {
 	metrics := map[string]*fileMetric{}
+	r.uploadedKeys = map[string]struct{}{}
 	resultStatus := "Failed"
 	testStart := time.Now()
 	finalizeDuration := 0.0
@@ -339,6 +343,9 @@ func (r *runner) run() (err error) {
 		}
 		_ = r.writeMemorySummary()
 		_ = copyRuntimeLogs(r.runRoot, r.cfg.runtimeGatewayLogDir, r.cfg.runtimeRecorderLogDir)
+		if err != nil {
+			r.logf("ERROR: %v", err)
+		}
 		r.logf("Result: %s", resultStatus)
 		r.logf("")
 		r.logf("Done.")
@@ -569,6 +576,14 @@ func (r *runner) ensureActiveBucket() (string, error) {
 		if ready, readyErr := r.ensureBucketReady(activeBucket, defaultBucketReadyTimeout); readyErr != nil {
 			return "", readyErr
 		} else if ready {
+			if resolvedBucket, resolution, _, resolveErr := r.resolveActiveBucket(activeBucket, defaultBucketReadyTimeout); resolveErr == nil && resolvedBucket != "" {
+				if resolvedBucket != activeBucket {
+					r.logf("Requested bucket became ready, but active data bucket resolved to '%s' (%s).", resolvedBucket, resolution)
+				} else {
+					r.logf("Requested bucket became ready: %s", activeBucket)
+				}
+				return resolvedBucket, nil
+			}
 			r.logf("Requested bucket became ready: %s", activeBucket)
 			return activeBucket, nil
 		}
@@ -1016,12 +1031,19 @@ func (r *runner) runMultipartInterruptRetry(bucket, controlBucket string) error 
 	}
 	r.logf("  usedCapacityBytes(before) : %d", beforeInfo.Data.UsedCapacityBytes)
 
+	if stop, reason := r.shouldStopForFinalize(controlBucket, source.Size); stop {
+		r.logf("  multipart source would cross finalize threshold (%s); running FinalizeLayout without CloseDisc", reason)
+		_, err := r.finalizeLayoutOnly(controlBucket, filepath.Join(r.runRoot, "finalize-layout-response.json"))
+		return err
+	}
+
 	r.logf("[5/9] Initiating multipart upload...")
 	createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
 	defer cancelCreate()
 	createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
-		Bucket: &bucket,
-		Key:    &objectKey,
+		Bucket:   &bucket,
+		Key:      &objectKey,
+		Metadata: multipartObjectSizeMetadata(source.Size),
 	})
 	if err != nil {
 		return err
@@ -1210,12 +1232,19 @@ func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 	r.logf("  fileMd5        : %s", source.MD5)
 	r.logf("  partSizeBytes  : %d", partSize)
 
+	if stop, reason := r.shouldStopForFinalize(controlBucket, source.Size); stop {
+		r.logf("  multipart source would cross finalize threshold (%s); running FinalizeLayout without CloseDisc", reason)
+		_, err := r.finalizeLayoutOnly(controlBucket, finalizeOutputPath)
+		return err
+	}
+
 	r.logf("[4/8] Initiating multipart upload...")
 	createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
 	defer cancelCreate()
 	createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
-		Bucket: &bucket,
-		Key:    &objectKey,
+		Bucket:   &bucket,
+		Key:      &objectKey,
+		Metadata: multipartObjectSizeMetadata(source.Size),
 	})
 	if err != nil {
 		return err
@@ -1338,6 +1367,28 @@ func (r *runner) shouldUseMultipart(size int64) bool {
 	return size >= threshold
 }
 
+func markRemainingSkippedForCapacity(items []sourceItem, metrics map[string]*fileMetric, uploaded map[string]struct{}, startIndex int, note string) {
+	for i := startIndex; i < len(items); i++ {
+		item := items[i]
+		if _, ok := uploaded[item.RelativePath]; ok {
+			continue
+		}
+		metric := metrics[item.RelativePath]
+		if metric == nil {
+			continue
+		}
+		metric.Status = "Skipped"
+		metric.Notes = note
+	}
+}
+
+func multipartObjectSizeMetadata(size int64) map[string]string {
+	if size <= 0 {
+		return nil
+	}
+	return map[string]string{"burnbridge-object-size": strconv.FormatInt(size, 10)}
+}
+
 func (r *runner) uploadMultipartObject(bucket, objectKey string, source sourceItem, partSize int64, uploadID string) (float64, float64, string, error) {
 	type completedPartStat struct {
 		partNumber int32
@@ -1415,6 +1466,8 @@ func (r *runner) uploadMultipartObject(bucket, objectKey string, source sourceIt
 func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) (*runSummary, float64, string, error) {
 	var snapshot fileSnapshot
 	var err error
+	finalizeDuration := 0.0
+	stoppedForCapacity := false
 	if r.opts.remoteOnly {
 		r.logf("[3/8] Building remote object snapshot from ListObjects...")
 		snapshot, err = r.getRemoteObjectMap(bucket)
@@ -1461,15 +1514,30 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 		} else {
 			r.logf("[4/8] Uploading directory %s ...", r.opts.dataDir)
 		}
-		for _, item := range snapshot.Items {
+		for idx, item := range snapshot.Items {
+			if reject, reason := r.shouldRejectForCapacity(controlBucket, item.Size); reject {
+				r.logf("  stopping uploads before %s because it does not fit current writable capacity (%s)", item.RelativePath, reason)
+				stoppedForCapacity = true
+				markRemainingSkippedForCapacity(snapshot.Items, metrics, r.uploadedKeys, idx, "capacity-insufficient")
+				if len(r.uploadedKeys) > 0 {
+					finalizeDuration, err = r.finalizeAndCloseDisc(controlBucket, finalizeOutputPath)
+					if err != nil {
+						return nil, 0, "", err
+					}
+				} else {
+					r.logf("  no objects were uploaded in this run; leaving disc appendable")
+				}
+				break
+			}
 			start := time.Now()
 			uploadMethod := "putobject"
 			if r.shouldUseMultipart(item.Size) {
 				uploadMethod = fmt.Sprintf("multipart(part=%s MiB)", formatSizeMiB(r.effectiveMultipartPartSize()))
 				createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
 				createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
-					Bucket: &bucket,
-					Key:    &item.RelativePath,
+					Bucket:   &bucket,
+					Key:      &item.RelativePath,
+					Metadata: multipartObjectSizeMetadata(item.Size),
 				})
 				cancelCreate()
 				if err != nil {
@@ -1480,10 +1548,28 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 					return nil, 0, "", fmt.Errorf("empty upload id from CreateMultipartUpload for %s", item.RelativePath)
 				}
 				if _, _, _, err := r.uploadMultipartObject(bucket, item.RelativePath, item, r.effectiveMultipartPartSize(), uploadID); err != nil {
+					if isCapacityInsufficientError(err) {
+						stoppedForCapacity = true
+						markRemainingSkippedForCapacity(snapshot.Items, metrics, r.uploadedKeys, idx, "capacity-insufficient")
+						finalizeDuration, err = r.finalizeAndCloseDisc(controlBucket, finalizeOutputPath)
+						if err != nil {
+							return nil, 0, "", err
+						}
+						break
+					}
 					return nil, 0, "", err
 				}
 			} else {
 				if err := r.putObject(bucket, item.RelativePath, item.FullPath); err != nil {
+					if isCapacityInsufficientError(err) {
+						stoppedForCapacity = true
+						markRemainingSkippedForCapacity(snapshot.Items, metrics, r.uploadedKeys, idx, "capacity-insufficient")
+						finalizeDuration, err = r.finalizeAndCloseDisc(controlBucket, finalizeOutputPath)
+						if err != nil {
+							return nil, 0, "", err
+						}
+						break
+					}
 					return nil, 0, "", err
 				}
 			}
@@ -1494,7 +1580,18 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 			metric.UploadMiBPerSecond = rate
 			metric.Status = "Uploaded"
 			metric.Notes = uploadMethod
+			r.uploadedKeys[item.RelativePath] = struct{}{}
 			r.logf("  upload %s | mode=%s | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s", item.RelativePath, uploadMethod, formatSizeMiB(item.Size), seconds, rate)
+		}
+	}
+
+	expectedItems := snapshot.Items
+	if !r.opts.remoteOnly && stoppedForCapacity {
+		expectedItems = make([]sourceItem, 0, len(r.uploadedKeys))
+		for _, item := range snapshot.Items {
+			if _, ok := r.uploadedKeys[item.RelativePath]; ok {
+				expectedItems = append(expectedItems, item)
+			}
 		}
 	}
 
@@ -1506,10 +1603,10 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 	if r.opts.remoteOnly {
 		r.logf("Expected object count: %d", len(snapshot.Items))
 	} else {
-		r.logf("Local file count : %d", len(snapshot.Items))
+		r.logf("Local file count : %d", len(expectedItems))
 	}
 	r.logf("Remote object count: %d", len(remoteItems))
-	if len(remoteItems) < len(snapshot.Items) {
+	if len(remoteItems) < len(expectedItems) {
 		if r.opts.remoteOnly {
 			return nil, 0, "", errors.New("ListObjects returned fewer objects than remote snapshot")
 		}
@@ -1520,7 +1617,10 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 	for _, item := range remoteItems {
 		remoteByKey[item.RelativePath] = item
 	}
-	for _, item := range snapshot.Items {
+	for _, item := range expectedItems {
+		if _, ok := r.uploadedKeys[item.RelativePath]; !ok && !r.opts.remoteOnly {
+			continue
+		}
 		if _, ok := remoteByKey[item.RelativePath]; !ok {
 			exists, existsErr := r.objectExists(bucket, item.RelativePath)
 			if existsErr != nil {
@@ -1535,7 +1635,10 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 	}
 
 	r.logf("[6/8] Validating HeadObject size metadata...")
-	for _, item := range snapshot.Items {
+	for _, item := range expectedItems {
+		if _, ok := r.uploadedKeys[item.RelativePath]; !ok && !r.opts.remoteOnly {
+			continue
+		}
 		head, err := r.headObject(bucket, item.RelativePath, defaultReadTimeout)
 		if err != nil {
 			return nil, 0, "", err
@@ -1549,13 +1652,14 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 		if item.Size != remoteSize {
 			return nil, 0, "", fmt.Errorf("HeadObject size mismatch for %s", item.RelativePath)
 		}
+		if metric := metrics[item.RelativePath]; metric != nil && head.ETag != nil {
+			metric.RemoteETag = strings.TrimSpace(*head.ETag)
+		}
 	}
 
-	finalizeDuration := 0.0
-	if r.opts.skipFinalize {
-		r.logf("[7/8] Triggering FinalizeLayout ... skipped")
-	} else {
-		r.logf("[7/8] Triggering FinalizeLayout ...")
+	skipFinalizeForNoUploadedObjects := stoppedForCapacity && len(r.uploadedKeys) == 0 && !r.opts.remoteOnly
+	if finalizeDuration == 0 && !r.opts.skipFinalize && !skipFinalizeForNoUploadedObjects {
+		r.logf("[7/8] Triggering FinalizeLayout...")
 		start := time.Now()
 		controlKey, raw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
 		if err != nil {
@@ -1567,6 +1671,13 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 		r.logf("FinalizeLayout elapsed: %.3fs", finalizeDuration)
 		r.logf("FinalizeLayout summary:")
 		r.writeFinalizeSummary(raw, bucket)
+		if err := ensureControlResponseOK(raw, "finalize-layout"); err != nil {
+			return nil, 0, "", err
+		}
+	} else if skipFinalizeForNoUploadedObjects {
+		r.logf("[7/8] Triggering FinalizeLayout ... skipped (no objects uploaded; disc remains appendable)")
+	} else if r.opts.skipFinalize {
+		r.logf("[7/8] Triggering FinalizeLayout ... skipped")
 	}
 
 	bucketVerifyDir := filepath.Join(r.cfg.verifyDownloadRoot, bucket)
@@ -1579,8 +1690,8 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 		r.logf("[8/8] Downloading uploaded objects and verifying MD5...")
 	}
 
-	keys := make([]string, 0, len(snapshot.Map))
-	for key := range snapshot.Map {
+	keys := make([]string, 0, len(r.uploadedKeys))
+	for key := range r.uploadedKeys {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -1633,6 +1744,10 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 	totalTestSeconds := roundSeconds(time.Since(testStart))
 	uploadSeconds := 0.0
 	downloadSeconds := 0.0
+	expectedBytes := int64(0)
+	for _, item := range expectedItems {
+		expectedBytes += item.Size
+	}
 	for _, metric := range metrics {
 		uploadSeconds += metric.UploadSeconds
 		downloadSeconds += metric.DownloadSeconds
@@ -1644,14 +1759,14 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 		RequestedBucket:         r.opts.bucket,
 		DataDirectory:           r.opts.dataDir,
 		RemoteOnly:              r.opts.remoteOnly,
-		FileCount:               len(snapshot.Items),
-		TotalBytes:              totalSourceBytes,
-		TotalMiB:                roundFloat(float64(totalSourceBytes)/(1024*1024), 3),
+		FileCount:               len(expectedItems),
+		TotalBytes:              expectedBytes,
+		TotalMiB:                roundFloat(float64(expectedBytes)/(1024*1024), 3),
 		UploadSeconds:           roundFloat(uploadSeconds, 3),
-		UploadMiBPerSecond:      rateMiBPerSecond(totalSourceBytes, uploadSeconds),
+		UploadMiBPerSecond:      rateMiBPerSecond(expectedBytes, uploadSeconds),
 		FinalizeLayoutSeconds:   roundFloat(finalizeDuration, 3),
 		DownloadSeconds:         roundFloat(downloadSeconds, 3),
-		DownloadMiBPerSecond:    rateMiBPerSecond(totalSourceBytes, downloadSeconds),
+		DownloadMiBPerSecond:    rateMiBPerSecond(expectedBytes, downloadSeconds),
 		TotalTestSeconds:        totalTestSeconds,
 		RunRoot:                 r.runRoot,
 		MetricsCSVPath:          r.metricsCSVPath,
@@ -2447,6 +2562,134 @@ func (r *runner) downloadShortControlObject(bucket, action, outputPath string) (
 	return controlKey, raw, nil
 }
 
+func (r *runner) shouldStopForFinalize(controlBucket string, nextSize int64) (bool, string) {
+	writable, ok := r.currentWritableCapacity(controlBucket)
+	if !ok || nextSize <= 0 {
+		return false, ""
+	}
+
+	if nextSize > writable {
+		return false, ""
+	}
+	if writable-nextSize < defaultFinalizeFreeThreshold {
+		return true, fmt.Sprintf("writable=%d next=%d reserve=%d", writable, nextSize, defaultFinalizeFreeThreshold)
+	}
+	return false, ""
+}
+
+func (r *runner) shouldRejectForCapacity(controlBucket string, nextSize int64) (bool, string) {
+	writable, ok := r.currentWritableCapacity(controlBucket)
+	if !ok || nextSize <= 0 {
+		return false, ""
+	}
+	if nextSize > writable {
+		return true, fmt.Sprintf("writable=%d next=%d", writable, nextSize)
+	}
+	return false, ""
+}
+
+func (r *runner) currentWritableCapacity(controlBucket string) (int64, bool) {
+	if strings.TrimSpace(controlBucket) == "" {
+		return 0, false
+	}
+
+	infoPath := filepath.Join(r.runRoot, "_live-discinfo.json")
+	doc, err := r.fetchDiscInfo(controlBucket, infoPath)
+	if err != nil {
+		r.logf("  unable to refresh disc-info before next upload: %v", err)
+		return 0, false
+	}
+
+	writable := doc.Data.WritableCapacityBytes
+	if writable <= 0 {
+		writable = doc.Data.FreeCapacityBytes
+	}
+	if writable <= 0 {
+		return 0, false
+	}
+	return writable, true
+}
+
+func (r *runner) finalizeLayoutOnly(controlBucket, finalizeOutputPath string) (float64, error) {
+	r.logf("[7/8] Triggering FinalizeLayout...")
+	finalizeStart := time.Now()
+	controlKey, raw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
+	if err != nil {
+		return 0, err
+	}
+	finalizeSeconds := roundSeconds(time.Since(finalizeStart))
+	r.logf("FinalizeLayout control key: %s", controlKey)
+	r.logf("FinalizeLayout response saved to: %s", finalizeOutputPath)
+	r.logf("FinalizeLayout elapsed: %.3fs", finalizeSeconds)
+	r.logf("FinalizeLayout summary:")
+	r.writeFinalizeSummary(raw, controlBucket)
+	if err := ensureControlResponseOK(raw, "finalize-layout"); err != nil {
+		return finalizeSeconds, err
+	}
+	return finalizeSeconds, nil
+}
+
+func (r *runner) finalizeAndCloseDisc(controlBucket, finalizeOutputPath string) (float64, error) {
+	finalizeSeconds, err := r.finalizeLayoutOnly(controlBucket, finalizeOutputPath)
+	if err != nil {
+		return finalizeSeconds, err
+	}
+
+	r.logf("[8/8] Triggering CloseDisc...")
+	closeOutputPath := filepath.Join(r.runRoot, "close-disc-response.json")
+	closeStart := time.Now()
+	closeKey, closeRaw, err := r.downloadShortControlObject(controlBucket, "close-disc", closeOutputPath)
+	if err != nil {
+		return finalizeSeconds, err
+	}
+	r.logf("CloseDisc control key: %s", closeKey)
+	r.logf("CloseDisc response saved to: %s", closeOutputPath)
+	r.logf("CloseDisc elapsed: %.3fs", roundSeconds(time.Since(closeStart)))
+	r.writeControlJSONLog(closeRaw)
+	if err := ensureControlResponseOK(closeRaw, "close-disc"); err != nil {
+		return finalizeSeconds, err
+	}
+	return finalizeSeconds, nil
+}
+
+func isCapacityInsufficientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := strings.TrimSpace(apiErr.ErrorCode())
+		if strings.EqualFold(code, "InsufficientStorage") || strings.EqualFold(code, "NoSpaceLeftOnDevice") {
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "insufficientstorage") ||
+		strings.Contains(msg, "no space left on device") ||
+		strings.Contains(msg, "insufficient storage")
+}
+
+func ensureControlResponseOK(raw []byte, action string) error {
+	doc, err := parseJSONDocument(raw)
+	if err != nil {
+		return fmt.Errorf("%s returned non-json response: %w", action, err)
+	}
+	if ok, exists := doc["ok"].(bool); exists && ok {
+		return nil
+	}
+	data, _ := doc["data"].(map[string]any)
+	errorMap, _ := doc["error"].(map[string]any)
+	code := firstNonEmpty(anyString(errorMap["code"]), anyString(data["grpcCode"]))
+	message := firstNonEmpty(anyString(errorMap["message"]), anyString(data["grpcDetails"]), anyString(data["recorderMessage"]))
+	if code == "" {
+		code = "unknown"
+	}
+	if message == "" {
+		message = "control response ok=false"
+	}
+	return fmt.Errorf("%s failed: %s: %s", action, code, message)
+}
+
 func (r *runner) writeControlJSONLog(raw []byte) {
 	payload, err := parseJSONDocument(raw)
 	if err != nil {
@@ -2684,6 +2927,7 @@ func exportFileMetrics(path string, metrics map[string]*fileMetric) error {
 		"UploadMiBPerSecond",
 		"DownloadSeconds",
 		"DownloadMiBPerSecond",
+		"RemoteETag",
 		"ActualMD5",
 		"Status",
 		"Notes",
@@ -2704,6 +2948,7 @@ func exportFileMetrics(path string, metrics map[string]*fileMetric) error {
 			strconv.FormatFloat(metric.UploadMiBPerSecond, 'f', 3, 64),
 			strconv.FormatFloat(metric.DownloadSeconds, 'f', 3, 64),
 			strconv.FormatFloat(metric.DownloadMiBPerSecond, 'f', 3, 64),
+			metric.RemoteETag,
 			metric.ActualMD5,
 			metric.Status,
 			metric.Notes,
