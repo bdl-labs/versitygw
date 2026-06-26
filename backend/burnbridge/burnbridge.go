@@ -993,7 +993,7 @@ func (b *BurnBridge) controlRequestBucketAllowed(bucket string, req *burnbridgeC
 }
 
 func (b *BurnBridge) refreshDiscInfoDocument(ctx context.Context, bucket string) ([]byte, *meta.BurnbridgeDiscInfoDocument, error) {
-	if err := b.requireRecorderReady(ctx); err != nil {
+	if err := b.requireRecorderReady(ctx, false); err != nil {
 		return nil, nil, err
 	}
 
@@ -1114,7 +1114,7 @@ func (b *BurnBridge) refreshAndEnsureWritableCapacityWithCleanup(ctx context.Con
 	if contentLen <= 0 {
 		return nil
 	}
-	if err := b.runRecorderStateProbe(ctx); err != nil {
+	if err := b.runRecorderWriteReadinessProbe(ctx); err != nil {
 		return err
 	}
 	raw, err := b.meta.GetBurnbridgeDiscInfoJSON(bucket)
@@ -1379,7 +1379,14 @@ func (b *BurnBridge) importedBucketConvergencePending(bucket string) bool {
 
 func (b *BurnBridge) runRecorderStateProbe(ctx context.Context) error {
 	_, err, _ := b.recorderStateGroup.Do("test-unit-ready", func() (interface{}, error) {
-		return nil, b.requireRecorderReady(ctx)
+		return nil, b.requireRecorderReady(ctx, false)
+	})
+	return err
+}
+
+func (b *BurnBridge) runRecorderWriteReadinessProbe(ctx context.Context) error {
+	_, err, _ := b.recorderStateGroup.Do("test-unit-ready-write", func() (interface{}, error) {
+		return nil, b.requireRecorderReady(ctx, true)
 	})
 	return err
 }
@@ -1470,7 +1477,7 @@ func (b *BurnBridge) applyRecorderStatusEvent(event *burnbridgev1.UnitStatusEven
 	return nil
 }
 
-func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
+func (b *BurnBridge) requireRecorderReady(ctx context.Context, skipImportedConvergence bool) error {
 	resp, err := b.grpc.TestUnitReady(ctx, &burnbridgev1.TestUnitReadyRequest{})
 	if err != nil {
 		if isGRPCUnimplemented(err) {
@@ -1495,7 +1502,7 @@ func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
 			HTTPStatusCode: http.StatusServiceUnavailable,
 		}
 	}
-	if err := b.syncActiveDiscState(resp); err != nil {
+	if err := b.syncActiveDiscState(resp, syncActiveDiscStateOptions{SkipImportedConvergence: skipImportedConvergence}); err != nil {
 		return err
 	}
 	b.recordRecorderReadyState(resp)
@@ -1507,7 +1514,15 @@ func (b *BurnBridge) requireRecorderReady(ctx context.Context) error {
 	return nil
 }
 
-func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyResponse) error {
+type syncActiveDiscStateOptions struct {
+	SkipImportedConvergence bool
+}
+
+func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyResponse, opts ...syncActiveDiscStateOptions) error {
+	var options syncActiveDiscStateOptions
+	if len(opts) > 0 {
+		options = opts[0]
+	}
 	if resp == nil {
 		return nil
 	}
@@ -1586,6 +1601,9 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 			return err
 		}
+		if options.SkipImportedConvergence {
+			return nil
+		}
 		return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
 	}
 
@@ -1600,6 +1618,9 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 		}
 		if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 			return err
+		}
+		if options.SkipImportedConvergence {
+			return nil
 		}
 		return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
 	}
@@ -1624,6 +1645,9 @@ func (b *BurnBridge) syncActiveDiscState(resp *burnbridgev1.TestUnitReadyRespons
 	if err := b.maybeRestoreNoDiscBackup(resp); err != nil {
 		return err
 	}
+	if options.SkipImportedConvergence {
+		return nil
+	}
 	return b.ensureImportedBucketStateForConvergence(context.Background(), b.activeBucket)
 }
 
@@ -1638,6 +1662,9 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 		return fmt.Errorf("burnbridge GetImportedBucketState: %w", err)
 	}
 	if resp == nil || !resp.GetLoaded() {
+		if requestedBucket != "" {
+			b.markImportedBucketSynced(requestedBucket)
+		}
 		return nil
 	}
 
@@ -2474,7 +2501,7 @@ func (b *BurnBridge) CreateBucket(_ context.Context, input *s3.CreateBucketInput
 
 	if b.grpc != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := b.requireRecorderReady(ctx); err != nil {
+		if err := b.requireRecorderReady(ctx, false); err != nil {
 			cancel()
 			return err
 		}
@@ -2529,7 +2556,7 @@ func (b *BurnBridge) requireRecorderReadyWithRetry(ctx context.Context, bucket s
 
 	var lastErr error
 	for attempt := 1; attempt <= recorderReadyRetryAttempts; attempt++ {
-		err := b.runRecorderStateProbe(ctx)
+		err := b.runRecorderWriteReadinessProbe(ctx)
 		if err == nil {
 			return nil
 		}
@@ -5655,7 +5682,7 @@ func (b *BurnBridge) clearStaleLocalObjectState(bucket, key string) error {
 	return nil
 }
 
-func (b *BurnBridge) invalidateStaleResumeStateIfRecorderMissing(ctx context.Context, bucket, key string) error {
+func (b *BurnBridge) invalidateStaleResumeStateIfRecorderMissing(ctx context.Context, bucket, key string, skipImportedStateProbe bool) error {
 	_, committedErr := b.meta.GetBurnbridgeCommittedRecord(bucket, key)
 	hasCommitted := committedErr == nil
 	if committedErr != nil && !errors.Is(committedErr, meta.ErrNoSuchKey) {
@@ -5677,6 +5704,9 @@ func (b *BurnBridge) invalidateStaleResumeStateIfRecorderMissing(ctx context.Con
 		if len(segments) == 0 {
 			return nil
 		}
+	}
+	if skipImportedStateProbe {
+		return nil
 	}
 	present, err := b.recorderImportedStateContainsObject(ctx, bucket, key)
 	if err != nil {
@@ -6467,7 +6497,7 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 	b.objectLocks[idx].Lock()
 	defer b.objectLocks[idx].Unlock()
 
-	if err := b.invalidateStaleResumeStateIfRecorderMissing(ctx, bucket, key); err != nil {
+	if err := b.invalidateStaleResumeStateIfRecorderMissing(ctx, bucket, key, false); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
 
