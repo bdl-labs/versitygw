@@ -27,6 +27,9 @@ service BurnBridge {
   // Finalize a job and persist layout/session metadata.
   rpc CommitJob(CommitJobRequest) returns (CommitJobResponse);
 
+  // Finalize multiple uploaded jobs in one recorder drain/flush cycle.
+  rpc CommitJobBatch(CommitJobBatchRequest) returns (CommitJobBatchResponse);
+
   // Query current job status.
   rpc GetJobStatus(GetJobStatusRequest) returns (GetJobStatusResponse);
 
@@ -338,6 +341,14 @@ message CommitJobRequest {
 message CommitJobResponse {
   string job_id = 1;
   string status = 2;
+}
+
+message CommitJobBatchRequest {
+  repeated CommitJobRequest jobs = 1;
+}
+
+message CommitJobBatchResponse {
+  repeated CommitJobResponse jobs = 1;
 }
 
 message GetJobStatusRequest {

@@ -33,6 +33,7 @@ type testBurnBridgeClient struct {
 	createJobFn           func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error)
 	uploadObjectFn        func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error)
 	commitJobFn           func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error)
+	commitJobBatchFn      func(context.Context, *burnbridgev1.CommitJobBatchRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobBatchResponse, error)
 	cancelJobFn           func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error)
 	registerPullSourceFn  func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
 	finalizeFn            func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
@@ -91,6 +92,13 @@ func (c testBurnBridgeClient) CommitJob(ctx context.Context, req *burnbridgev1.C
 		return c.commitJobFn(ctx, req, opts...)
 	}
 	panic("unexpected CommitJob call")
+}
+
+func (c testBurnBridgeClient) CommitJobBatch(ctx context.Context, req *burnbridgev1.CommitJobBatchRequest, opts ...grpc.CallOption) (*burnbridgev1.CommitJobBatchResponse, error) {
+	if c.commitJobBatchFn != nil {
+		return c.commitJobBatchFn(ctx, req, opts...)
+	}
+	panic("unexpected CommitJobBatch call")
 }
 
 func (testBurnBridgeClient) GetJobStatus(context.Context, *burnbridgev1.GetJobStatusRequest, ...grpc.CallOption) (*burnbridgev1.GetJobStatusResponse, error) {
@@ -4143,6 +4151,7 @@ func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
 	var createCalls atomic.Int32
 	var uploadCalls atomic.Int32
 	var commitCalls atomic.Int32
+	var commitBatchCalls atomic.Int32
 	b := &BurnBridge{
 		meta: store,
 		grpc: testBurnBridgeClient{
@@ -4160,6 +4169,14 @@ func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
 			commitJobFn: func(_ context.Context, req *burnbridgev1.CommitJobRequest, _ ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
 				commitCalls.Add(1)
 				return &burnbridgev1.CommitJobResponse{JobId: req.GetJobId(), Status: "layout_persisted"}, nil
+			},
+			commitJobBatchFn: func(_ context.Context, req *burnbridgev1.CommitJobBatchRequest, _ ...grpc.CallOption) (*burnbridgev1.CommitJobBatchResponse, error) {
+				commitBatchCalls.Add(1)
+				resp := &burnbridgev1.CommitJobBatchResponse{}
+				for _, job := range req.GetJobs() {
+					resp.Jobs = append(resp.Jobs, &burnbridgev1.CommitJobResponse{JobId: job.GetJobId(), Status: "layout_persisted"})
+				}
+				return resp, nil
 			},
 			cancelJobFn: func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error) {
 				return &burnbridgev1.CancelJobResponse{}, nil
@@ -4203,8 +4220,11 @@ func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
 	if got := createCalls.Load(); got != 2 {
 		t.Fatalf("expected two CreateJob calls, got %d", got)
 	}
-	if got := commitCalls.Load(); got != 2 {
-		t.Fatalf("expected two CommitJob calls, got %d", got)
+	if got := commitCalls.Load(); got != 0 {
+		t.Fatalf("expected no individual CommitJob calls, got %d", got)
+	}
+	if got := commitBatchCalls.Load(); got != 1 {
+		t.Fatalf("expected one CommitJobBatch call, got %d", got)
 	}
 	if len(stream.sendChunks) != 2 {
 		t.Fatalf("expected two payload chunks, got %d", len(stream.sendChunks))

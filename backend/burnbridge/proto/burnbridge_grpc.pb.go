@@ -23,6 +23,7 @@ const (
 	BurnBridge_CreateJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CreateJob"
 	BurnBridge_UploadObject_FullMethodName               = "/burnbridge.v1.BurnBridge/UploadObject"
 	BurnBridge_CommitJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CommitJob"
+	BurnBridge_CommitJobBatch_FullMethodName             = "/burnbridge.v1.BurnBridge/CommitJobBatch"
 	BurnBridge_GetJobStatus_FullMethodName               = "/burnbridge.v1.BurnBridge/GetJobStatus"
 	BurnBridge_CancelJob_FullMethodName                  = "/burnbridge.v1.BurnBridge/CancelJob"
 	BurnBridge_ReadObject_FullMethodName                 = "/burnbridge.v1.BurnBridge/ReadObject"
@@ -58,6 +59,8 @@ type BurnBridgeClient interface {
 	UploadObject(ctx context.Context, opts ...grpc.CallOption) (grpc.BidiStreamingClient[UploadObjectChunk, UploadObjectAck], error)
 	// Finalize a job and persist layout/session metadata.
 	CommitJob(ctx context.Context, in *CommitJobRequest, opts ...grpc.CallOption) (*CommitJobResponse, error)
+	// Finalize multiple uploaded jobs in one recorder drain/flush cycle.
+	CommitJobBatch(ctx context.Context, in *CommitJobBatchRequest, opts ...grpc.CallOption) (*CommitJobBatchResponse, error)
 	// Query current job status.
 	GetJobStatus(ctx context.Context, in *GetJobStatusRequest, opts ...grpc.CallOption) (*GetJobStatusResponse, error)
 	// Request cooperative cancel.
@@ -134,6 +137,16 @@ func (c *burnBridgeClient) CommitJob(ctx context.Context, in *CommitJobRequest, 
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CommitJobResponse)
 	err := c.cc.Invoke(ctx, BurnBridge_CommitJob_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) CommitJobBatch(ctx context.Context, in *CommitJobBatchRequest, opts ...grpc.CallOption) (*CommitJobBatchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CommitJobBatchResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_CommitJobBatch_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -320,6 +333,8 @@ type BurnBridgeServer interface {
 	UploadObject(grpc.BidiStreamingServer[UploadObjectChunk, UploadObjectAck]) error
 	// Finalize a job and persist layout/session metadata.
 	CommitJob(context.Context, *CommitJobRequest) (*CommitJobResponse, error)
+	// Finalize multiple uploaded jobs in one recorder drain/flush cycle.
+	CommitJobBatch(context.Context, *CommitJobBatchRequest) (*CommitJobBatchResponse, error)
 	// Query current job status.
 	GetJobStatus(context.Context, *GetJobStatusRequest) (*GetJobStatusResponse, error)
 	// Request cooperative cancel.
@@ -370,6 +385,9 @@ func (UnimplementedBurnBridgeServer) UploadObject(grpc.BidiStreamingServer[Uploa
 }
 func (UnimplementedBurnBridgeServer) CommitJob(context.Context, *CommitJobRequest) (*CommitJobResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method CommitJob not implemented")
+}
+func (UnimplementedBurnBridgeServer) CommitJobBatch(context.Context, *CommitJobBatchRequest) (*CommitJobBatchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method CommitJobBatch not implemented")
 }
 func (UnimplementedBurnBridgeServer) GetJobStatus(context.Context, *GetJobStatusRequest) (*GetJobStatusResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetJobStatus not implemented")
@@ -491,6 +509,24 @@ func _BurnBridge_CommitJob_Handler(srv interface{}, ctx context.Context, dec fun
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(BurnBridgeServer).CommitJob(ctx, req.(*CommitJobRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_CommitJobBatch_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CommitJobBatchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).CommitJobBatch(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_CommitJobBatch_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).CommitJobBatch(ctx, req.(*CommitJobBatchRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -740,6 +776,10 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CommitJob",
 			Handler:    _BurnBridge_CommitJob_Handler,
+		},
+		{
+			MethodName: "CommitJobBatch",
+			Handler:    _BurnBridge_CommitJobBatch_Handler,
 		},
 		{
 			MethodName: "GetJobStatus",
