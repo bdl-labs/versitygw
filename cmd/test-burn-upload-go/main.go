@@ -37,6 +37,7 @@ const (
 	modeRemoteDownload mode = "remote-download"
 	modeMultipartFlow  mode = "multipart"
 	modePutObjectFlow  mode = "putobject"
+	modeSmallBatchFlow mode = "small-batch"
 	modeListObjects    mode = "listobjects"
 	modeDriveInfo      mode = "driveinfo"
 	modeDiscInfo       mode = "discinfo"
@@ -79,6 +80,9 @@ type cliOptions struct {
 	multipartRetryOnly bool
 	multipartPartBytes int64
 	multipartThreshold int64
+	smallFileCount     int
+	smallFileBytes     int64
+	smallConcurrency   int
 	failAfterBytes     int64
 }
 
@@ -136,6 +140,10 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parsePutObjectFlow(args[1:], true)
 	case "putobject-md5", "put-md5", "po-md5":
 		return parsePutObjectFlow(args[1:], false)
+	case "small-batch", "smallbatch", "sb":
+		return parseSmallBatchFlow(args[1:], true)
+	case "small-batch-md5", "smallbatch-md5", "sb-md5":
+		return parseSmallBatchFlow(args[1:], false)
 	case "mixed", "mix":
 		return parseMixedFlow(args[1:], true)
 	case "mixed-md5", "mix-md5":
@@ -271,6 +279,39 @@ func parsePutObjectFlow(args []string, skipMD5 bool) (cliOptions, error) {
 		awsProfile:    profile,
 		configPath:    resolveConfigPath(configPath),
 		skipMD5Verify: skipMD5,
+	}, nil
+}
+
+func parseSmallBatchFlow(args []string, skipMD5 bool) (cliOptions, error) {
+	dataDir := positionalOrDefault(args, 0, filepath.Join(defaultDataDir, "small-batch"))
+	bucket := positionalOrDefault(args, 1, defaultBucket)
+	countRaw := positionalOrDefault(args, 2, "256")
+	count, err := strconv.Atoi(strings.TrimSpace(countRaw))
+	if err != nil || count <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid fileCount: %s", countRaw)
+	}
+	sizeRaw := positionalOrDefault(args, 3, "2048")
+	size, err := strconv.ParseInt(strings.TrimSpace(sizeRaw), 10, 64)
+	if err != nil || size <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid fileSizeBytes: %s", sizeRaw)
+	}
+	concurrencyRaw := positionalOrDefault(args, 4, "32")
+	concurrency, err := strconv.Atoi(strings.TrimSpace(concurrencyRaw))
+	if err != nil || concurrency <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid concurrency: %s", concurrencyRaw)
+	}
+	profile, configPath := parseProfileConfig(args, 5, 6)
+	return cliOptions{
+		mode:             modeSmallBatchFlow,
+		dataDir:          dataDir,
+		bucket:           bucket,
+		awsProfile:       profile,
+		configPath:       resolveConfigPath(configPath),
+		skipBucketCreate: false,
+		skipMD5Verify:    skipMD5,
+		smallFileCount:   count,
+		smallFileBytes:   size,
+		smallConcurrency: concurrency,
 	}, nil
 }
 
@@ -567,6 +608,8 @@ func printUsage(stream *os.File) {
 		"  test-burn-upload-go.exe mixed-nomd5 [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe putobject [DataFile] [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe putobject-md5 [DataFile] [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe small-batch [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe small-batch-md5 [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart-md5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart-nomd5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
@@ -591,7 +634,7 @@ func printUsage(stream *os.File) {
 		"",
 		"Short aliases:",
 		"  ls=listobjects, drive=driveinfo, disc=discinfo, open=tray-open, close=tray-close",
-		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, put=putobject, po=putobject, mp=multipart, mix=mixed",
+		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, put=putobject, po=putobject, sb=small-batch, mp=multipart, mix=mixed",
 		"",
 		"Config resolution:",
 		"  1. explicit ConfigPath argument",
@@ -617,6 +660,12 @@ func printUsage(stream *os.File) {
 		"",
 		"  putobject-md5",
 		"    Same as putobject, but verify the downloaded file with MD5.",
+		"",
+		"  small-batch",
+		"    Generate many small files, upload them concurrently with PutObject, finalize, then download verify. MD5 is skipped by default.",
+		"",
+		"  small-batch-md5",
+		"    Same as small-batch, but verify downloaded files with MD5.",
 		"",
 		"  multipart",
 		"    Upload one local file through standard S3 multipart APIs, complete it, finalize, then download size-check. MD5 is skipped by default.",
@@ -687,6 +736,7 @@ func printUsage(stream *os.File) {
 		`  .\test-burn-upload-go.exe open`,
 		`  .\test-burn-upload-go.exe close`,
 		`  .\test-burn-upload-go.exe put D:\testdata\large.bin archive-test`,
+		`  .\test-burn-upload-go.exe sb D:\testdata\small-batch archive-test 256 2048 32`,
 		`  .\test-burn-upload-go.exe mix D:\BRS\Publisher\temp\mixed-batch archive-test 32 32`,
 		`  .\test-burn-upload-go.exe mp D:\testdata\10.zip archive-test 32`,
 		`  .\test-burn-upload-go.exe rdl`,

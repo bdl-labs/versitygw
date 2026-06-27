@@ -135,6 +135,14 @@ type Options struct {
 	// If zero, only the gateway/request context limits the call.
 	PutObjectTimeout time.Duration
 
+	// SmallObjectBatchEnabled enables phase-1 synchronous batching for small PutObject requests.
+	// The gateway waits a short window for other small requests, then writes them through one
+	// recorder UploadObject stream while preserving per-object CommitJob and S3 success semantics.
+	SmallObjectBatchEnabled  bool
+	SmallObjectMaxBytes      int64
+	SmallObjectBatchMaxCount int
+	SmallObjectBatchMaxDelay time.Duration
+
 	// SQLiteMaintCtx enables periodic WAL checkpoint for flash deployments; cancelled when context ends.
 	SQLiteMaintCtx context.Context
 
@@ -290,6 +298,7 @@ type BurnBridge struct {
 	objectLocks        [objectLockShards]sync.Mutex
 	multipartStreamsMu sync.Mutex
 	multipartStreams   map[string]*multipartRecorderStream
+	smallBatch         *smallObjectBatcher
 	// putQueueSem limits total in-flight+waiting PutObject tasks. Requests above capacity block
 	// until earlier tasks complete, so task issuance pressure stays bounded.
 	putQueueSem chan struct{}
@@ -336,6 +345,29 @@ type BurnBridge struct {
 	metaDBPath                  string
 }
 
+type smallObjectBatcher struct {
+	bridge    *BurnBridge
+	maxBytes  int64
+	maxCount  int
+	maxDelay  time.Duration
+	requestCh chan *smallObjectBatchRequest
+}
+
+type smallObjectBatchRequest struct {
+	ctx        context.Context
+	bucket     string
+	key        string
+	contentLen int64
+	body       []byte
+	input      s3response.PutObjectInput
+	resultCh   chan smallObjectBatchResult
+}
+
+type smallObjectBatchResult struct {
+	output s3response.PutObjectOutput
+	err    error
+}
+
 var _ backend.Backend = &BurnBridge{}
 
 const (
@@ -360,13 +392,16 @@ const (
 	burnbridgeMultipartInternalPref  = ".__bbmeta__/multipart/"
 	burnbridgeRecorderETagMetaKey    = "x-burn-etag"
 
-	listDefaultMaxKeys          int32 = 1000
-	defaultPutQueueLimit              = 512
-	burnbridgeACLAttribute            = "acl"
-	noDiscProbeCooldown               = 3 * time.Second
-	recorderReadyRetryAttempts        = 5
-	recorderReadyRetryDelay           = 750 * time.Millisecond
-	mountedReadFallbackMaxFiles       = 500000
+	listDefaultMaxKeys              int32 = 1000
+	defaultPutQueueLimit                  = 512
+	defaultSmallObjectMaxBytes            = 1 << 20
+	defaultSmallObjectBatchMaxCount       = 128
+	defaultSmallObjectBatchMaxDelay       = 25 * time.Millisecond
+	burnbridgeACLAttribute                = "acl"
+	noDiscProbeCooldown                   = 3 * time.Second
+	recorderReadyRetryAttempts            = 5
+	recorderReadyRetryDelay               = 750 * time.Millisecond
+	mountedReadFallbackMaxFiles           = 500000
 )
 
 type burnbridgeMultipartInitState struct {
@@ -1172,6 +1207,15 @@ func normalizeOpts(o *Options) {
 	if o.CancelJobTimeout <= 0 {
 		o.CancelJobTimeout = 5 * time.Second
 	}
+	if o.SmallObjectMaxBytes <= 0 {
+		o.SmallObjectMaxBytes = defaultSmallObjectMaxBytes
+	}
+	if o.SmallObjectBatchMaxCount <= 0 {
+		o.SmallObjectBatchMaxCount = defaultSmallObjectBatchMaxCount
+	}
+	if o.SmallObjectBatchMaxDelay <= 0 {
+		o.SmallObjectBatchMaxDelay = defaultSmallObjectBatchMaxDelay
+	}
 }
 
 // New constructs a BurnBridge backend using SQL metadata and a BurnBridge gRPC endpoint.
@@ -1289,6 +1333,18 @@ func New(opts Options) (*BurnBridge, error) {
 		importedBucketState:        make(map[string]bool),
 		pendingImportedConvergence: make(map[string]bool),
 		metaDBPath:                 opts.DBPath,
+	}
+	if opts.SmallObjectBatchEnabled && strings.TrimSpace(opts.RecorderS3Endpoint) == "" {
+		bridge.smallBatch = newSmallObjectBatcher(
+			bridge,
+			opts.SmallObjectMaxBytes,
+			opts.SmallObjectBatchMaxCount,
+			opts.SmallObjectBatchMaxDelay)
+		bridge.smallBatch.start()
+		slog.Info("burnbridge: small-object synchronous batching enabled",
+			"maxBytes", opts.SmallObjectMaxBytes,
+			"maxCount", opts.SmallObjectBatchMaxCount,
+			"maxDelay", opts.SmallObjectBatchMaxDelay)
 	}
 	if _, _, err := bridge.refreshDriveInfoDocument(context.Background()); err != nil {
 		slog.Warn("burnbridge: startup drive identity probe failed; virtual control bucket will appear after drive-info succeeds",
@@ -6829,6 +6885,58 @@ func (b *BurnBridge) registerRecorderS3PullSource(ctx context.Context, jobID, bu
 }
 
 func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectInput) (s3response.PutObjectOutput, error) {
+	if out, handled, err := b.tryPutSmallObjectBatch(ctx, input); handled || err != nil {
+		return out, err
+	}
+	return b.putObjectImmediate(ctx, input)
+}
+
+func (b *BurnBridge) tryPutSmallObjectBatch(ctx context.Context, input s3response.PutObjectInput) (s3response.PutObjectOutput, bool, error) {
+	if b.smallBatch == nil || input.Bucket == nil || input.Key == nil || input.Body == nil || input.ContentLength == nil {
+		return s3response.PutObjectOutput{}, false, nil
+	}
+	contentLen := *input.ContentLength
+	if contentLen < 0 || contentLen > b.smallBatch.maxBytes {
+		return s3response.PutObjectOutput{}, false, nil
+	}
+	bucket := normalizeBurnbridgeBucketName(*input.Bucket)
+	key := *input.Key
+	if b.isDriveControlBucket(bucket) || !b.burnbridgeBucketExists(bucket) {
+		return s3response.PutObjectOutput{}, false, nil
+	}
+
+	limit := contentLen + 1
+	body, err := io.ReadAll(io.LimitReader(input.Body, limit))
+	if err != nil {
+		return s3response.PutObjectOutput{}, true, err
+	}
+	if int64(len(body)) != contentLen {
+		return s3response.PutObjectOutput{}, true, fmt.Errorf("burnbridge: small PutObject body length mismatch: read=%d expected=%d", len(body), contentLen)
+	}
+
+	req := &smallObjectBatchRequest{
+		ctx:        ctx,
+		bucket:     bucket,
+		key:        key,
+		contentLen: contentLen,
+		body:       body,
+		input:      input,
+		resultCh:   make(chan smallObjectBatchResult, 1),
+	}
+	select {
+	case b.smallBatch.requestCh <- req:
+	case <-ctx.Done():
+		return s3response.PutObjectOutput{}, true, ctx.Err()
+	}
+	select {
+	case result := <-req.resultCh:
+		return result.output, true, result.err
+	case <-ctx.Done():
+		return s3response.PutObjectOutput{}, true, ctx.Err()
+	}
+}
+
+func (b *BurnBridge) putObjectImmediate(ctx context.Context, input s3response.PutObjectInput) (s3response.PutObjectOutput, error) {
 	if input.Bucket == nil || input.Key == nil {
 		return s3response.PutObjectOutput{}, fmt.Errorf("bucket/key required")
 	}
@@ -7080,6 +7188,405 @@ func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectIn
 		out.ChecksumMD5 = &checksumMD5
 	}
 	return out, nil
+}
+
+func newSmallObjectBatcher(b *BurnBridge, maxBytes int64, maxCount int, maxDelay time.Duration) *smallObjectBatcher {
+	if maxBytes <= 0 {
+		maxBytes = defaultSmallObjectMaxBytes
+	}
+	if maxCount <= 0 {
+		maxCount = defaultSmallObjectBatchMaxCount
+	}
+	if maxDelay <= 0 {
+		maxDelay = defaultSmallObjectBatchMaxDelay
+	}
+	return &smallObjectBatcher{
+		bridge:    b,
+		maxBytes:  maxBytes,
+		maxCount:  maxCount,
+		maxDelay:  maxDelay,
+		requestCh: make(chan *smallObjectBatchRequest, defaultPutQueueLimit),
+	}
+}
+
+func (s *smallObjectBatcher) start() {
+	go s.run()
+}
+
+func (s *smallObjectBatcher) run() {
+	for first := range s.requestCh {
+		batch := []*smallObjectBatchRequest{first}
+		timer := time.NewTimer(s.maxDelay)
+	collect:
+		for len(batch) < s.maxCount {
+			select {
+			case req := <-s.requestCh:
+				if req != nil {
+					batch = append(batch, req)
+				}
+			case <-timer.C:
+				break collect
+			}
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		s.bridge.processSmallObjectBatch(batch)
+	}
+}
+
+func (b *BurnBridge) processSmallObjectBatch(batch []*smallObjectBatchRequest) {
+	startedAt := time.Now()
+	active := make([]*smallObjectBatchRequest, 0, len(batch))
+	var totalBytes int64
+	for _, req := range batch {
+		if req == nil {
+			continue
+		}
+		select {
+		case <-req.ctx.Done():
+			req.resultCh <- smallObjectBatchResult{err: req.ctx.Err()}
+		default:
+			active = append(active, req)
+			totalBytes += req.contentLen
+		}
+	}
+	if len(active) == 0 {
+		return
+	}
+
+	groups := make(map[string][]*smallObjectBatchRequest)
+	groupBytes := make(map[string]int64)
+	for _, req := range active {
+		groups[req.bucket] = append(groups[req.bucket], req)
+		groupBytes[req.bucket] += req.contentLen
+	}
+
+	var firstErr error
+	for bucket, group := range groups {
+		err := b.processSmallObjectBatchLocked(group, groupBytes[bucket])
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			for _, req := range group {
+				req.resultCh <- smallObjectBatchResult{err: err}
+			}
+		}
+	}
+	slog.Info("burnbridge: small-object batch processed",
+		"count", len(active),
+		"bytes", totalBytes,
+		"bucket_groups", len(groups),
+		"elapsed_ms", time.Since(startedAt).Milliseconds(),
+		"error", firstErr)
+}
+
+func (b *BurnBridge) processSmallObjectBatchLocked(batch []*smallObjectBatchRequest, totalBytes int64) error {
+	ctx := context.Background()
+	bucket := batch[0].bucket
+	if err := b.requireRecorderReadyWithRetry(ctx, bucket); err != nil {
+		return err
+	}
+
+	b.putSerialMu.Lock()
+	defer b.putSerialMu.Unlock()
+
+	if err := b.refreshAndEnsureWritableCapacity(ctx, bucket, totalBytes); err != nil {
+		return err
+	}
+
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	stream, err := b.grpc.UploadObject(streamCtx)
+	if err != nil {
+		cancelStream()
+		return mapRecorderWriteRPCError(err)
+	}
+	streamClosed := false
+	closeStream := func() error {
+		streamClosed = true
+		return stream.CloseSend()
+	}
+	defer func() {
+		if !streamClosed {
+			cancelStream()
+			_ = stream.CloseSend()
+			return
+		}
+		cancelStream()
+	}()
+
+	streamAckIndex := 0
+	for _, req := range batch {
+		select {
+		case <-req.ctx.Done():
+			req.resultCh <- smallObjectBatchResult{err: req.ctx.Err()}
+			continue
+		default:
+		}
+		out, nextAckIndex, err := b.putSmallObjectOnSharedStream(req, stream, streamAckIndex)
+		streamAckIndex = nextAckIndex
+		if err != nil {
+			req.resultCh <- smallObjectBatchResult{err: err}
+			for _, remaining := range batch {
+				if remaining == req {
+					continue
+				}
+				select {
+				case remaining.resultCh <- smallObjectBatchResult{err: err}:
+				default:
+				}
+			}
+			return nil
+		}
+		req.resultCh <- smallObjectBatchResult{output: out}
+	}
+	if err := closeStream(); err != nil {
+		slog.Warn("burnbridge: small-object batch shared upload stream CloseSend failed after all objects committed",
+			"bucket", bucket,
+			"error", err)
+	}
+	return nil
+}
+
+func (b *BurnBridge) putSmallObjectOnSharedStream(req *smallObjectBatchRequest, stream grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], streamAckIndex int) (s3response.PutObjectOutput, int, error) {
+	ctx := req.ctx
+	if b.putObjectTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.putObjectTimeout)
+		defer cancel()
+	}
+
+	idx := objectLockIndex(req.bucket, req.key)
+	b.objectLocks[idx].Lock()
+	defer b.objectLocks[idx].Unlock()
+
+	if err := b.invalidateStaleResumeStateIfRecorderMissing(ctx, req.bucket, req.key, false); err != nil {
+		return s3response.PutObjectOutput{}, streamAckIndex, err
+	}
+	if err := b.meta.DeleteBurnObjectSegments(req.bucket, req.key); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+		return s3response.PutObjectOutput{}, streamAckIndex, err
+	}
+
+	createResp, err := b.grpc.CreateJob(ctx, &burnbridgev1.CreateJobRequest{
+		Bucket:        req.bucket,
+		ObjectKey:     req.key,
+		ContentLength: req.contentLen,
+		Metadata:      buildCreateJobMetadata(req.input),
+	})
+	if err != nil {
+		return s3response.PutObjectOutput{}, streamAckIndex, mapRecorderWriteRPCError(err)
+	}
+	jobID := createResp.GetJobId()
+	if jobID == "" {
+		return s3response.PutObjectOutput{}, streamAckIndex, fmt.Errorf("burnbridge: empty job id from CreateJob")
+	}
+	cancelJobNow := func() {
+		cctx, cancel := context.WithTimeout(context.Background(), b.cancelJobTimeout)
+		defer cancel()
+		_, _ = b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: jobID})
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			cancelJobNow()
+		}
+	}()
+	if err := b.upsertSingleUploadSession(req.bucket, req.key, req.contentLen, meta.BurnUploadStateWriting); err != nil {
+		return s3response.PutObjectOutput{}, streamAckIndex, err
+	}
+	if err := b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:       req.bucket,
+		ObjectName:   req.key,
+		UploadID:     burnbridgeImplicitSingleUploadID,
+		PartNumber:   1,
+		PartSize:     req.contentLen,
+		State:        meta.BurnUploadStateWriting,
+		SegmentCount: 0,
+	}); err != nil {
+		return s3response.PutObjectOutput{}, streamAckIndex, err
+	}
+
+	offset, uploadResp, stats, nextAckIndex, err := b.uploadSmallObjectOnSharedStream(stream, jobID, req.bucket, req.key, bytes.NewReader(req.body), streamAckIndex)
+	if err != nil {
+		_ = b.upsertSingleUploadSession(req.bucket, req.key, req.contentLen, meta.BurnUploadStateFailed)
+		return s3response.PutObjectOutput{}, nextAckIndex, err
+	}
+	if offset != req.contentLen {
+		return s3response.PutObjectOutput{}, nextAckIndex, fmt.Errorf("burnbridge: incomplete small PutObject body: received=%d expected=%d: %w", offset, req.contentLen, io.ErrUnexpectedEOF)
+	}
+
+	finalizeManifest, err := b.buildFinalizeManifest(req.bucket, req.key, offset)
+	if err != nil {
+		return s3response.PutObjectOutput{}, nextAckIndex, err
+	}
+	if finalizeManifest == nil {
+		slog.Warn("burnbridge: no usable disc extents for small-object batch member; commit without finalize_manifest fallback",
+			"bucket", req.bucket, "key", req.key, "jobId", jobID, "bytes", offset)
+	}
+	commitResp, err := b.grpc.CommitJob(ctx, &burnbridgev1.CommitJobRequest{
+		JobId:                  jobID,
+		UdfVolumeLabel:         b.udfLabel,
+		FinalizeManifest:       finalizeManifest,
+		CommittedContentLength: offset,
+	})
+	if err != nil {
+		return s3response.PutObjectOutput{}, nextAckIndex, mapRecorderWriteRPCError(err)
+	}
+	committed = true
+
+	etag := quotedETag(uploadResp.GetChecksumMd5())
+	checksumMD5 := uploadResp.GetChecksumMd5()
+	lm := time.Now().UTC().Format(time.RFC3339Nano)
+	committedRec := &meta.BurnbridgeCommittedRecord{
+		JobID:        jobID,
+		Status:       commitResp.GetStatus(),
+		ETag:         etag,
+		LastModified: lm,
+		Size:         offset,
+	}
+	applyCommittedRecordMetadata(committedRec, objectMetadataItemsToMap(buildCreateJobMetadata(req.input)))
+	if err := b.meta.StoreBurnbridgeCommitted(nil, req.bucket, req.key, committedRec); err != nil {
+		return s3response.PutObjectOutput{}, nextAckIndex, err
+	}
+	if err := b.upsertSingleUploadSession(req.bucket, req.key, req.contentLen, meta.BurnUploadStateCompleted); err != nil {
+		return s3response.PutObjectOutput{}, nextAckIndex, err
+	}
+	if err := b.meta.UpsertBurnUploadPart(meta.BurnUploadPartRecord{
+		Bucket:       req.bucket,
+		ObjectName:   req.key,
+		UploadID:     burnbridgeImplicitSingleUploadID,
+		PartNumber:   1,
+		PartSize:     offset,
+		ChecksumMD5:  checksumMD5,
+		ETag:         etag,
+		State:        meta.BurnUploadStateCompleted,
+		SegmentCount: int(stats.TotalSegments),
+	}); err != nil {
+		return s3response.PutObjectOutput{}, nextAckIndex, err
+	}
+	if err := b.cleanupCompletedSingleUploadState(req.bucket, req.key); err != nil {
+		return s3response.PutObjectOutput{}, nextAckIndex, err
+	}
+	b.invalidateFinalizeLayoutTranscript(req.bucket)
+
+	out := s3response.PutObjectOutput{ETag: etag, Size: &offset}
+	if checksumMD5 != "" {
+		out.ChecksumMD5 = &checksumMD5
+	}
+	return out, nextAckIndex, nil
+}
+
+func (b *BurnBridge) uploadSmallObjectOnSharedStream(stream grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], jobID, bucket, key string, body io.Reader, streamAckIndex int) (int64, *burnbridgev1.UploadObjectAck, uploadRecoveryStats, int, error) {
+	segmentSnapshot := map[int]meta.BurnObjectSegment{}
+	stats := uploadRecoveryStats{}
+	objectMD5 := md5.New()
+	segBuf := make([]byte, b.chunkSize)
+	offset := int64(0)
+	segmentIdx := 0
+	uploadCompletedBySegmentAck := false
+
+	sendEOF := func() error {
+		return stream.Send(&burnbridgev1.UploadObjectChunk{JobId: jobID, Offset: offset, Eof: true})
+	}
+	for {
+		n, errRead := io.ReadFull(body, segBuf)
+		if n == 0 {
+			if errRead == io.EOF || errRead == io.ErrUnexpectedEOF {
+				break
+			}
+			return offset, nil, stats, streamAckIndex, errRead
+		}
+		if errRead != nil && errRead != io.ErrUnexpectedEOF {
+			return offset, nil, stats, streamAckIndex, errRead
+		}
+		chunk := segBuf[:n]
+		_, _ = objectMD5.Write(chunk)
+		digest := bbSegmentMD5Hex(chunk)
+		stats.TotalSegments++
+		stats.ReplayedSegments++
+		if err := b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentPending, nil); err != nil {
+			return offset, nil, stats, streamAckIndex, err
+		}
+		segmentSnapshot[segmentIdx] = meta.BurnObjectSegment{
+			MediaID:     b.volumeLabelRaw,
+			ByteOffset:  offset,
+			ByteSize:    int64(len(chunk)),
+			ChecksumMD5: digest,
+			State:       meta.BurnSegmentPending,
+			DiscExtents: nil,
+		}
+		isTailSegment := errRead == io.ErrUnexpectedEOF
+		for i := 0; i < len(chunk); {
+			end := i + burnbridgeUploadMaxDataPerFrame
+			if end > len(chunk) {
+				end = len(chunk)
+			}
+			frameEOF := isTailSegment && end == len(chunk)
+			if err := stream.Send(&burnbridgev1.UploadObjectChunk{
+				JobId:  jobID,
+				Offset: offset + int64(i),
+				Data:   chunk[i:end],
+				Eof:    frameEOF,
+			}); err != nil {
+				return offset, nil, stats, streamAckIndex, err
+			}
+			i = end
+		}
+		completed, err := b.recvSegmentUploadAck(stream, jobID, bucket, key, segmentIdx, streamAckIndex, offset, int64(len(chunk)), digest, isTailSegment, segmentSnapshot)
+		if err != nil {
+			_ = b.meta.UpsertBurnObjectSegment(bucket, key, b.volumeLabelRaw, segmentIdx, offset, int64(len(chunk)), digest, meta.BurnSegmentFailed, nil)
+			return offset, nil, stats, streamAckIndex, err
+		}
+		streamAckIndex++
+		uploadCompletedBySegmentAck = uploadCompletedBySegmentAck || completed
+		offset += int64(len(chunk))
+		segmentIdx++
+		if errRead == io.ErrUnexpectedEOF {
+			break
+		}
+	}
+
+	if _, err := b.meta.DeleteBurnObjectSegmentsFromWithCount(bucket, key, segmentIdx); err != nil {
+		return offset, nil, stats, streamAckIndex, err
+	}
+
+	var final *burnbridgev1.UploadObjectAck
+	if !uploadCompletedBySegmentAck {
+		if err := sendEOF(); err != nil {
+			return offset, nil, stats, streamAckIndex, err
+		}
+		finalAckIndex := streamAckIndex
+		finalAck, err := stream.Recv()
+		if err != nil {
+			return offset, nil, stats, streamAckIndex, err
+		}
+		if finalAck.GetJobId() != "" && finalAck.GetJobId() != jobID {
+			return offset, nil, stats, streamAckIndex, fmt.Errorf("burnbridge: final ack job_id mismatch: got %q want %q", finalAck.GetJobId(), jobID)
+		}
+		if finalAck.GetSegmentIndex() != int32(finalAckIndex) {
+			return offset, nil, stats, streamAckIndex, fmt.Errorf("burnbridge: final ack segment_index mismatch: got %d want %d", finalAck.GetSegmentIndex(), finalAckIndex)
+		}
+		if !finalAck.GetUploadComplete() {
+			return offset, nil, stats, streamAckIndex, fmt.Errorf("burnbridge: expected upload_complete on small-object final ack")
+		}
+		final = finalAck
+		streamAckIndex++
+	} else {
+		final = &burnbridgev1.UploadObjectAck{
+			JobId:          jobID,
+			UploadComplete: true,
+			BytesReceived:  offset,
+		}
+	}
+	if final.GetChecksumMd5() == "" {
+		final.ChecksumMd5 = hex.EncodeToString(objectMD5.Sum(nil))
+	}
+	return offset, final, stats, streamAckIndex, nil
 }
 
 // DeleteObject is rejected: BurnBridge maps to write-once read-many optical storage.

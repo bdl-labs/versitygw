@@ -3791,9 +3791,11 @@ func TestCreateMultipartUploadCapacityErrorAutoClosesOnlyAtFinalizeReserve(t *te
 }
 
 type testUploadObjectStream struct {
+	mu         sync.Mutex
 	sendChunks []*burnbridgev1.UploadObjectChunk
 	ackQueue   []*burnbridgev1.UploadObjectAck
 	recvIndex  int
+	dynamicAck bool
 }
 
 func (s *testUploadObjectStream) Header() (metadata.MD, error) { return nil, nil }
@@ -3804,11 +3806,32 @@ func (s *testUploadObjectStream) SendMsg(any) error            { return nil }
 func (s *testUploadObjectStream) RecvMsg(any) error            { return nil }
 
 func (s *testUploadObjectStream) Send(chunk *burnbridgev1.UploadObjectChunk) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sendChunks = append(s.sendChunks, chunk)
 	return nil
 }
 
 func (s *testUploadObjectStream) Recv() (*burnbridgev1.UploadObjectAck, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dynamicAck {
+		if s.recvIndex >= len(s.sendChunks) {
+			return nil, io.EOF
+		}
+		chunk := s.sendChunks[s.recvIndex]
+		ack := &burnbridgev1.UploadObjectAck{
+			JobId:             chunk.GetJobId(),
+			SegmentIndex:      int32(s.recvIndex),
+			ByteOffset:        chunk.GetOffset(),
+			ByteSize:          int64(len(chunk.GetData())),
+			BytesReceived:     chunk.GetOffset() + int64(len(chunk.GetData())),
+			UploadComplete:    chunk.GetEof(),
+			SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+		}
+		s.recvIndex++
+		return ack, nil
+	}
 	if s.recvIndex >= len(s.ackQueue) {
 		return nil, io.EOF
 	}
@@ -4100,6 +4123,94 @@ func TestPutObjectComputesChecksumWhenTailAckOmitsFinalChecksum(t *testing.T) {
 	}
 	if out.ChecksumMD5 == nil || *out.ChecksumMD5 != objectMD5 {
 		t.Fatalf("unexpected checksum_md5: %#v", out.ChecksumMD5)
+	}
+}
+
+func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	payloadA := []byte("aa")
+	payloadB := []byte("bb")
+	stream := &testUploadObjectStream{
+		dynamicAck: true,
+	}
+	var createCalls atomic.Int32
+	var uploadCalls atomic.Int32
+	var commitCalls atomic.Int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			createJobFn: func(_ context.Context, req *burnbridgev1.CreateJobRequest, _ ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+				createCalls.Add(1)
+				if req.GetObjectKey() == "a.txt" {
+					return &burnbridgev1.CreateJobResponse{JobId: "job-a"}, nil
+				}
+				return &burnbridgev1.CreateJobResponse{JobId: "job-b"}, nil
+			},
+			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+				uploadCalls.Add(1)
+				return stream, nil
+			},
+			commitJobFn: func(_ context.Context, req *burnbridgev1.CommitJobRequest, _ ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+				commitCalls.Add(1)
+				return &burnbridgev1.CommitJobResponse{JobId: req.GetJobId(), Status: "layout_persisted"}, nil
+			},
+			cancelJobFn: func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error) {
+				return &burnbridgev1.CancelJobResponse{}, nil
+			},
+		},
+		chunkSize:        1024,
+		cancelJobTimeout: time.Second,
+		putQueueSem:      make(chan struct{}, 4),
+		activeBucket:     bucket,
+		volumeLabelRaw:   "DISC-A",
+		udfLabel:         "DISC-A",
+	}
+	b.smallBatch = newSmallObjectBatcher(b, 1024, 8, 50*time.Millisecond)
+	b.smallBatch.start()
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, 2)
+	put := func(key string, payload []byte) {
+		defer wg.Done()
+		_, err := b.PutObject(context.Background(), s3response.PutObjectInput{
+			Bucket:        ptr(bucket),
+			Key:           ptr(key),
+			Body:          bytes.NewReader(payload),
+			ContentLength: ptr(int64(len(payload))),
+		})
+		errCh <- err
+	}
+	wg.Add(2)
+	go put("a.txt", payloadA)
+	go put("b.txt", payloadB)
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := uploadCalls.Load(); got != 1 {
+		t.Fatalf("expected one shared UploadObject stream, got %d", got)
+	}
+	if got := createCalls.Load(); got != 2 {
+		t.Fatalf("expected two CreateJob calls, got %d", got)
+	}
+	if got := commitCalls.Load(); got != 2 {
+		t.Fatalf("expected two CommitJob calls, got %d", got)
+	}
+	if len(stream.sendChunks) != 2 {
+		t.Fatalf("expected two payload chunks, got %d", len(stream.sendChunks))
+	}
+	if stream.sendChunks[0].GetJobId() == stream.sendChunks[1].GetJobId() {
+		t.Fatalf("expected distinct job ids in shared stream")
 	}
 }
 

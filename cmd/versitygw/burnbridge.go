@@ -15,20 +15,24 @@ import (
 )
 
 var (
-	burnbridgeDBPath               string
-	burnbridgeGRPCAddr             string
-	burnbridgeGRPCUseTLS           bool
-	burnbridgeGRPCCAFile           string
-	burnbridgeGRPCServerName       string
-	burnbridgeGRPCInsecureSkipTLS  bool
-	burnbridgeGRPCSkipPing         bool
-	burnbridgeUDFVolumeLabel       string
-	burnbridgeGRPCChunkSize        int
-	burnbridgeGRPCDialTimeout      time.Duration
-	burnbridgeGRPCReadyTimeout     time.Duration
-	burnbridgeGRPCPingTimeout      time.Duration
-	burnbridgeGRPCCancelJobTimeout time.Duration
-	burnbridgePutObjectTimeout     time.Duration
+	burnbridgeDBPath                   string
+	burnbridgeGRPCAddr                 string
+	burnbridgeGRPCUseTLS               bool
+	burnbridgeGRPCCAFile               string
+	burnbridgeGRPCServerName           string
+	burnbridgeGRPCInsecureSkipTLS      bool
+	burnbridgeGRPCSkipPing             bool
+	burnbridgeUDFVolumeLabel           string
+	burnbridgeGRPCChunkSize            int
+	burnbridgeGRPCDialTimeout          time.Duration
+	burnbridgeGRPCReadyTimeout         time.Duration
+	burnbridgeGRPCPingTimeout          time.Duration
+	burnbridgeGRPCCancelJobTimeout     time.Duration
+	burnbridgePutObjectTimeout         time.Duration
+	burnbridgeSmallObjectBatchEnabled  bool
+	burnbridgeSmallObjectMaxBytes      int64
+	burnbridgeSmallObjectBatchMaxCount int
+	burnbridgeSmallObjectBatchMaxDelay time.Duration
 	// Recorder-side S3 pull (RegisterS3ObjectPullSource)
 	burnbridgeRecorderS3Endpoint        string
 	burnbridgeRecorderS3Region          string
@@ -138,6 +142,34 @@ func burnbridgeCommand() *cli.Command {
 				Destination: &burnbridgePutObjectTimeout,
 				Value:       0,
 			},
+			&cli.BoolFlag{
+				Name:        "small-object-batch",
+				Usage:       "enable phase-1 synchronous small PutObject batching through a shared recorder upload stream",
+				EnvVars:     []string{"VGW_BURNBRIDGE_SMALL_OBJECT_BATCH"},
+				Destination: &burnbridgeSmallObjectBatchEnabled,
+				Value:       true,
+			},
+			&cli.Int64Flag{
+				Name:        "small-object-max-bytes",
+				Usage:       "maximum PutObject content length eligible for synchronous small-object batching",
+				EnvVars:     []string{"VGW_BURNBRIDGE_SMALL_OBJECT_MAX_BYTES"},
+				Destination: &burnbridgeSmallObjectMaxBytes,
+				Value:       1 << 20,
+			},
+			&cli.IntFlag{
+				Name:        "small-object-batch-max-count",
+				Usage:       "maximum number of small PutObject requests collected into one synchronous batch",
+				EnvVars:     []string{"VGW_BURNBRIDGE_SMALL_OBJECT_BATCH_MAX_COUNT"},
+				Destination: &burnbridgeSmallObjectBatchMaxCount,
+				Value:       128,
+			},
+			&cli.DurationFlag{
+				Name:        "small-object-batch-max-delay",
+				Usage:       "maximum wait for collecting concurrent small PutObject requests before flushing a batch",
+				EnvVars:     []string{"VGW_BURNBRIDGE_SMALL_OBJECT_BATCH_MAX_DELAY"},
+				Destination: &burnbridgeSmallObjectBatchMaxDelay,
+				Value:       25 * time.Millisecond,
+			},
 			&cli.StringFlag{
 				Name:        "recorder-s3-endpoint",
 				Usage:       "if set, after CreateJob gateway sends RegisterS3ObjectPullSource with this S3-compatible base URL (scheme://host[:port]) so the recorder can GetObject directly",
@@ -204,20 +236,24 @@ func runBurnbridge(ctx *cli.Context) error {
 	}
 
 	opts := burnbridge.Options{
-		DBPath:                 dbPath,
-		GRPCAddr:               grpcAddr,
-		GRPCUseTLS:             burnbridgeGRPCUseTLS,
-		GRPCCAFile:             burnbridgeGRPCCAFile,
-		GRPCServerName:         burnbridgeGRPCServerName,
-		GRPCInsecureSkipVerify: burnbridgeGRPCInsecureSkipTLS,
-		GRPCSkipPing:           burnbridgeGRPCSkipPing,
-		UDFVolumeLabel:         burnbridgeUDFVolumeLabel,
-		ChunkSize:              burnbridgeGRPCChunkSize,
-		DialTimeout:            burnbridgeGRPCDialTimeout,
-		GRPCReadyTimeout:       burnbridgeGRPCReadyTimeout,
-		PingTimeout:            burnbridgeGRPCPingTimeout,
-		CancelJobTimeout:       burnbridgeGRPCCancelJobTimeout,
-		PutObjectTimeout:       burnbridgePutObjectTimeout,
+		DBPath:                   dbPath,
+		GRPCAddr:                 grpcAddr,
+		GRPCUseTLS:               burnbridgeGRPCUseTLS,
+		GRPCCAFile:               burnbridgeGRPCCAFile,
+		GRPCServerName:           burnbridgeGRPCServerName,
+		GRPCInsecureSkipVerify:   burnbridgeGRPCInsecureSkipTLS,
+		GRPCSkipPing:             burnbridgeGRPCSkipPing,
+		UDFVolumeLabel:           burnbridgeUDFVolumeLabel,
+		ChunkSize:                burnbridgeGRPCChunkSize,
+		DialTimeout:              burnbridgeGRPCDialTimeout,
+		GRPCReadyTimeout:         burnbridgeGRPCReadyTimeout,
+		PingTimeout:              burnbridgeGRPCPingTimeout,
+		CancelJobTimeout:         burnbridgeGRPCCancelJobTimeout,
+		PutObjectTimeout:         burnbridgePutObjectTimeout,
+		SmallObjectBatchEnabled:  burnbridgeSmallObjectBatchEnabled,
+		SmallObjectMaxBytes:      burnbridgeSmallObjectMaxBytes,
+		SmallObjectBatchMaxCount: burnbridgeSmallObjectBatchMaxCount,
+		SmallObjectBatchMaxDelay: burnbridgeSmallObjectBatchMaxDelay,
 
 		RecorderS3Endpoint:        burnbridgeRecorderS3Endpoint,
 		RecorderS3Region:          burnbridgeRecorderS3Region,

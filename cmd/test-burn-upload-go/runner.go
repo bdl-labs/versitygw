@@ -286,7 +286,7 @@ func newRunner(opts cliOptions) (*runner, error) {
 			return nil, fmt.Errorf("data file not found: %s", opts.dataDir)
 		}
 	}
-	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modePutObjectFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
+	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modePutObjectFlow && opts.mode != modeSmallBatchFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("data directory not found: %s", opts.dataDir)
@@ -372,6 +372,11 @@ func (r *runner) run() (err error) {
 	r.logf("MediaInsertedOnly: %t", r.opts.mediaInsertedOnly)
 	r.logf("InterruptRetryOnly: %t", r.opts.interruptRetryOnly)
 	r.logf("MultipartRetryOnly: %t", r.opts.multipartRetryOnly)
+	if r.opts.mode == modeSmallBatchFlow {
+		r.logf("SmallFileCount: %d", r.opts.smallFileCount)
+		r.logf("SmallFileBytes: %d", r.opts.smallFileBytes)
+		r.logf("SmallConcurrency: %d", r.opts.smallConcurrency)
+	}
 	if strings.TrimSpace(r.opts.singleObjectKey) != "" {
 		r.logf("SingleObjectKey: %s", r.opts.singleObjectKey)
 	}
@@ -473,6 +478,8 @@ func (r *runner) run() (err error) {
 		err = r.runMultipartFlow(dataBucket, controlBucket)
 	case r.opts.mode == modePutObjectFlow:
 		err = r.runPutObjectFlow(dataBucket, controlBucket)
+	case r.opts.mode == modeSmallBatchFlow:
+		err = r.runSmallBatchFlow(dataBucket, controlBucket, metrics, finalizeOutputPath, testStart)
 	case strings.TrimSpace(r.opts.singleObjectKey) != "":
 		err = r.runSingleObjectDownload(dataBucket)
 	default:
@@ -1474,6 +1481,215 @@ func (r *runner) runPutObjectFlow(bucket, controlBucket string) error {
 		r.logf("  md5              : %s", actualMD5)
 	}
 	r.logf("  summary json     : %s", r.summaryJSONPath)
+	return nil
+}
+
+func (r *runner) runSmallBatchFlow(bucket, controlBucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) error {
+	r.logf("[3/8] Preparing deterministic small-file dataset...")
+	if err := prepareSmallBatchDataset(r.opts.dataDir, r.opts.smallFileCount, r.opts.smallFileBytes); err != nil {
+		return err
+	}
+	snapshot, err := getLocalFileMap(r.opts.dataDir, !r.opts.skipMD5Verify)
+	if err != nil {
+		return err
+	}
+	for _, item := range snapshot.Items {
+		metrics[item.RelativePath] = &fileMetric{
+			RelativePath: item.RelativePath,
+			FullName:     item.FullPath,
+			SizeBytes:    item.Size,
+			SizeMiB:      roundFloat(float64(item.Size)/(1024*1024), 3),
+			ExpectedMD5:  item.MD5,
+			Status:       "Pending",
+		}
+	}
+	totalBytes := int64(0)
+	for _, item := range snapshot.Items {
+		totalBytes += item.Size
+	}
+	r.logf("  small files    : %d", len(snapshot.Items))
+	r.logf("  file size      : %d bytes", r.opts.smallFileBytes)
+	r.logf("  total size     : %s MiB", formatSizeMiB(totalBytes))
+	r.logf("  concurrency    : %d", r.opts.smallConcurrency)
+
+	if stop, reason := r.shouldStopForFinalize(controlBucket, totalBytes); stop {
+		r.logf("  small batch would cross finalize threshold (%s); running FinalizeLayout without CloseDisc", reason)
+		_, err := r.finalizeLayoutOnly(controlBucket, finalizeOutputPath)
+		return err
+	}
+
+	r.logf("[4/8] Uploading small files concurrently...")
+	uploadStart := time.Now()
+	jobs := make(chan sourceItem)
+	errCh := make(chan error, 1)
+	var wg sync.WaitGroup
+	var metricsMu sync.Mutex
+	workerCount := r.opts.smallConcurrency
+	if workerCount <= 0 {
+		workerCount = 1
+	}
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for item := range jobs {
+				start := time.Now()
+				if err := r.putObject(bucket, item.RelativePath, item.FullPath); err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					metricsMu.Lock()
+					metric := metrics[item.RelativePath]
+					metric.Status = "Failed"
+					metric.Notes = err.Error()
+					metricsMu.Unlock()
+					continue
+				}
+				seconds := roundSeconds(time.Since(start))
+				metricsMu.Lock()
+				metric := metrics[item.RelativePath]
+				metric.UploadSeconds = seconds
+				metric.UploadMiBPerSecond = rateMiBPerSecond(item.Size, seconds)
+				metric.Status = "Uploaded"
+				metric.Notes = "small-batch-putobject"
+				r.uploadedKeys[item.RelativePath] = struct{}{}
+				metricsMu.Unlock()
+			}
+		}()
+	}
+	for _, item := range snapshot.Items {
+		select {
+		case err := <-errCh:
+			close(jobs)
+			wg.Wait()
+			return err
+		case jobs <- item:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	select {
+	case err := <-errCh:
+		return err
+	default:
+	}
+	uploadSeconds := roundSeconds(time.Since(uploadStart))
+	r.logf("  upload total   : %.3fs @ %.3f MiB/s", uploadSeconds, rateMiBPerSecond(totalBytes, uploadSeconds))
+
+	r.logf("[7/8] Triggering FinalizeLayout...")
+	finalizeStart := time.Now()
+	controlKey, finalizeRaw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
+	if err != nil {
+		return err
+	}
+	finalizeSeconds := roundSeconds(time.Since(finalizeStart))
+	r.logf("  finalize control key : %s", controlKey)
+	r.logf("  finalize elapsed     : %.3fs", finalizeSeconds)
+	r.writeFinalizeSummary(finalizeRaw, bucket)
+
+	r.logf("[8/8] Downloading small files and verifying result...")
+	verifyDir := filepath.Join(r.cfg.verifyDownloadRoot, bucket)
+	downloadSeconds := 0.0
+	for _, item := range snapshot.Items {
+		targetPath := filepath.Join(verifyDir, filepath.FromSlash(item.RelativePath))
+		if err := ensureDir(filepath.Dir(targetPath)); err != nil {
+			return err
+		}
+		start := time.Now()
+		if err := r.downloadObjectToFile(bucket, item.RelativePath, targetPath, defaultReadTimeout); err != nil {
+			return err
+		}
+		seconds := roundSeconds(time.Since(start))
+		info, err := os.Stat(targetPath)
+		if err != nil {
+			return fmt.Errorf("downloaded file missing: %s", item.RelativePath)
+		}
+		if info.Size() != item.Size {
+			return fmt.Errorf("downloaded size mismatch for %s", item.RelativePath)
+		}
+		actualMD5 := ""
+		if !r.opts.skipMD5Verify {
+			actualMD5, err = computeMD5(targetPath)
+			if err != nil {
+				return err
+			}
+			if actualMD5 != item.MD5 {
+				return fmt.Errorf("downloaded MD5 mismatch for %s", item.RelativePath)
+			}
+		}
+		rate := rateMiBPerSecond(item.Size, seconds)
+		if metric := metrics[item.RelativePath]; metric != nil {
+			metric.DownloadSeconds = seconds
+			metric.DownloadMiBPerSecond = rate
+			metric.ActualMD5 = actualMD5
+			metric.Status = "Verified"
+		}
+		downloadSeconds += seconds
+	}
+
+	summary := &runSummary{
+		Status:                  "Success",
+		Bucket:                  bucket,
+		RequestedBucket:         r.opts.bucket,
+		DataDirectory:           r.opts.dataDir,
+		RemoteOnly:              false,
+		FileCount:               len(snapshot.Items),
+		TotalBytes:              totalBytes,
+		TotalMiB:                roundFloat(float64(totalBytes)/(1024*1024), 3),
+		UploadSeconds:           roundFloat(uploadSeconds, 3),
+		UploadMiBPerSecond:      rateMiBPerSecond(totalBytes, uploadSeconds),
+		FinalizeLayoutSeconds:   roundFloat(finalizeSeconds, 3),
+		DownloadSeconds:         roundFloat(downloadSeconds, 3),
+		DownloadMiBPerSecond:    rateMiBPerSecond(totalBytes, downloadSeconds),
+		TotalTestSeconds:        roundSeconds(time.Since(testStart)),
+		RunRoot:                 r.runRoot,
+		MetricsCSVPath:          r.metricsCSVPath,
+		MemoryCSVPath:           r.memoryCSVPath,
+		MemorySummaryPath:       r.memorySummaryPath,
+		FinalizeResponsePath:    finalizeOutputPath,
+		VerifyDownloadDirectory: verifyDir,
+		RecorderLogDirectory:    r.cfg.runtimeRecorderLogDir,
+		GatewayLogDirectory:     r.cfg.runtimeGatewayLogDir,
+	}
+	if err := writeJSONFile(r.summaryJSONPath, summary); err != nil {
+		return err
+	}
+	r.logf("")
+	r.logf("Small batch flow summary:")
+	r.logf("  files            : %d", summary.FileCount)
+	r.logf("  total size       : %.3f MiB", summary.TotalMiB)
+	r.logf("  upload total     : %.3fs @ %.3f MiB/s", summary.UploadSeconds, summary.UploadMiBPerSecond)
+	r.logf("  finalize total   : %.3fs", summary.FinalizeLayoutSeconds)
+	r.logf("  download total   : %.3fs @ %.3f MiB/s", summary.DownloadSeconds, summary.DownloadMiBPerSecond)
+	r.logf("  verify download  : %s", summary.VerifyDownloadDirectory)
+	r.logf("  summary json     : %s", r.summaryJSONPath)
+	return nil
+}
+
+func prepareSmallBatchDataset(root string, count int, size int64) error {
+	if count <= 0 {
+		return fmt.Errorf("small batch file count must be positive")
+	}
+	if size <= 0 {
+		return fmt.Errorf("small batch file size must be positive")
+	}
+	if err := os.RemoveAll(root); err != nil {
+		return err
+	}
+	if err := ensureDir(root); err != nil {
+		return err
+	}
+	payload := make([]byte, size)
+	for i := 0; i < count; i++ {
+		for j := range payload {
+			payload[j] = byte((i*31 + j*17) % 251)
+		}
+		name := filepath.Join(root, fmt.Sprintf("small-%06d.bin", i))
+		if err := os.WriteFile(name, payload, 0o644); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
