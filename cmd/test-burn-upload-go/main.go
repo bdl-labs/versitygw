@@ -11,7 +11,7 @@ import (
 
 const (
 	defaultConfigFileName         = "optical-archive.config.json"
-	defaultConfigPath             = `D:\BRS\Publisher\config\optical-archive.config.json`
+	defaultConfigPath             = `D:\BRS\publisher\config\optical-archive.config.json`
 	defaultDataDir                = `D:\testdata`
 	defaultBucket                 = "archive-test"
 	defaultEndpoint               = "http://127.0.0.1:7070"
@@ -741,7 +741,7 @@ func printUsage(stream *os.File) {
 		"  1. explicit ConfigPath argument",
 		"  2. OPTICAL_ARCHIVE_CONFIG_PATH",
 		"  3. optical-archive.config.json next to this exe",
-		"  4. D:\\BRS\\Publisher\\config\\optical-archive.config.json",
+		"  4. D:\\BRS\\publisher\\config\\optical-archive.config.json",
 		"",
 		"Modes:",
 		"  full-flow",
@@ -838,7 +838,7 @@ func printUsage(stream *os.File) {
 		`  .\test-burn-upload-go.exe close`,
 		`  .\test-burn-upload-go.exe put D:\testdata\large.bin archive-test`,
 		`  .\test-burn-upload-go.exe sb D:\testdata\small-batch archive-test 256 2048 32`,
-		`  .\test-burn-upload-go.exe mix D:\BRS\Publisher\temp\mixed-batch archive-test 32 32`,
+		`  .\test-burn-upload-go.exe mix D:\BRS\publisher\temp\mixed-batch archive-test 32 32`,
 		`  .\test-burn-upload-go.exe mp D:\testdata\10.zip archive-test 32`,
 		`  .\test-burn-upload-go.exe rdl`,
 		`  .\test-burn-upload-go.exe get docs/chat-export.md`,
