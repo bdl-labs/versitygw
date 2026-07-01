@@ -3,6 +3,7 @@ package burnbridge
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -794,8 +795,15 @@ func TestMountedReadFallbackMergesWithCommittedListing(t *testing.T) {
 	}
 
 	b := &BurnBridge{
-		meta:         store,
-		grpc:         testBurnBridgeClient{},
+		meta: store,
+		grpc: testBurnBridgeClient{
+			readObjectFn: func(_ context.Context, req *burnbridgev1.ReadObjectRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error) {
+				if req.GetObjectKey() != "db-only.txt" {
+					t.Fatalf("unexpected recorder read for %s", req.GetObjectKey())
+				}
+				return newTestReadObjectStream([]byte("db-only")), nil
+			},
+		},
 		readMount:    readMount,
 		activeBucket: "DISC-A",
 	}
@@ -820,23 +828,40 @@ func TestMountedReadFallbackMergesWithCommittedListing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	foundDBOnly := false
 	for _, obj := range rootList.Contents {
 		if obj.Key != nil && *obj.Key == "db-only.txt" {
-			t.Fatalf("DB-only object should be filtered when mounted disc is visible: %#v", rootList.Contents)
+			foundDBOnly = true
 		}
 	}
-
-	if _, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
-		Bucket: ptr("DISC-A"),
-		Key:    ptr("db-only.txt"),
-	}); err == nil {
-		t.Fatal("expected HeadObject to hide DB-only object when mounted disc is visible")
+	if !foundDBOnly {
+		t.Fatalf("expected DB-only object to remain visible when committed metadata exists: %#v", rootList.Contents)
 	}
-	if _, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+
+	dbOnlyHead, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
 		Bucket: ptr("DISC-A"),
 		Key:    ptr("db-only.txt"),
-	}); err == nil {
-		t.Fatal("expected GetObject to hide DB-only object when mounted disc is visible")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dbOnlyHead.ContentLength == nil || *dbOnlyHead.ContentLength != 7 {
+		t.Fatalf("expected HeadObject to use committed metadata for DB-only object, got %#v", dbOnlyHead.ContentLength)
+	}
+	dbOnlyGet, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr("DISC-A"),
+		Key:    ptr("db-only.txt"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dbOnlyBody, err := io.ReadAll(dbOnlyGet.Body)
+	_ = dbOnlyGet.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(dbOnlyBody) != "db-only" {
+		t.Fatalf("expected DB-only object to read through recorder, got %q", string(dbOnlyBody))
 	}
 
 	head, err := b.HeadObject(context.Background(), &s3.HeadObjectInput{
@@ -1554,7 +1579,7 @@ func TestMountedDiscBucketHintBlocksHistoricalBucketAccess(t *testing.T) {
 	}
 }
 
-func TestGetObjectFallsBackToMountedRootWhenCommittedBucketPathMissing(t *testing.T) {
+func TestGetObjectUsesRecorderWhenCommittedBucketPathMissing(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
 	if err != nil {
@@ -1567,7 +1592,7 @@ func TestGetObjectFallsBackToMountedRootWhenCommittedBucketPathMissing(t *testin
 		t.Fatal(err)
 	}
 	if err := store.StoreBurnbridgeCommitted(nil, "DISC-CURRENT", "root-file.txt", &meta.BurnbridgeCommittedRecord{
-		Size:         int64(len("root-layout")),
+		Size:         int64(len("record-layout")),
 		ETag:         "\"etag\"",
 		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
 	}); err != nil {
@@ -1578,7 +1603,14 @@ func TestGetObjectFallsBackToMountedRootWhenCommittedBucketPathMissing(t *testin
 		meta:         store,
 		readMount:    readMount,
 		activeBucket: "disc-current",
-		grpc:         testBurnBridgeClient{},
+		grpc: testBurnBridgeClient{
+			readObjectFn: func(_ context.Context, req *burnbridgev1.ReadObjectRequest, _ ...grpc.CallOption) (grpc.ServerStreamingClient[burnbridgev1.ReadObjectChunk], error) {
+				if req.GetObjectKey() != "root-file.txt" {
+					t.Fatalf("unexpected recorder read for %s", req.GetObjectKey())
+				}
+				return newTestReadObjectStream([]byte("record-layout")), nil
+			},
+		},
 	}
 
 	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
@@ -1593,8 +1625,8 @@ func TestGetObjectFallsBackToMountedRootWhenCommittedBucketPathMissing(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(raw) != "root-layout" {
-		t.Fatalf("expected mounted root file content, got %q", string(raw))
+	if string(raw) != "record-layout" {
+		t.Fatalf("expected recorder content, got %q", string(raw))
 	}
 }
 
@@ -1874,6 +1906,103 @@ func TestSyncActiveDiscStateImportsCommittedObjectsFromRecorder(t *testing.T) {
 	}
 	if _, err := store.RetrieveAttribute(nil, "disc-a", "", "ignored_non_redundancy"); !errors.Is(err, meta.ErrNoSuchKey) {
 		t.Fatalf("expected non-redundancy metadata to be ignored, got %v", err)
+	}
+}
+
+func TestPruneOtherBurnbridgeBucketsPreservesPersistedControlBucket(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "DISC-A", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         1,
+		ETag:         "\"a\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeDriveInfo(&meta.BurnbridgeDriveInfoDocument{
+		Bucket:        "DRIVE-001",
+		ControlBucket: "DRIVE-001",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		SerialNumber:  "DRIVE-001",
+		IsMMCUnit:     true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "STALE", "old.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         1,
+		ETag:         "\"old\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{meta: store}
+	if err := b.pruneOtherBurnbridgeBuckets("DISC-A"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.GetBurnbridgeDriveInfoJSON("DRIVE-001"); err != nil {
+		t.Fatalf("expected persisted control bucket to survive prune: %v", err)
+	}
+	if _, err := store.GetCommittedObjectSummary("STALE", "old.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("expected stale bucket metadata to be pruned, got %v", err)
+	}
+}
+
+func TestEnsureActiveBucketLoadedDoesNotRestoreCommittedMetadataForKnownBlankDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeCommitted(nil, "DISC-BLANK", "ghost.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         5,
+		ETag:         "\"ghost\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:        "DISC-BLANK",
+		VolumeLabel:   "DISC-BLANK",
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339Nano),
+		WritableState: "Blank",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	probeCalls := int32(0)
+	b := &BurnBridge{
+		meta:           store,
+		activeBucket:   "DISC-BLANK",
+		volumeLabelRaw: "DISC-BLANK",
+		udfLabel:       "DISC-BLANK",
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				atomic.AddInt32(&probeCalls, 1)
+				return &burnbridgev1.TestUnitReadyResponse{
+					Ready:         true,
+					VolumeLabel:   "DISC-BLANK",
+					WritableState: "Blank",
+				}, nil
+			},
+		},
+	}
+
+	if err := b.ensureActiveBucketLoaded(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if atomic.LoadInt32(&probeCalls) != 0 {
+		t.Fatalf("expected no recorder probe for hot metadata path, got %d", probeCalls)
+	}
+	if b.importedBucketConvergencePending("DISC-BLANK") {
+		t.Fatal("expected blank-disc committed metadata not to trigger imported convergence")
 	}
 }
 
@@ -2707,30 +2836,33 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 					WritableState:                 "Appendable",
 				}, nil
 			},
-			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+			getDiscInfoFn: func(_ context.Context, req *burnbridgev1.GetDiscInfoRequest, _ ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				disc := &burnbridgev1.OpticalDiscInfo{
+					ProfileName:                   "BD-R",
+					DiscStatusName:                "incomplete/appendable",
+					DiscSerialNumberHex:           "SER-001",
+					BlockSizeBytes:                2048,
+					TotalBlocks:                   48878592,
+					FreeBlocks:                    1773184,
+					RecordableCapacityBlocks:      1773184,
+					TrackNextWritableAddress:      47105408,
+					TrackNextWritableAddressValid: true,
+					WritableState:                 "Appendable",
+					MediaCapacity:                 100103356416,
+					MediaFreeSpace:                3631470592,
+					MediaUsedSpace:                96471885824,
+				}
+				if req.GetIncludeSessionDiscId() {
+					disc.SessionDiscId = &burnbridgev1.SessionDiscId{
+						IsFinalized: true,
+						TempDiscId:  "DISC001",
+					}
+				}
 				return &burnbridgev1.GetDiscInfoResponse{
 					Drive: &burnbridgev1.OpticalDriveIdentity{
 						SerialNumber: "DRIVE-SERIAL-DISCINFO-001",
 					},
-					Disc: &burnbridgev1.OpticalDiscInfo{
-						ProfileName:                   "BD-R",
-						DiscStatusName:                "incomplete/appendable",
-						DiscSerialNumberHex:           "SER-001",
-						BlockSizeBytes:                2048,
-						TotalBlocks:                   48878592,
-						FreeBlocks:                    1773184,
-						RecordableCapacityBlocks:      1773184,
-						TrackNextWritableAddress:      47105408,
-						TrackNextWritableAddressValid: true,
-						WritableState:                 "Appendable",
-						MediaCapacity:                 100103356416,
-						MediaFreeSpace:                3631470592,
-						MediaUsedSpace:                96471885824,
-						SessionDiscId: &burnbridgev1.SessionDiscId{
-							IsFinalized: true,
-							TempDiscId:  "DISC001",
-						},
-					},
+					Disc: disc,
 				}, nil
 			},
 		},
@@ -2782,14 +2914,14 @@ func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) 
 	if doc.DiscStatusName != "incomplete/appendable" {
 		t.Fatalf("expected discStatusName incomplete/appendable, got %q", doc.DiscStatusName)
 	}
-	if !doc.SessionIsFinalized {
-		t.Fatal("expected sessionIsFinalized true")
+	if doc.SessionIsFinalized {
+		t.Fatal("expected lightweight disc-info to avoid session finalized probing")
 	}
-	if doc.LayoutStatus != "finalized" {
-		t.Fatalf("expected layoutStatus finalized, got %q", doc.LayoutStatus)
+	if doc.LayoutStatus != "" {
+		t.Fatalf("expected lightweight disc-info to omit layoutStatus, got %q", doc.LayoutStatus)
 	}
-	if doc.LayoutCompletedAtUtc == "" {
-		t.Fatal("expected layoutCompletedAtUtc to be populated")
+	if doc.LayoutCompletedAtUtc != "" {
+		t.Fatal("expected lightweight disc-info to omit layoutCompletedAtUtc")
 	}
 	if doc.TotalBlocks != 48878592 {
 		t.Fatalf("expected refreshed totalBlocks 48878592, got %d", doc.TotalBlocks)
@@ -3007,8 +3139,8 @@ func TestDiscInfoGetObjectSuppressesStaleFinalizeStateOnMismatchedDisc(t *testin
 	if doc.WritableState != "Appendable" {
 		t.Fatalf("expected writableState Appendable, got %q", doc.WritableState)
 	}
-	if doc.VolumeLabel != "DISC002" {
-		t.Fatalf("expected current volume label DISC002, got %q", doc.VolumeLabel)
+	if doc.VolumeLabel != "bucket1" {
+		t.Fatalf("expected lightweight disc-info to preserve active volume label bucket1, got %q", doc.VolumeLabel)
 	}
 	if _, err := store.GetBurnbridgeDiscInfoJSON("bucket1"); err == nil {
 		t.Fatal("expected mismatched-disc disc-info request to avoid overwriting bucket1 disc info cache")
@@ -3638,8 +3770,11 @@ func TestHeadObjectControlKeyReturnsEnvelopeMetadata(t *testing.T) {
 		meta:         store,
 		activeBucket: "bucket1",
 		grpc: testBurnBridgeClient{
-			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
-				return testDriveInfo("DRIVE-SERIAL-HEAD-001"), nil
+			getDiscInfoFn: func(_ context.Context, req *burnbridgev1.GetDiscInfoRequest, _ ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				if req.GetIncludeDriveIdentity() {
+					return testDriveInfo("DRIVE-SERIAL-HEAD-001"), nil
+				}
+				return nil, status.Error(codes.Unavailable, "offline for cache fallback")
 			},
 			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
 				return nil, status.Error(codes.Unavailable, "offline for cache fallback")
@@ -3740,6 +3875,68 @@ func TestCreateMultipartUploadOversizedObjectDoesNotAutoCloseAppendableDisc(t *t
 	}
 }
 
+func TestEnsureWritableCapacityKeepsFinalizeReserve(t *testing.T) {
+	doc := &meta.BurnbridgeDiscInfoDocument{
+		WritableCapacityBytes: 800,
+		FinalizeReserveBytes:  100,
+	}
+	if err := ensureWritableCapacity(doc, 700); err != nil {
+		t.Fatalf("expected object fitting before reserve to be accepted: %v", err)
+	}
+	if err := ensureWritableCapacity(doc, 701); err == nil {
+		t.Fatal("expected object crossing finalize reserve to be rejected")
+	}
+}
+
+func TestDiscInfoRefreshPreservesFinalizeReserve(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:                bucket,
+		WritableCapacityBytes: 700,
+		FreeCapacityBytes:     800,
+		FinalizeReserveBytes:  100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: bucket,
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return &burnbridgev1.GetDiscInfoResponse{
+					Disc: &burnbridgev1.OpticalDiscInfo{
+						DiscSerialNumberHex: bucket,
+						WritableState:       "Appendable",
+						MediaCapacity:       1000,
+						MediaFreeSpace:      800,
+						MediaUsedSpace:      200,
+						BlockSizeBytes:      2048,
+					},
+				}, nil
+			},
+		},
+	}
+
+	_, doc, err := b.refreshDiscInfoDocument(context.Background(), bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.FinalizeReserveBytes != 100 {
+		t.Fatalf("expected reserve to be preserved, got %d", doc.FinalizeReserveBytes)
+	}
+	if doc.WritableCapacityBytes != 700 {
+		t.Fatalf("expected writable capacity to stay free-reserve, got %d", doc.WritableCapacityBytes)
+	}
+}
+
 func TestCreateMultipartUploadCapacityErrorAutoClosesOnlyAtFinalizeReserve(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -3798,6 +3995,73 @@ func TestCreateMultipartUploadCapacityErrorAutoClosesOnlyAtFinalizeReserve(t *te
 	}
 }
 
+func TestCapacityFinalizeContinuesWhenStagedSmallObjectFlushFails(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	if err := store.StoreBurnbridgeCommitted(nil, bucket, "staged.txt", &meta.BurnbridgeCommittedRecord{
+		JobID:        "staged-small-object",
+		Status:       "staged",
+		Size:         5,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stage := &smallObjectStageRecord{
+		Bucket:      bucket,
+		Key:         "staged.txt",
+		PackPath:    filepath.Join(t.TempDir(), "missing-stage.pack"),
+		LogicalSize: 5,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, bucket, "staged.txt", burnbridgeSmallObjectStageAttr, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	var closeDiscValues []bool
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return &burnbridgev1.TestUnitReadyResponse{
+					Ready:                 true,
+					VolumeLabel:           bucket,
+					WritableState:         "Appendable",
+					TotalCapacityBytes:    1000,
+					FreeCapacityBytes:     0,
+					UsedCapacityBytes:     1000,
+					WritableCapacityBytes: 0,
+					FinalizeReserveBytes:  100,
+				}, nil
+			},
+			finalizeFn: func(_ context.Context, req *burnbridgev1.FinalizeLayoutRequest, _ ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				closeDiscValues = append(closeDiscValues, req.GetCloseDisc())
+				return &burnbridgev1.FinalizeLayoutResponse{Bucket: bucket, Status: "finalized"}, nil
+			},
+		},
+		activeBucket:   bucket,
+		volumeLabelRaw: bucket,
+		udfLabel:       bucket,
+		smallBatch:     newSmallObjectBatcher(nil, 1024, 8, time.Minute),
+	}
+
+	b.finalizeAndCloseDiscAfterCapacityExceeded(context.Background(), bucket)
+
+	if len(closeDiscValues) != 2 || closeDiscValues[0] || !closeDiscValues[1] {
+		t.Fatalf("expected automatic FinalizeLayout then CloseDisc despite staged flush failure, got %#v", closeDiscValues)
+	}
+}
+
 type testUploadObjectStream struct {
 	mu         sync.Mutex
 	sendChunks []*burnbridgev1.UploadObjectChunk
@@ -3836,6 +4100,13 @@ func (s *testUploadObjectStream) Recv() (*burnbridgev1.UploadObjectAck, error) {
 			BytesReceived:     chunk.GetOffset() + int64(len(chunk.GetData())),
 			UploadComplete:    chunk.GetEof(),
 			SegmentBurnResult: burnbridgev1.SegmentBurnResult_SEGMENT_BURN_RESULT_OK,
+		}
+		if chunk.GetEof() && len(s.ackQueue) > 0 {
+			template := s.ackQueue[len(s.ackQueue)-1]
+			ack.DiscExtents = template.GetDiscExtents()
+			if ack.ByteSize == 0 && template.GetByteSize() != 0 {
+				ack.ByteSize = template.GetByteSize()
+			}
 		}
 		s.recvIndex++
 		return ack, nil
@@ -4134,7 +4405,7 @@ func TestPutObjectComputesChecksumWhenTailAckOmitsFinalChecksum(t *testing.T) {
 	}
 }
 
-func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
+func TestSmallObjectStageFlushesOnePackOnFinalize(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
 	if err != nil {
@@ -4147,20 +4418,28 @@ func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
 	payloadB := []byte("bb")
 	stream := &testUploadObjectStream{
 		dynamicAck: true,
+		ackQueue: []*burnbridgev1.UploadObjectAck{
+			{
+				DiscExtents: []*burnbridgev1.DiscExtent{
+					{DiscAddress: "1000", FileSize: 4096},
+				},
+			},
+		},
 	}
 	var createCalls atomic.Int32
 	var uploadCalls atomic.Int32
 	var commitCalls atomic.Int32
 	var commitBatchCalls atomic.Int32
+	var commitReq atomic.Pointer[burnbridgev1.CommitJobRequest]
 	b := &BurnBridge{
 		meta: store,
 		grpc: testBurnBridgeClient{
 			createJobFn: func(_ context.Context, req *burnbridgev1.CreateJobRequest, _ ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
 				createCalls.Add(1)
-				if req.GetObjectKey() == "a.txt" {
-					return &burnbridgev1.CreateJobResponse{JobId: "job-a"}, nil
+				if !strings.HasPrefix(req.GetObjectKey(), ".__burnbridge_pack__/") {
+					t.Fatalf("expected hidden pack CreateJob, got object key %q", req.GetObjectKey())
 				}
-				return &burnbridgev1.CreateJobResponse{JobId: "job-b"}, nil
+				return &burnbridgev1.CreateJobResponse{JobId: "job-pack"}, nil
 			},
 			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
 				uploadCalls.Add(1)
@@ -4168,6 +4447,7 @@ func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
 			},
 			commitJobFn: func(_ context.Context, req *burnbridgev1.CommitJobRequest, _ ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
 				commitCalls.Add(1)
+				commitReq.Store(req)
 				return &burnbridgev1.CommitJobResponse{JobId: req.GetJobId(), Status: "layout_persisted"}, nil
 			},
 			commitJobBatchFn: func(_ context.Context, req *burnbridgev1.CommitJobBatchRequest, _ ...grpc.CallOption) (*burnbridgev1.CommitJobBatchResponse, error) {
@@ -4181,6 +4461,9 @@ func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
 			cancelJobFn: func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error) {
 				return &burnbridgev1.CancelJobResponse{}, nil
 			},
+			finalizeFn: func(_ context.Context, req *burnbridgev1.FinalizeLayoutRequest, _ ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				return &burnbridgev1.FinalizeLayoutResponse{Bucket: req.GetBucket(), Status: "finalized"}, nil
+			},
 		},
 		chunkSize:        1024,
 		cancelJobTimeout: time.Second,
@@ -4190,47 +4473,418 @@ func TestSmallObjectBatchReusesOneUploadObjectStream(t *testing.T) {
 		udfLabel:         "DISC-A",
 	}
 	b.smallBatch = newSmallObjectBatcher(b, 1024, 8, 50*time.Millisecond)
-	b.smallBatch.start()
 
-	var wg sync.WaitGroup
-	errCh := make(chan error, 2)
 	put := func(key string, payload []byte) {
-		defer wg.Done()
 		_, err := b.PutObject(context.Background(), s3response.PutObjectInput{
 			Bucket:        ptr(bucket),
 			Key:           ptr(key),
 			Body:          bytes.NewReader(payload),
 			ContentLength: ptr(int64(len(payload))),
 		})
-		errCh <- err
-	}
-	wg.Add(2)
-	go put("a.txt", payloadA)
-	go put("b.txt", payloadB)
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := uploadCalls.Load(); got != 1 {
-		t.Fatalf("expected one shared UploadObject stream, got %d", got)
+	put("a.txt", payloadA)
+	put("b.txt", payloadB)
+
+	if got := uploadCalls.Load(); got != 0 {
+		t.Fatalf("expected no UploadObject stream before finalize, got %d", got)
 	}
-	if got := createCalls.Load(); got != 2 {
-		t.Fatalf("expected two CreateJob calls, got %d", got)
+	if got := createCalls.Load(); got != 0 {
+		t.Fatalf("expected no hidden pack CreateJob before finalize, got %d", got)
 	}
 	if got := commitCalls.Load(); got != 0 {
-		t.Fatalf("expected no individual CommitJob calls, got %d", got)
+		t.Fatalf("expected no hidden pack CommitJob before finalize, got %d", got)
 	}
-	if got := commitBatchCalls.Load(); got != 1 {
-		t.Fatalf("expected one CommitJobBatch call, got %d", got)
+
+	finalizeReq := &burnbridgeControlRequest{
+		Action:      burnbridgeControlActionFinalizeLayout,
+		RequestTime: time.Now().UTC().UnixMilli(),
+		RequestID:   "finalize-staged-small-objects",
+		Key:         "v1/finalize-layout",
 	}
-	if len(stream.sendChunks) != 2 {
-		t.Fatalf("expected two payload chunks, got %d", len(stream.sendChunks))
+	if _, err := b.invokeFinalizeLayoutAgainstRecorder(context.Background(), bucket, finalizeReq); err != nil {
+		t.Fatal(err)
 	}
-	if stream.sendChunks[0].GetJobId() == stream.sendChunks[1].GetJobId() {
-		t.Fatalf("expected distinct job ids in shared stream")
+
+	if got := uploadCalls.Load(); got != 1 {
+		t.Fatalf("expected one staged UploadObject stream on finalize, got %d", got)
+	}
+	if got := createCalls.Load(); got != 1 {
+		t.Fatalf("expected one hidden pack CreateJob call on finalize, got %d", got)
+	}
+	if got := commitCalls.Load(); got != 1 {
+		t.Fatalf("expected one hidden pack CommitJob call on finalize, got %d", got)
+	}
+	if got := commitBatchCalls.Load(); got != 0 {
+		t.Fatalf("expected no CommitJobBatch calls in safe activation mode, got %d", got)
+	}
+	if len(stream.sendChunks) != 5 {
+		t.Fatalf("expected one request chunk and four payload chunks, got %d", len(stream.sendChunks))
+	}
+	var dataBytes int
+	for i, chunk := range stream.sendChunks {
+		if chunk.GetJobId() != "job-pack" {
+			t.Fatalf("expected hidden pack job id on stream chunk %d, got %q", i, chunk.GetJobId())
+		}
+		dataBytes += len(chunk.GetData())
+	}
+	if dataBytes != 4096 {
+		t.Fatalf("expected 4096-byte aligned pack payload, got %d", dataBytes)
+	}
+	req := commitReq.Load()
+	if req == nil {
+		t.Fatal("expected CommitJob request")
+	}
+	if req.GetJobId() != "job-pack" {
+		t.Fatalf("expected pack job commit, got %q", req.GetJobId())
+	}
+	if req.GetFinalizeManifest() == nil || len(req.GetFinalizeManifest().GetFiles()) != 2 {
+		t.Fatalf("expected two manifest files, got %#v", req.GetFinalizeManifest())
+	}
+	filesByKey := make(map[string]*burnbridgev1.FinalizeFile)
+	for _, file := range req.GetFinalizeManifest().GetFiles() {
+		filesByKey[file.GetObjectKey()] = file
+	}
+	if filesByKey["a.txt"] == nil || filesByKey["b.txt"] == nil {
+		t.Fatalf("unexpected manifest object keys: %#v", filesByKey)
+	}
+	expectedSizes := map[string]int64{
+		"a.txt": int64(len(payloadA)),
+		"b.txt": int64(len(payloadB)),
+	}
+	seenAddresses := make(map[string]bool)
+	for key, file := range filesByKey {
+		if file.GetFileSize() != expectedSizes[key] {
+			t.Fatalf("unexpected %s file size: %d", key, file.GetFileSize())
+		}
+		if len(file.GetSegments()) != 1 || len(file.GetSegments()[0].GetDiscExtents()) != 1 {
+			t.Fatalf("expected one segment and one extent for %s, got %#v", key, file)
+		}
+		extent := file.GetSegments()[0].GetDiscExtents()[0]
+		if extent.GetFileSize() != expectedSizes[key] {
+			t.Fatalf("unexpected %s extent size: %#v", key, extent)
+		}
+		seenAddresses[extent.GetDiscAddress()] = true
+	}
+	if !seenAddresses["1000"] || !seenAddresses["1001"] {
+		t.Fatalf("expected manifest extents to cover pack blocks 1000 and 1001, got %#v", seenAddresses)
+	}
+}
+
+func TestSmallObjectStageSkipsRecorderImportedProbeForNewObject(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	var importedStateCalls atomic.Int32
+	var readyCalls atomic.Int32
+	var discInfoCalls atomic.Int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				importedStateCalls.Add(1)
+				return nil, fmt.Errorf("unexpected imported state probe")
+			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				readyCalls.Add(1)
+				return nil, fmt.Errorf("unexpected TestUnitReady probe")
+			},
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				discInfoCalls.Add(1)
+				return nil, fmt.Errorf("unexpected GetDiscInfo probe")
+			},
+		},
+		activeBucket: bucket,
+		metaDBPath:   dbPath,
+		putQueueSem:  make(chan struct{}, 1),
+	}
+	b.smallBatch = newSmallObjectBatcher(b, 1024, 8, 50*time.Millisecond)
+
+	payload := []byte("small staged payload")
+	out, err := b.PutObject(context.Background(), s3response.PutObjectInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr("new-small.txt"),
+		Body:          bytes.NewReader(payload),
+		ContentLength: ptr(int64(len(payload))),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := importedStateCalls.Load(); got != 0 {
+		t.Fatalf("expected no imported state probe for new staged object, got %d", got)
+	}
+	if got := readyCalls.Load(); got != 0 {
+		t.Fatalf("expected no TestUnitReady probe for new staged object, got %d", got)
+	}
+	if got := discInfoCalls.Load(); got != 0 {
+		t.Fatalf("expected no GetDiscInfo probe for new staged object, got %d", got)
+	}
+	expectedSum := md5.Sum(payload)
+	expectedETag := fmt.Sprintf("\"%x\"", expectedSum[:])
+	if out.ETag != expectedETag {
+		t.Fatalf("unexpected etag: %q", out.ETag)
+	}
+	stage, err := b.loadSmallObjectStage(bucket, "new-small.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stage == nil || stage.LogicalSize != int64(len(payload)) {
+		t.Fatalf("unexpected stage record: %#v", stage)
+	}
+}
+
+func TestSmallObjectStageCapacityIncludesExistingStagedBytes(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:                bucket,
+		WritableCapacityBytes: 4096,
+		FreeCapacityBytes:     4096,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, bucket, "already-staged.bin", &meta.BurnbridgeCommittedRecord{
+		JobID:        "staged-small-object",
+		Status:       "staged",
+		Size:         1,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stageRaw, err := json.Marshal(&smallObjectStageRecord{
+		Bucket:       bucket,
+		Key:          "already-staged.bin",
+		PackPath:     filepath.Join(t.TempDir(), "stage.pack"),
+		LogicalSize:  1,
+		PhysicalSize: 4096,
+		CreatedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, bucket, "already-staged.bin", burnbridgeSmallObjectStageAttr, stageRaw); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:           store,
+		activeBucket:   bucket,
+		volumeLabelRaw: bucket,
+		metaDBPath:     dbPath,
+		putQueueSem:    make(chan struct{}, 1),
+	}
+	b.smallBatch = newSmallObjectBatcher(b, 1024, 8, time.Minute)
+
+	_, err = b.PutObject(context.Background(), s3response.PutObjectInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr("new-small.bin"),
+		Body:          bytes.NewReader([]byte("x")),
+		ContentLength: ptr(int64(1)),
+	})
+	if err == nil {
+		t.Fatal("expected capacity error because existing staged bytes already consume writable capacity")
+	}
+	if _, stageErr := b.loadSmallObjectStage(bucket, "new-small.bin"); !errors.Is(stageErr, meta.ErrNoSuchKey) {
+		t.Fatalf("new object should not be staged after capacity failure, got %v", stageErr)
+	}
+}
+
+func TestSmallObjectPackStripePaddingUsesBucketRedundancyConfig(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	for key, value := range map[string]string{
+		"redundancy_enabled":            "true",
+		"redundancy_data_block_count":   "12",
+		"redundancy_parity_block_count": "3",
+		"redundancy_block_size_bytes":   "4096",
+	} {
+		if err := store.StoreAttribute(nil, bucket, "", key, []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	b := &BurnBridge{meta: store}
+	// 12 data blocks * 4096 bytes = 49152 bytes per RS data stripe.
+	if got, want := b.smallObjectPackStripePadding(bucket, 50000), int64(48304); got != want {
+		t.Fatalf("expected padding from configured stripe size, got %d want %d", got, want)
+	}
+	if got := b.smallObjectPackStripePadding(bucket, 49152); got != 0 {
+		t.Fatalf("expected no padding for exact configured stripe, got %d", got)
+	}
+}
+
+func TestSmallObjectPackStripePaddingSkipsWhenRedundancyDisabled(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	for key, value := range map[string]string{
+		"redundancy_enabled":            "false",
+		"redundancy_data_block_count":   "12",
+		"redundancy_parity_block_count": "3",
+		"redundancy_block_size_bytes":   "4096",
+	} {
+		if err := store.StoreAttribute(nil, bucket, "", key, []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	b := &BurnBridge{meta: store}
+	if got := b.smallObjectPackStripePadding(bucket, 50000); got != 0 {
+		t.Fatalf("expected no padding when RS is disabled, got %d", got)
+	}
+}
+
+func TestSmallObjectPackStripePaddingSkipsWhenParityDisabled(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	for key, value := range map[string]string{
+		"redundancy_enabled":            "true",
+		"redundancy_data_block_count":   "12",
+		"redundancy_parity_block_count": "0",
+		"redundancy_block_size_bytes":   "4096",
+	} {
+		if err := store.StoreAttribute(nil, bucket, "", key, []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	b := &BurnBridge{meta: store}
+	if got := b.smallObjectPackStripePadding(bucket, 50000); got != 0 {
+		t.Fatalf("expected no padding when RS parity is disabled, got %d", got)
+	}
+}
+
+func TestSmallObjectPackStripePaddingSkipsWithoutCompleteRedundancyConfig(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	if err := store.StoreAttribute(nil, bucket, "", "redundancy_enabled", []byte("true")); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, bucket, "", "redundancy_parity_block_count", []byte("2")); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{meta: store}
+	if got := b.smallObjectPackStripePadding(bucket, 50000); got != 0 {
+		t.Fatalf("expected no padding without explicit data block and block size config, got %d", got)
+	}
+}
+
+func TestSmallObjectPackManifestFallsBackToPersistedSegmentExtents(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket  = "DISC-A"
+		packKey = ".__burnbridge_pack__/pack-001.pack"
+	)
+	if err := store.UpsertBurnObjectSegment(bucket, packKey, bucket, 0, 0, 4096, "pack-md5", meta.BurnSegmentSucceeded, []meta.BurnDiscExtent{
+		{DiscAddress: "5000", FileSize: 4096},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	reqA := &smallObjectBatchRequest{bucket: bucket, key: "a.txt"}
+	reqB := &smallObjectBatchRequest{bucket: bucket, key: "b.txt"}
+	entries := []smallObjectPackEntry{
+		{req: reqA, logicalSize: 2, physicalSize: 2048, startOffset: 0, checksumMD5: bbSegmentMD5Hex([]byte("aa"))},
+		{req: reqB, logicalSize: 2, physicalSize: 2048, startOffset: 2048, checksumMD5: bbSegmentMD5Hex([]byte("bb"))},
+	}
+	b := &BurnBridge{meta: store}
+	manifest, err := b.buildSmallObjectPackFinalizeManifest(bucket, packKey, entries, &burnbridgev1.UploadObjectAck{UploadComplete: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest == nil || len(manifest.GetFiles()) != 2 {
+		t.Fatalf("expected two manifest files, got %#v", manifest)
+	}
+	filesByKey := make(map[string]*burnbridgev1.FinalizeFile)
+	for _, file := range manifest.GetFiles() {
+		filesByKey[file.GetObjectKey()] = file
+	}
+	if filesByKey["a.txt"] == nil || filesByKey["b.txt"] == nil {
+		t.Fatalf("unexpected manifest files: %#v", filesByKey)
+	}
+	if got := filesByKey["a.txt"].GetSegments()[0].GetDiscExtents()[0].GetDiscAddress(); got != "5000" {
+		t.Fatalf("unexpected a.txt disc address: %q", got)
+	}
+	if got := filesByKey["b.txt"].GetSegments()[0].GetDiscExtents()[0].GetDiscAddress(); got != "5001" {
+		t.Fatalf("unexpected b.txt disc address: %q", got)
+	}
+}
+
+func TestSmallObjectPackManifestCanDeferExtentSlicingToRecorder(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const (
+		bucket  = "DISC-A"
+		packKey = ".__burnbridge_pack__/pack-002.pack"
+	)
+	entries := []smallObjectPackEntry{
+		{req: &smallObjectBatchRequest{bucket: bucket, key: "a.txt"}, logicalSize: 2, physicalSize: 2048, startOffset: 0, checksumMD5: bbSegmentMD5Hex([]byte("aa"))},
+		{req: &smallObjectBatchRequest{bucket: bucket, key: "b.txt"}, logicalSize: 3, physicalSize: 2048, startOffset: 2048, checksumMD5: bbSegmentMD5Hex([]byte("bbb"))},
+	}
+	b := &BurnBridge{meta: store}
+	manifest, err := b.buildSmallObjectPackFinalizeManifest(bucket, packKey, entries, &burnbridgev1.UploadObjectAck{UploadComplete: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest == nil || len(manifest.GetFiles()) != 2 {
+		t.Fatalf("expected two manifest files, got %#v", manifest)
+	}
+	for _, file := range manifest.GetFiles() {
+		if len(file.GetSegments()) != 0 {
+			t.Fatalf("expected recorder-deferred extent slicing with no segment extents, got %#v", file)
+		}
+		if file.GetFileSize() <= 0 {
+			t.Fatalf("expected logical file size for %s, got %d", file.GetObjectKey(), file.GetFileSize())
+		}
 	}
 }
 

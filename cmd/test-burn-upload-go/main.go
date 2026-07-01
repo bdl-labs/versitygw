@@ -30,27 +30,30 @@ const (
 type mode string
 
 const (
-	modeHelp           mode = "help"
-	modeFullFlow       mode = "full-flow"
-	modeMixedFlow      mode = "mixed"
-	modeDownload       mode = "download"
-	modeRemoteDownload mode = "remote-download"
-	modeMultipartFlow  mode = "multipart"
-	modePutObjectFlow  mode = "putobject"
-	modeSmallBatchFlow mode = "small-batch"
-	modeListObjects    mode = "listobjects"
-	modeDriveInfo      mode = "driveinfo"
-	modeDiscInfo       mode = "discinfo"
-	modeFinalize       mode = "finalize"
-	modeCloseDisc      mode = "closedisc"
-	modeMediaRemoved   mode = "media-removed"
-	modeMediaInserted  mode = "media-inserted"
-	modeTrayOpen       mode = "tray-open"
-	modeTrayClose      mode = "tray-close"
-	modeHeadObject     mode = "headobject"
-	modeGetObject      mode = "getobject"
-	modeInterruptRetry mode = "interrupt-retry"
-	modeMultipartRetry mode = "multipart-interrupt-retry"
+	modeHelp            mode = "help"
+	modeFullFlow        mode = "full-flow"
+	modeMixedFlow       mode = "mixed"
+	modeDownload        mode = "download"
+	modeRemoteDownload  mode = "remote-download"
+	modeMultipartFlow   mode = "multipart"
+	modePutObjectFlow   mode = "putobject"
+	modeSmallBatchFlow  mode = "small-batch"
+	modeVarSmallBatch   mode = "var-small-batch"
+	modeSmallPackFlow   mode = "small-pack"
+	modeListObjects     mode = "listobjects"
+	modeDriveInfo       mode = "driveinfo"
+	modeDiscInfo        mode = "discinfo"
+	modeFinalize        mode = "finalize"
+	modeCloseDisc       mode = "closedisc"
+	modeMediaRemoved    mode = "media-removed"
+	modeMediaInserted   mode = "media-inserted"
+	modeTrayOpen        mode = "tray-open"
+	modeTrayClose       mode = "tray-close"
+	modeHeadObject      mode = "headobject"
+	modeGetObject       mode = "getobject"
+	modeInterruptRetry  mode = "interrupt-retry"
+	modeMultipartRetry  mode = "multipart-interrupt-retry"
+	modeMultipartResume mode = "multipart-resume"
 )
 
 type cliOptions struct {
@@ -76,6 +79,8 @@ type cliOptions struct {
 	trayCloseOnly      bool
 	singleObjectKey    string
 	singleObjectOutput string
+	resumeUploadID     string
+	resumeStartPart    int32
 	interruptRetryOnly bool
 	multipartRetryOnly bool
 	multipartPartBytes int64
@@ -83,6 +88,7 @@ type cliOptions struct {
 	smallFileCount     int
 	smallFileBytes     int64
 	smallConcurrency   int
+	variableSmallFiles bool
 	failAfterBytes     int64
 }
 
@@ -144,6 +150,14 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parseSmallBatchFlow(args[1:], true)
 	case "small-batch-md5", "smallbatch-md5", "sb-md5":
 		return parseSmallBatchFlow(args[1:], false)
+	case "var-small-batch", "varsmallbatch", "vsb":
+		return parseVarSmallBatchFlow(args[1:], true)
+	case "var-small-batch-md5", "varsmallbatch-md5", "vsb-md5":
+		return parseVarSmallBatchFlow(args[1:], false)
+	case "small-pack", "smallpack", "sp":
+		return parseSmallPackFlow(args[1:], true)
+	case "small-pack-md5", "smallpack-md5", "sp-md5":
+		return parseSmallPackFlow(args[1:], false)
 	case "mixed", "mix":
 		return parseMixedFlow(args[1:], true)
 	case "mixed-md5", "mix-md5":
@@ -184,6 +198,8 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parseInterruptRetry(args[1:])
 	case "multipart-interrupt-retry":
 		return parseMultipartInterruptRetry(args[1:])
+	case "multipart-resume", "mp-resume":
+		return parseMultipartResume(args[1:])
 	default:
 		return parseFullFlow(args), nil
 	}
@@ -282,6 +298,51 @@ func parsePutObjectFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	}, nil
 }
 
+func parseMultipartResume(args []string) (cliOptions, error) {
+	dataFile := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(dataFile) == "" {
+		return cliOptions{}, errors.New("data file is required")
+	}
+
+	bucket := positionalOrDefault(args, 1, defaultBucket)
+	objectKey := positionalOrDefault(args, 2, "")
+	if strings.TrimSpace(objectKey) == "" {
+		return cliOptions{}, errors.New("object key is required")
+	}
+	uploadID := positionalOrDefault(args, 3, "")
+	if strings.TrimSpace(uploadID) == "" {
+		return cliOptions{}, errors.New("upload id is required")
+	}
+
+	startPartRaw := positionalOrDefault(args, 4, "0")
+	startPart, err := strconv.ParseInt(strings.TrimSpace(startPartRaw), 10, 32)
+	if err != nil || startPart < 0 {
+		return cliOptions{}, fmt.Errorf("invalid startPartNumber: %s", startPartRaw)
+	}
+
+	partSizeMiBRaw := positionalOrDefault(args, 5, "32")
+	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
+	if err != nil || partSizeMiB <= 0 {
+		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
+	}
+
+	profile, configPath := parseProfileConfig(args, 6, 7)
+	return cliOptions{
+		mode:               modeMultipartResume,
+		dataDir:            dataFile,
+		bucket:             bucket,
+		awsProfile:         profile,
+		configPath:         resolveConfigPath(configPath),
+		skipBucketCreate:   true,
+		skipFinalize:       true,
+		skipMD5Verify:      true,
+		singleObjectKey:    strings.TrimSpace(objectKey),
+		resumeUploadID:     strings.TrimSpace(uploadID),
+		resumeStartPart:    int32(startPart),
+		multipartPartBytes: partSizeMiB * 1024 * 1024,
+	}, nil
+}
+
 func parseSmallBatchFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	dataDir := positionalOrDefault(args, 0, filepath.Join(defaultDataDir, "small-batch"))
 	bucket := positionalOrDefault(args, 1, defaultBucket)
@@ -313,6 +374,43 @@ func parseSmallBatchFlow(args []string, skipMD5 bool) (cliOptions, error) {
 		smallFileBytes:   size,
 		smallConcurrency: concurrency,
 	}, nil
+}
+
+func parseVarSmallBatchFlow(args []string, skipMD5 bool) (cliOptions, error) {
+	if len(args) == 0 {
+		args = []string{filepath.Join(defaultDataDir, "var-small-batch"), defaultBucket, "10000", "2048", "32"}
+	}
+	if len(args) < 3 {
+		args = append(args, "10000")
+	}
+	if len(args) < 4 {
+		args = append(args, "2048")
+	}
+	if len(args) < 5 {
+		args = append(args, "32")
+	}
+	opts, err := parseSmallBatchFlow(args, skipMD5)
+	if err != nil {
+		return cliOptions{}, err
+	}
+	opts.mode = modeVarSmallBatch
+	opts.variableSmallFiles = true
+	if opts.smallFileCount <= 0 {
+		opts.smallFileCount = 10000
+	}
+	if opts.smallFileBytes <= 0 {
+		opts.smallFileBytes = 2048
+	}
+	return opts, nil
+}
+
+func parseSmallPackFlow(args []string, skipMD5 bool) (cliOptions, error) {
+	opts, err := parseSmallBatchFlow(args, skipMD5)
+	if err != nil {
+		return cliOptions{}, err
+	}
+	opts.mode = modeSmallPackFlow
+	return opts, nil
 }
 
 func parseMixedFlow(args []string, skipMD5 bool) (cliOptions, error) {
@@ -610,9 +708,12 @@ func printUsage(stream *os.File) {
 		"  test-burn-upload-go.exe putobject-md5 [DataFile] [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe small-batch [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe small-batch-md5 [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe var-small-batch [DataDir] [Bucket] [FileCount] [MaxFileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe var-small-batch-md5 [DataDir] [Bucket] [FileCount] [MaxFileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart-md5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe multipart-nomd5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe multipart-resume [DataFile] [Bucket] [ObjectKey] [UploadId] [StartPartNumber] [PartSizeMiB] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe download [DataDir] [Bucket] [AwsProfile] [ConfigPath] [nomd5]",
 		"  test-burn-upload-go.exe download-nomd5 [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe remote-download [Bucket] [AwsProfile] [ConfigPath]",
@@ -634,7 +735,7 @@ func printUsage(stream *os.File) {
 		"",
 		"Short aliases:",
 		"  ls=listobjects, drive=driveinfo, disc=discinfo, open=tray-open, close=tray-close",
-		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, put=putobject, po=putobject, sb=small-batch, mp=multipart, mix=mixed",
+		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, put=putobject, po=putobject, sb=small-batch, vsb=var-small-batch, mp=multipart, mix=mixed",
 		"",
 		"Config resolution:",
 		"  1. explicit ConfigPath argument",

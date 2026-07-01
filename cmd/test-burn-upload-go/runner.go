@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"encoding/binary"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
@@ -83,6 +84,8 @@ type runner struct {
 	logger            *runLogger
 	sampler           *memorySampler
 	uploadedKeys      map[string]struct{}
+	writableBudget    int64
+	writableBudgetAt  time.Time
 }
 
 type runLogger struct {
@@ -117,6 +120,19 @@ type fileMetric struct {
 	ActualMD5            string
 	Status               string
 	Notes                string
+}
+
+type smallPackManifest struct {
+	Version int              `json:"version"`
+	Files   []smallPackEntry `json:"files"`
+}
+
+type smallPackEntry struct {
+	Key          string `json:"key"`
+	Offset       int64  `json:"offset"`
+	LogicalSize  int64  `json:"logicalSize"`
+	PhysicalSize int64  `json:"physicalSize"`
+	ChecksumMD5  string `json:"checksumMd5"`
 }
 
 type runSummary struct {
@@ -278,15 +294,19 @@ type failingReader struct {
 
 var errSimulatedDisconnect = errors.New("simulated upload disconnect")
 
+func isSmallBatchMode(m mode) bool {
+	return m == modeSmallBatchFlow || m == modeVarSmallBatch
+}
+
 func newRunner(opts cliOptions) (*runner, error) {
 	opts.bucket = strings.TrimSpace(strings.ToUpper(opts.bucket))
-	if opts.interruptRetryOnly || opts.multipartRetryOnly || opts.mode == modeMultipartFlow || opts.mode == modePutObjectFlow {
+	if opts.interruptRetryOnly || opts.multipartRetryOnly || opts.mode == modeMultipartFlow || opts.mode == modeMultipartResume || opts.mode == modePutObjectFlow {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || info.IsDir() {
 			return nil, fmt.Errorf("data file not found: %s", opts.dataDir)
 		}
 	}
-	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modePutObjectFlow && opts.mode != modeSmallBatchFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
+	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modeMultipartResume && opts.mode != modePutObjectFlow && !isSmallBatchMode(opts.mode) && opts.mode != modeSmallPackFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("data directory not found: %s", opts.dataDir)
@@ -372,7 +392,7 @@ func (r *runner) run() (err error) {
 	r.logf("MediaInsertedOnly: %t", r.opts.mediaInsertedOnly)
 	r.logf("InterruptRetryOnly: %t", r.opts.interruptRetryOnly)
 	r.logf("MultipartRetryOnly: %t", r.opts.multipartRetryOnly)
-	if r.opts.mode == modeSmallBatchFlow {
+	if isSmallBatchMode(r.opts.mode) || r.opts.mode == modeSmallPackFlow {
 		r.logf("SmallFileCount: %d", r.opts.smallFileCount)
 		r.logf("SmallFileBytes: %d", r.opts.smallFileBytes)
 		r.logf("SmallConcurrency: %d", r.opts.smallConcurrency)
@@ -474,12 +494,16 @@ func (r *runner) run() (err error) {
 		err = r.runInterruptRetry(dataBucket, controlBucket)
 	case r.opts.multipartRetryOnly:
 		err = r.runMultipartInterruptRetry(dataBucket, controlBucket)
+	case r.opts.mode == modeMultipartResume:
+		err = r.runMultipartResume(dataBucket)
 	case r.opts.mode == modeMultipartFlow:
 		err = r.runMultipartFlow(dataBucket, controlBucket)
 	case r.opts.mode == modePutObjectFlow:
 		err = r.runPutObjectFlow(dataBucket, controlBucket)
-	case r.opts.mode == modeSmallBatchFlow:
+	case isSmallBatchMode(r.opts.mode):
 		err = r.runSmallBatchFlow(dataBucket, controlBucket, metrics, finalizeOutputPath, testStart)
+	case r.opts.mode == modeSmallPackFlow:
+		err = r.runSmallPackFlow(dataBucket, controlBucket, metrics, finalizeOutputPath, testStart)
 	case strings.TrimSpace(r.opts.singleObjectKey) != "":
 		err = r.runSingleObjectDownload(dataBucket)
 	default:
@@ -495,7 +519,7 @@ func (r *runner) run() (err error) {
 		return err
 	}
 
-	if len(metrics) > 0 {
+	if len(metrics) > 0 && !isSmallBatchMode(r.opts.mode) && r.opts.mode != modeSmallPackFlow {
 		totalBytes := int64(0)
 		uploadSeconds := 0.0
 		downloadSeconds := 0.0
@@ -1047,13 +1071,7 @@ func (r *runner) runMultipartInterruptRetry(bucket, controlBucket string) error 
 	}
 
 	r.logf("[5/9] Initiating multipart upload...")
-	createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
-	defer cancelCreate()
-	createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
-		Bucket:   &bucket,
-		Key:      &objectKey,
-		Metadata: multipartObjectSizeMetadata(source.Size),
-	})
+	createOut, err := r.createMultipartUpload(bucket, objectKey, multipartObjectSizeMetadata(source.Size))
 	if err != nil {
 		return err
 	}
@@ -1252,13 +1270,7 @@ func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 	}
 
 	r.logf("[4/8] Initiating multipart upload...")
-	createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
-	defer cancelCreate()
-	createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
-		Bucket:   &bucket,
-		Key:      &objectKey,
-		Metadata: multipartObjectSizeMetadata(source.Size),
-	})
+	createOut, err := r.createMultipartUpload(bucket, objectKey, multipartObjectSizeMetadata(source.Size))
 	if err != nil {
 		return err
 	}
@@ -1355,6 +1367,148 @@ func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 		r.logf("  md5              : %s", actualMD5)
 	}
 	r.logf("  summary json     : %s", r.summaryJSONPath)
+	return nil
+}
+
+func (r *runner) runMultipartResume(bucket string) error {
+	testStart := time.Now()
+	source, err := buildSingleFileSource(r.opts.dataDir, false)
+	if err != nil {
+		return err
+	}
+	objectKey := strings.TrimSpace(r.opts.singleObjectKey)
+	uploadID := strings.TrimSpace(r.opts.resumeUploadID)
+	if objectKey == "" || uploadID == "" {
+		return fmt.Errorf("multipart resume requires object key and upload id")
+	}
+
+	partSize := r.effectiveMultipartPartSize()
+	if partSize <= 0 {
+		return fmt.Errorf("invalid multipart part size: %d", partSize)
+	}
+	totalParts := int32((source.Size + partSize - 1) / partSize)
+	startPart := r.opts.resumeStartPart
+	if startPart <= 0 {
+		startPart = 1
+	}
+	if startPart > totalParts+1 {
+		return fmt.Errorf("start part %d is beyond total parts %d", startPart, totalParts)
+	}
+
+	r.logf("[3/6] Preparing multipart resume source file...")
+	r.logf("  objectKey      : %s", objectKey)
+	r.logf("  uploadId       : %s", uploadID)
+	r.logf("  filePath       : %s", source.FullPath)
+	r.logf("  fileSizeBytes  : %d", source.Size)
+	r.logf("  partSizeBytes  : %d", partSize)
+	r.logf("  requestedStart : %d", startPart)
+	r.logf("  totalParts     : %d", totalParts)
+
+	r.logf("[4/6] Listing existing multipart parts...")
+	completedParts, err := r.listCompletedMultipartParts(bucket, objectKey, uploadID)
+	if err != nil {
+		return err
+	}
+	seen := make(map[int32]string, len(completedParts))
+	nextPart := int32(1)
+	for _, part := range completedParts {
+		if part.PartNumber == nil {
+			continue
+		}
+		partNumber := *part.PartNumber
+		if partNumber <= 0 {
+			continue
+		}
+		seen[partNumber] = strings.TrimSpace(awsString(part.ETag))
+		if partNumber == nextPart {
+			nextPart++
+		}
+	}
+	if len(completedParts) > 0 {
+		r.logf("  existing completed parts : %d", len(completedParts))
+		r.logf("  next missing part        : %d", nextPart)
+	} else {
+		r.logf("  existing completed parts : 0")
+	}
+	if startPart < nextPart {
+		r.logf("  requested start part %d is already completed; resuming from %d", startPart, nextPart)
+		startPart = nextPart
+	}
+
+	r.logf("[5/6] Uploading remaining parts...")
+	uploadSeconds := 0.0
+	uploadedBytes := int64(0)
+	for partNumber := startPart; partNumber <= totalParts; partNumber++ {
+		if _, ok := seen[partNumber]; ok {
+			continue
+		}
+		offset := int64(partNumber-1) * partSize
+		size := partSize
+		if remaining := source.Size - offset; remaining < size {
+			size = remaining
+		}
+		if size <= 0 {
+			continue
+		}
+
+		start := time.Now()
+		partOut, err := r.uploadPartFromFile(bucket, objectKey, uploadID, partNumber, source.FullPath, offset, size)
+		if err != nil {
+			return fmt.Errorf("resume upload part %d: %w", partNumber, err)
+		}
+		seconds := roundSeconds(time.Since(start))
+		uploadSeconds += seconds
+		uploadedBytes += size
+		etag := strings.TrimSpace(awsString(partOut.ETag))
+		seen[partNumber] = etag
+		r.logf("    part %d | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s | etag=%s", partNumber, formatSizeMiB(size), seconds, rateMiBPerSecond(size, seconds), etag)
+	}
+
+	completedParts, err = r.listCompletedMultipartParts(bucket, objectKey, uploadID)
+	if err != nil {
+		return err
+	}
+	if int32(len(completedParts)) != totalParts {
+		return fmt.Errorf("multipart resume incomplete: completed=%d total=%d", len(completedParts), totalParts)
+	}
+	for i, part := range completedParts {
+		expected := int32(i + 1)
+		if part.PartNumber == nil || *part.PartNumber != expected {
+			actual := int32(0)
+			if part.PartNumber != nil {
+				actual = *part.PartNumber
+			}
+			return fmt.Errorf("multipart resume has non-contiguous part order at index %d: got=%d want=%d", i, actual, expected)
+		}
+	}
+
+	r.logf("[6/6] Completing resumed multipart upload...")
+	completeCtx, cancelComplete := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	defer cancelComplete()
+	completeStart := time.Now()
+	completeOut, err := r.client.CompleteMultipartUpload(completeCtx, &s3.CompleteMultipartUploadInput{
+		Bucket:   &bucket,
+		Key:      &objectKey,
+		UploadId: &uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{
+			Parts: completedParts,
+		},
+		MpuObjectSize: int64Ptr(source.Size),
+	})
+	if err != nil {
+		return err
+	}
+	completeSeconds := roundSeconds(time.Since(completeStart))
+	if uploadedBytes == 0 {
+		r.logf("  uploadSeconds  : 0.000s")
+		r.logf("  uploadRate     : n/a (all parts were already uploaded)")
+	} else {
+		r.logf("  uploadSeconds  : %.3fs", uploadSeconds)
+		r.logf("  uploadRate     : %.3f MiB/s", rateMiBPerSecond(uploadedBytes, uploadSeconds))
+	}
+	r.logf("  completeElapsed: %.3fs", completeSeconds)
+	r.logf("  completeETag   : %s", strings.TrimSpace(awsString(completeOut.ETag)))
+	r.logf("  totalElapsed   : %.3fs", roundSeconds(time.Since(testStart)))
 	return nil
 }
 
@@ -1486,13 +1640,20 @@ func (r *runner) runPutObjectFlow(bucket, controlBucket string) error {
 
 func (r *runner) runSmallBatchFlow(bucket, controlBucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) error {
 	r.logf("[3/8] Preparing deterministic small-file dataset...")
-	if err := prepareSmallBatchDataset(r.opts.dataDir, r.opts.smallFileCount, r.opts.smallFileBytes); err != nil {
+	if r.opts.variableSmallFiles {
+		if err := prepareVariableSmallBatchDataset(r.opts.dataDir, r.opts.smallFileCount, r.opts.smallFileBytes); err != nil {
+			return err
+		}
+	} else if err := prepareSmallBatchDataset(r.opts.dataDir, r.opts.smallFileCount, r.opts.smallFileBytes); err != nil {
 		return err
 	}
 	snapshot, err := getLocalFileMap(r.opts.dataDir, !r.opts.skipMD5Verify)
 	if err != nil {
 		return err
 	}
+	smallObjectPrefix := buildSmallBatchObjectPrefix(r.opts.dataDir, r.runRoot)
+	applyObjectKeyPrefix(&snapshot, smallObjectPrefix)
+	r.logf("  remote prefix  : %s", smallObjectPrefix)
 	for _, item := range snapshot.Items {
 		metrics[item.RelativePath] = &fileMetric{
 			RelativePath: item.RelativePath,
@@ -1508,7 +1669,11 @@ func (r *runner) runSmallBatchFlow(bucket, controlBucket string, metrics map[str
 		totalBytes += item.Size
 	}
 	r.logf("  small files    : %d", len(snapshot.Items))
-	r.logf("  file size      : %d bytes", r.opts.smallFileBytes)
+	if r.opts.variableSmallFiles {
+		r.logf("  file size      : 1..%d bytes", r.opts.smallFileBytes)
+	} else {
+		r.logf("  file size      : %d bytes", r.opts.smallFileBytes)
+	}
 	r.logf("  total size     : %s MiB", formatSizeMiB(totalBytes))
 	r.logf("  concurrency    : %d", r.opts.smallConcurrency)
 
@@ -1667,6 +1832,309 @@ func (r *runner) runSmallBatchFlow(bucket, controlBucket string, metrics map[str
 	return nil
 }
 
+func (r *runner) runSmallPackFlow(bucket, controlBucket string, metrics map[string]*fileMetric, finalizeOutputPath string, testStart time.Time) error {
+	r.logf("[3/8] Preparing deterministic small-file dataset...")
+	if err := prepareSmallBatchDataset(r.opts.dataDir, r.opts.smallFileCount, r.opts.smallFileBytes); err != nil {
+		return err
+	}
+	snapshot, err := getLocalFileMap(r.opts.dataDir, !r.opts.skipMD5Verify)
+	if err != nil {
+		return err
+	}
+	smallObjectPrefix := buildSmallBatchObjectPrefix(r.opts.dataDir, r.runRoot)
+	applyObjectKeyPrefix(&snapshot, smallObjectPrefix)
+	totalBytes := int64(0)
+	for _, item := range snapshot.Items {
+		totalBytes += item.Size
+		metrics[item.RelativePath] = &fileMetric{
+			RelativePath: item.RelativePath,
+			FullName:     item.FullPath,
+			SizeBytes:    item.Size,
+			SizeMiB:      roundFloat(float64(item.Size)/(1024*1024), 3),
+			ExpectedMD5:  item.MD5,
+			Status:       "Pending",
+		}
+	}
+	r.logf("  remote prefix  : %s", smallObjectPrefix)
+	r.logf("  small files    : %d", len(snapshot.Items))
+	if r.opts.variableSmallFiles {
+		r.logf("  file size      : 1..%d bytes", r.opts.smallFileBytes)
+	} else {
+		r.logf("  file size      : %d bytes", r.opts.smallFileBytes)
+	}
+	r.logf("  total size     : %s MiB", formatSizeMiB(totalBytes))
+	r.logf("  upload mode    : direct small-pack PutObject")
+
+	if stop, reason := r.shouldStopForFinalize(controlBucket, totalBytes); stop {
+		r.logf("  small pack would cross finalize threshold (%s); running FinalizeLayout without CloseDisc", reason)
+		_, err := r.finalizeLayoutOnly(controlBucket, finalizeOutputPath)
+		return err
+	}
+
+	r.logf("[4/8] Building and uploading one small-pack object...")
+	buildStart := time.Now()
+	packBody, packObjectKey, err := buildSmallPackBody(snapshot.Items, r.runRoot)
+	if err != nil {
+		return err
+	}
+	r.logf("  pack object    : %s", packObjectKey)
+	r.logf("  pack bytes     : %d", len(packBody))
+	r.logf("  build elapsed  : %.3fs", roundSeconds(time.Since(buildStart)))
+
+	uploadStart := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+	_, err = r.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:        &bucket,
+		Key:           &packObjectKey,
+		Body:          bytes.NewReader(packBody),
+		ContentLength: int64Ptr(int64(len(packBody))),
+		Metadata: map[string]string{
+			"burnbridge-small-pack": "true",
+		},
+	})
+	cancel()
+	if err != nil {
+		return err
+	}
+	uploadSeconds := roundSeconds(time.Since(uploadStart))
+	for _, item := range snapshot.Items {
+		if metric := metrics[item.RelativePath]; metric != nil {
+			metric.UploadSeconds = uploadSeconds
+			metric.UploadMiBPerSecond = rateMiBPerSecond(totalBytes, uploadSeconds)
+			metric.Status = "Uploaded"
+			metric.Notes = "small-pack-direct"
+		}
+		r.uploadedKeys[item.RelativePath] = struct{}{}
+	}
+	r.logf("  upload total   : %.3fs @ %.3f MiB/s", uploadSeconds, rateMiBPerSecond(totalBytes, uploadSeconds))
+
+	r.logf("[7/8] Triggering FinalizeLayout...")
+	finalizeStart := time.Now()
+	controlKey, finalizeRaw, err := r.downloadControlObject(controlBucket, "finalize-layout", finalizeOutputPath)
+	if err != nil {
+		return err
+	}
+	finalizeSeconds := roundSeconds(time.Since(finalizeStart))
+	r.logf("  finalize control key : %s", controlKey)
+	r.logf("  finalize elapsed     : %.3fs", finalizeSeconds)
+	r.writeFinalizeSummary(finalizeRaw, bucket)
+
+	r.logf("[8/8] Sampling downloads and verifying result...")
+	verifyDir := filepath.Join(r.cfg.verifyDownloadRoot, bucket)
+	sample := sampleSourceItems(snapshot.Items, 100)
+	downloadSeconds := 0.0
+	for _, item := range sample {
+		targetPath := filepath.Join(verifyDir, filepath.FromSlash(item.RelativePath))
+		if err := ensureDir(filepath.Dir(targetPath)); err != nil {
+			return err
+		}
+		start := time.Now()
+		if err := r.downloadObjectToFile(bucket, item.RelativePath, targetPath, defaultReadTimeout); err != nil {
+			return err
+		}
+		seconds := roundSeconds(time.Since(start))
+		info, err := os.Stat(targetPath)
+		if err != nil {
+			return fmt.Errorf("downloaded file missing: %s", item.RelativePath)
+		}
+		if info.Size() != item.Size {
+			return fmt.Errorf("downloaded size mismatch for %s", item.RelativePath)
+		}
+		actualMD5 := ""
+		if !r.opts.skipMD5Verify {
+			actualMD5, err = computeMD5(targetPath)
+			if err != nil {
+				return err
+			}
+			if actualMD5 != item.MD5 {
+				return fmt.Errorf("downloaded MD5 mismatch for %s", item.RelativePath)
+			}
+		}
+		if metric := metrics[item.RelativePath]; metric != nil {
+			metric.DownloadSeconds = seconds
+			metric.DownloadMiBPerSecond = rateMiBPerSecond(item.Size, seconds)
+			metric.ActualMD5 = actualMD5
+			metric.Status = "Verified"
+		}
+		downloadSeconds += seconds
+	}
+
+	summary := &runSummary{
+		Status:                  "Success",
+		Bucket:                  bucket,
+		RequestedBucket:         r.opts.bucket,
+		DataDirectory:           r.opts.dataDir,
+		RemoteOnly:              false,
+		FileCount:               len(snapshot.Items),
+		TotalBytes:              totalBytes,
+		TotalMiB:                roundFloat(float64(totalBytes)/(1024*1024), 3),
+		UploadSeconds:           roundFloat(uploadSeconds, 3),
+		UploadMiBPerSecond:      rateMiBPerSecond(totalBytes, uploadSeconds),
+		FinalizeLayoutSeconds:   roundFloat(finalizeSeconds, 3),
+		DownloadSeconds:         roundFloat(downloadSeconds, 3),
+		DownloadMiBPerSecond:    rateMiBPerSecond(sampleTotalBytes(sample), downloadSeconds),
+		TotalTestSeconds:        roundSeconds(time.Since(testStart)),
+		RunRoot:                 r.runRoot,
+		MetricsCSVPath:          r.metricsCSVPath,
+		MemoryCSVPath:           r.memoryCSVPath,
+		MemorySummaryPath:       r.memorySummaryPath,
+		FinalizeResponsePath:    finalizeOutputPath,
+		VerifyDownloadDirectory: verifyDir,
+		RecorderLogDirectory:    r.cfg.runtimeRecorderLogDir,
+		GatewayLogDirectory:     r.cfg.runtimeGatewayLogDir,
+	}
+	if err := writeJSONFile(r.summaryJSONPath, summary); err != nil {
+		return err
+	}
+	r.logf("")
+	r.logf("Small pack flow summary:")
+	r.logf("  files            : %d", summary.FileCount)
+	r.logf("  total size       : %.3f MiB", summary.TotalMiB)
+	r.logf("  upload total     : %.3fs @ %.3f MiB/s", summary.UploadSeconds, summary.UploadMiBPerSecond)
+	r.logf("  finalize total   : %.3fs", summary.FinalizeLayoutSeconds)
+	r.logf("  sampled downloads: %d files in %.3fs", len(sample), summary.DownloadSeconds)
+	r.logf("  verify download  : %s", summary.VerifyDownloadDirectory)
+	r.logf("  summary json     : %s", r.summaryJSONPath)
+	return nil
+}
+
+func buildSmallPackBody(items []sourceItem, runRoot string) ([]byte, string, error) {
+	const magic = "BBSPACK1\n"
+	manifest := smallPackManifest{Version: 1, Files: make([]smallPackEntry, 0, len(items))}
+	var payload bytes.Buffer
+	for _, item := range items {
+		data, err := os.ReadFile(item.FullPath)
+		if err != nil {
+			return nil, "", err
+		}
+		sum := md5.Sum(data)
+		logical := int64(len(data))
+		physical := alignUpTestInt64(logical, 2048)
+		start := int64(payload.Len())
+		payload.Write(data)
+		if pad := physical - logical; pad > 0 {
+			payload.Write(make([]byte, pad))
+		}
+		manifest.Files = append(manifest.Files, smallPackEntry{
+			Key:          item.RelativePath,
+			Offset:       start,
+			LogicalSize:  logical,
+			PhysicalSize: physical,
+			ChecksumMD5:  hex.EncodeToString(sum[:]),
+		})
+	}
+	manifestRaw, err := json.Marshal(manifest)
+	if err != nil {
+		return nil, "", err
+	}
+	var out bytes.Buffer
+	out.WriteString(magic)
+	var lenBuf [8]byte
+	binary.LittleEndian.PutUint64(lenBuf[:], uint64(len(manifestRaw)))
+	out.Write(lenBuf[:])
+	out.Write(manifestRaw)
+	if pad := alignUpTestInt64(int64(out.Len()), 2048) - int64(out.Len()); pad > 0 {
+		out.Write(make([]byte, pad))
+	}
+	out.Write(payload.Bytes())
+	key := fmt.Sprintf(".__burnbridge_pack_upload__/%s.pack", sanitizeS3KeyPathSegment(filepath.Base(filepath.Clean(runRoot))))
+	return out.Bytes(), key, nil
+}
+
+func sampleSourceItems(items []sourceItem, max int) []sourceItem {
+	if max <= 0 || len(items) <= max {
+		return items
+	}
+	out := make([]sourceItem, 0, max)
+	step := float64(len(items)-1) / float64(max-1)
+	seen := make(map[int]struct{}, max)
+	for i := 0; i < max; i++ {
+		idx := int(float64(i)*step + 0.5)
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(items) {
+			idx = len(items) - 1
+		}
+		if _, ok := seen[idx]; ok {
+			continue
+		}
+		seen[idx] = struct{}{}
+		out = append(out, items[idx])
+	}
+	return out
+}
+
+func sampleTotalBytes(items []sourceItem) int64 {
+	var total int64
+	for _, item := range items {
+		total += item.Size
+	}
+	return total
+}
+
+func alignUpTestInt64(value int64, alignment int64) int64 {
+	if value <= 0 || alignment <= 0 {
+		return value
+	}
+	rem := value % alignment
+	if rem == 0 {
+		return value
+	}
+	return value + alignment - rem
+}
+
+func buildSmallBatchObjectPrefix(dataDir, runRoot string) string {
+	base := strings.TrimSpace(filepath.Base(filepath.Clean(dataDir)))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "small-batch"
+	}
+	base = sanitizeS3KeyPathSegment(base)
+	runID := sanitizeS3KeyPathSegment(filepath.Base(filepath.Clean(runRoot)))
+	if runID == "" {
+		runID = time.Now().UTC().Format("20060102-150405")
+	}
+	return strings.Trim(strings.Join([]string{base, runID}, "/"), "/")
+}
+
+func sanitizeS3KeyPathSegment(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range value {
+		ok := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') ||
+			r == '.' || r == '_' || r == '-'
+		if ok {
+			b.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if !lastDash {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-.")
+}
+
+func applyObjectKeyPrefix(snapshot *fileSnapshot, prefix string) {
+	prefix = strings.Trim(strings.ReplaceAll(prefix, "\\", "/"), "/")
+	if prefix == "" {
+		return
+	}
+	snapshot.Map = make(map[string]sourceItem, len(snapshot.Items))
+	for i := range snapshot.Items {
+		item := &snapshot.Items[i]
+		item.RelativePath = prefix + "/" + strings.TrimLeft(strings.ReplaceAll(item.RelativePath, "\\", "/"), "/")
+		snapshot.Map[item.RelativePath] = *item
+	}
+}
+
 func prepareSmallBatchDataset(root string, count int, size int64) error {
 	if count <= 0 {
 		return fmt.Errorf("small batch file count must be positive")
@@ -1687,6 +2155,38 @@ func prepareSmallBatchDataset(root string, count int, size int64) error {
 		}
 		name := filepath.Join(root, fmt.Sprintf("small-%06d.bin", i))
 		if err := os.WriteFile(name, payload, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func prepareVariableSmallBatchDataset(root string, count int, maxSize int64) error {
+	if count <= 0 {
+		return fmt.Errorf("variable small batch file count must be positive")
+	}
+	if maxSize <= 0 {
+		return fmt.Errorf("variable small batch max file size must be positive")
+	}
+	if err := os.RemoveAll(root); err != nil {
+		return err
+	}
+	if err := ensureDir(root); err != nil {
+		return err
+	}
+	payload := make([]byte, maxSize)
+	for i := range payload {
+		payload[i] = byte((i*31 + 17) % 251)
+	}
+	for i := 0; i < count; i++ {
+		size := int64(i)%maxSize + 1
+		sizeInt := int(size)
+		dir := filepath.Join(root, fmt.Sprintf("set-%02d", i/1000))
+		if err := ensureDir(dir); err != nil {
+			return err
+		}
+		name := filepath.Join(dir, fmt.Sprintf("small-%05d-%04db.bin", i+1, size))
+		if err := os.WriteFile(name, payload[:sizeInt], 0o644); err != nil {
 			return err
 		}
 	}
@@ -1932,6 +2432,7 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 				metric.Status = "SkippedExisting"
 				metric.Notes = "remote object already exists with matching size"
 				r.uploadedKeys[item.RelativePath] = struct{}{}
+				r.consumeWritableBudget(item.Size)
 				r.logf("  skip existing %s | size=%s MiB", item.RelativePath, formatSizeMiB(item.Size))
 				continue
 			}
@@ -1953,13 +2454,7 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 			uploadMethod := "putobject"
 			if r.shouldUseMultipart(item.Size) {
 				uploadMethod = fmt.Sprintf("multipart(part=%s MiB)", formatSizeMiB(r.effectiveMultipartPartSize()))
-				createCtx, cancelCreate := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
-				createOut, err := r.client.CreateMultipartUpload(createCtx, &s3.CreateMultipartUploadInput{
-					Bucket:   &bucket,
-					Key:      &item.RelativePath,
-					Metadata: multipartObjectSizeMetadata(item.Size),
-				})
-				cancelCreate()
+				createOut, err := r.createMultipartUpload(bucket, item.RelativePath, multipartObjectSizeMetadata(item.Size))
 				if err != nil {
 					return nil, 0, "", err
 				}
@@ -2001,6 +2496,7 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 			metric.Status = "Uploaded"
 			metric.Notes = uploadMethod
 			r.uploadedKeys[item.RelativePath] = struct{}{}
+			r.consumeWritableBudget(item.Size)
 			r.logf("  upload %s | mode=%s | size=%s MiB | elapsed=%.3fs | rate=%.3f MiB/s", item.RelativePath, uploadMethod, formatSizeMiB(item.Size), seconds, rate)
 		}
 	}
@@ -2821,6 +3317,13 @@ func resolveSingleObjectOutputPath(verifyRoot, bucket, objectKey, outputPath str
 }
 
 func (r *runner) putObject(bucket, key, fullPath string) error {
+	return r.retryTransientWrite(fmt.Sprintf("PutObject %s", key), func() error {
+		err := r.putObjectOnce(bucket, key, fullPath)
+		return err
+	})
+}
+
+func (r *runner) putObjectOnce(bucket, key, fullPath string) error {
 	file, err := os.Open(fullPath)
 	if err != nil {
 		return err
@@ -2831,7 +3334,6 @@ func (r *runner) putObject(bucket, key, fullPath string) error {
 	if err != nil {
 		return err
 	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
 	defer cancel()
 	_, err = r.client.PutObject(ctx, &s3.PutObjectInput{
@@ -2841,6 +3343,86 @@ func (r *runner) putObject(bucket, key, fullPath string) error {
 		ContentLength: int64Ptr(info.Size()),
 	})
 	return err
+}
+
+func (r *runner) createMultipartUpload(bucket, key string, metadata map[string]string) (*s3.CreateMultipartUploadOutput, error) {
+	var out *s3.CreateMultipartUploadOutput
+	err := r.retryTransientWrite(fmt.Sprintf("CreateMultipartUpload %s", key), func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+		defer cancel()
+		var attemptErr error
+		out, attemptErr = r.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
+			Bucket:   &bucket,
+			Key:      &key,
+			Metadata: metadata,
+		})
+		return attemptErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *runner) retryTransientWrite(operation string, fn func() error) error {
+	const maxAttempts = 12
+	delay := 500 * time.Millisecond
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+
+		lastErr = err
+		if !isTransientS3WriteError(err) || attempt == maxAttempts {
+			return err
+		}
+
+		r.logf("  retry %s after transient recorder error attempt=%d/%d wait=%s error=%v",
+			operation, attempt+1, maxAttempts, delay, err)
+		time.Sleep(delay)
+		if delay < 10*time.Second {
+			delay *= 2
+		}
+	}
+
+	return lastErr
+}
+
+func isTransientS3WriteError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var apiErr smithy.APIError
+	if errors.As(err, &apiErr) {
+		code := strings.ToLower(strings.TrimSpace(apiErr.ErrorCode()))
+		message := strings.ToLower(apiErr.ErrorMessage())
+		if strings.Contains(code, "recorderbusy") ||
+			strings.Contains(message, "recorder is temporarily unavailable") ||
+			strings.Contains(message, "busy switching media access mode") {
+			return true
+		}
+	}
+	var respErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &respErr) {
+		statusCode := respErr.HTTPStatusCode()
+		if statusCode == http.StatusTooManyRequests ||
+			statusCode == http.StatusBadGateway ||
+			statusCode == http.StatusServiceUnavailable ||
+			statusCode == http.StatusGatewayTimeout {
+			return true
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func (r *runner) putObjectWithSimulatedDisconnect(bucket, key, fullPath string, failAfterBytes int64) error {
@@ -2876,6 +3458,19 @@ func (r *runner) putObjectWithSimulatedDisconnect(bucket, key, fullPath string, 
 }
 
 func (r *runner) uploadPartFromFile(bucket, key, uploadID string, partNumber int32, fullPath string, offset, size int64) (*s3.UploadPartOutput, error) {
+	var out *s3.UploadPartOutput
+	err := r.retryTransientWrite(fmt.Sprintf("UploadPart %s part=%d", key, partNumber), func() error {
+		var attemptErr error
+		out, attemptErr = r.uploadPartFromFileOnce(bucket, key, uploadID, partNumber, fullPath, offset, size)
+		return attemptErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *runner) uploadPartFromFileOnce(bucket, key, uploadID string, partNumber int32, fullPath string, offset, size int64) (*s3.UploadPartOutput, error) {
 	file, err := os.Open(fullPath)
 	if err != nil {
 		return nil, err
@@ -2900,6 +3495,19 @@ func (r *runner) uploadPartFromBytes(bucket, key, uploadID string, partNumber in
 		return nil, fmt.Errorf("invalid prefetched multipart payload: part=%d size=%d buffer=%d", partNumber, size, len(data))
 	}
 
+	var out *s3.UploadPartOutput
+	err := r.retryTransientWrite(fmt.Sprintf("UploadPart %s part=%d", key, partNumber), func() error {
+		var attemptErr error
+		out, attemptErr = r.uploadPartFromBytesOnce(bucket, key, uploadID, partNumber, data, size)
+		return attemptErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (r *runner) uploadPartFromBytesOnce(bucket, key, uploadID string, partNumber int32, data []byte, size int64) (*s3.UploadPartOutput, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
 	defer cancel()
 	return r.client.UploadPart(ctx, &s3.UploadPartInput{
@@ -2910,6 +3518,47 @@ func (r *runner) uploadPartFromBytes(bucket, key, uploadID string, partNumber in
 		Body:          bytes.NewReader(data[:size]),
 		ContentLength: int64Ptr(size),
 	})
+}
+
+func (r *runner) listCompletedMultipartParts(bucket, key, uploadID string) ([]types.CompletedPart, error) {
+	completed := make([]types.CompletedPart, 0)
+	marker := ""
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), r.cfg.awsReadTimeout)
+		out, err := r.client.ListParts(ctx, &s3.ListPartsInput{
+			Bucket:           &bucket,
+			Key:              &key,
+			UploadId:         &uploadID,
+			PartNumberMarker: &marker,
+		})
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+		for _, part := range out.Parts {
+			if part.PartNumber == nil || part.ETag == nil {
+				continue
+			}
+			partNumber := *part.PartNumber
+			etag := strings.TrimSpace(awsString(part.ETag))
+			if partNumber <= 0 || etag == "" {
+				continue
+			}
+			completed = append(completed, types.CompletedPart{
+				ETag:       &etag,
+				PartNumber: &partNumber,
+			})
+		}
+		if out.IsTruncated == nil || !*out.IsTruncated || out.NextPartNumberMarker == nil || strings.TrimSpace(*out.NextPartNumberMarker) == "" {
+			break
+		}
+		marker = strings.TrimSpace(*out.NextPartNumberMarker)
+	}
+
+	sort.Slice(completed, func(i, j int) bool {
+		return *completed[i].PartNumber < *completed[j].PartNumber
+	})
+	return completed, nil
 }
 
 func (r *runner) uploadPartWithSimulatedDisconnect(bucket, key, uploadID string, partNumber int32, fullPath string, offset, size, failAfterBytes int64) error {
@@ -3033,6 +3682,10 @@ func (r *runner) currentWritableCapacity(controlBucket string) (int64, bool) {
 		return 0, false
 	}
 
+	if r.writableBudget > defaultFinalizeFreeThreshold+256*1024*1024 {
+		return r.writableBudget, true
+	}
+
 	infoPath := filepath.Join(r.runRoot, "_live-discinfo.json")
 	doc, err := r.fetchDiscInfo(controlBucket, infoPath)
 	if err != nil {
@@ -3047,7 +3700,20 @@ func (r *runner) currentWritableCapacity(controlBucket string) (int64, bool) {
 	if writable <= 0 {
 		return 0, false
 	}
+	r.writableBudget = writable
+	r.writableBudgetAt = time.Now()
+	r.logf("  refreshed writable capacity budget: writable=%d bytes updatedAt=%s", writable, doc.Data.UpdatedAt)
 	return writable, true
+}
+
+func (r *runner) consumeWritableBudget(size int64) {
+	if size <= 0 || r.writableBudget <= 0 {
+		return
+	}
+	r.writableBudget -= size
+	if r.writableBudget < 0 {
+		r.writableBudget = 0
+	}
 }
 
 func (r *runner) finalizeLayoutOnly(controlBucket, finalizeOutputPath string) (float64, error) {

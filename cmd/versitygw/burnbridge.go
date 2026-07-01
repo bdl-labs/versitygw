@@ -24,6 +24,7 @@ var (
 	burnbridgeGRPCSkipPing             bool
 	burnbridgeUDFVolumeLabel           string
 	burnbridgeGRPCChunkSize            int
+	burnbridgeGRPCMaxMessageSize       int
 	burnbridgeGRPCDialTimeout          time.Duration
 	burnbridgeGRPCReadyTimeout         time.Duration
 	burnbridgeGRPCPingTimeout          time.Duration
@@ -107,6 +108,13 @@ func burnbridgeCommand() *cli.Command {
 				Destination: &burnbridgeGRPCChunkSize,
 				Value:       64 * 1024,
 			},
+			&cli.IntFlag{
+				Name:        "grpc-max-message-size",
+				Usage:       "max gRPC message size in bytes for recorder unary responses and requests",
+				EnvVars:     []string{"VGW_BURNBRIDGE_GRPC_MAX_MESSAGE_SIZE", "VGW_BURNBRIDGE_GRPC_MAX_RECEIVE_MESSAGE_SIZE"},
+				Destination: &burnbridgeGRPCMaxMessageSize,
+				Value:       4 * 1024 * 1024,
+			},
 			&cli.DurationFlag{
 				Name:        "grpc-dial-timeout",
 				Usage:       "deadline for initial connection setup (dial + ready wait + startup ping unless --grpc-skip-ping)",
@@ -147,7 +155,7 @@ func burnbridgeCommand() *cli.Command {
 				Usage:       "enable phase-1 synchronous small PutObject batching through a shared recorder upload stream",
 				EnvVars:     []string{"VGW_BURNBRIDGE_SMALL_OBJECT_BATCH"},
 				Destination: &burnbridgeSmallObjectBatchEnabled,
-				Value:       true,
+				Value:       false,
 			},
 			&cli.Int64Flag{
 				Name:        "small-object-max-bytes",
@@ -245,6 +253,8 @@ func runBurnbridge(ctx *cli.Context) error {
 		GRPCSkipPing:             burnbridgeGRPCSkipPing,
 		UDFVolumeLabel:           burnbridgeUDFVolumeLabel,
 		ChunkSize:                burnbridgeGRPCChunkSize,
+		MaxReceiveMessageSize:    burnbridgeGRPCMaxMessageSize,
+		MaxSendMessageSize:       burnbridgeGRPCMaxMessageSize,
 		DialTimeout:              burnbridgeGRPCDialTimeout,
 		GRPCReadyTimeout:         burnbridgeGRPCReadyTimeout,
 		PingTimeout:              burnbridgeGRPCPingTimeout,
@@ -272,6 +282,10 @@ func runBurnbridge(ctx *cli.Context) error {
 	if cfg, _, err := archiveconfig.Load(""); err == nil {
 		if cfg.OpticalArchive.Recorder.GrpcChunkSize > 0 {
 			opts.ChunkSize = cfg.OpticalArchive.Recorder.GrpcChunkSize
+		}
+		if cfg.OpticalArchive.Recorder.MaxReceiveMessageSize > 0 {
+			opts.MaxReceiveMessageSize = cfg.OpticalArchive.Recorder.MaxReceiveMessageSize
+			opts.MaxSendMessageSize = cfg.OpticalArchive.Recorder.MaxReceiveMessageSize
 		}
 		opts.AllowCreateBucketBinding = cfg.OpticalArchive.Recorder.AllowCreateBucketBinding
 		opts.ManageRecorderProcessLocally = cfg.OpticalArchive.LinuxServices.ManageRecorderProcessLocally

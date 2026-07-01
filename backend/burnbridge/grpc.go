@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
@@ -36,7 +37,7 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-func dialBurnBridgeGRPC(ctx context.Context, grpcReadyTimeout time.Duration, addr string, useTLS bool, caFile, serverName string, insecureSkipVerify bool) (*grpc.ClientConn, error) {
+func dialBurnBridgeGRPC(ctx context.Context, grpcReadyTimeout time.Duration, addr string, useTLS bool, caFile, serverName string, insecureSkipVerify bool, maxReceiveMessageSize, maxSendMessageSize int) (*grpc.ClientConn, error) {
 	var opts []grpc.DialOption
 	if useTLS {
 		tlsCfg := &tls.Config{MinVersion: tls.VersionTLS12}
@@ -74,6 +75,16 @@ func dialBurnBridgeGRPC(ctx context.Context, grpcReadyTimeout time.Duration, add
 		opts = append(opts, grpc.WithTransportCredentials(credentials.NewTLS(tlsCfg)))
 	} else {
 		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+	var callOpts []grpc.CallOption
+	if maxReceiveMessageSize > 0 {
+		callOpts = append(callOpts, grpc.MaxCallRecvMsgSize(maxReceiveMessageSize))
+	}
+	if maxSendMessageSize > 0 {
+		callOpts = append(callOpts, grpc.MaxCallSendMsgSize(maxSendMessageSize))
+	}
+	if len(callOpts) > 0 {
+		opts = append(opts, grpc.WithDefaultCallOptions(callOpts...))
 	}
 
 	conn, err := grpc.NewClient(addr, opts...)
@@ -212,13 +223,38 @@ func mapRecorderWriteRPCError(err error) error {
 		return nil
 	}
 
+	if isRecorderCapacityExhaustedError(err) {
+		return s3err.GetAPIError(s3err.ErrNoSpaceLeftOnDevice)
+	}
+
 	st, ok := status.FromError(err)
 	if !ok {
 		return err
 	}
 
 	switch st.Code() {
+	case codes.ResourceExhausted:
+		message := strings.ToLower(st.Message())
+		if strings.Contains(message, "job queue is full") {
+			return s3err.APIError{
+				Code:           "BurnbridgeRecorderBusy",
+				Description:    "Recorder burn job queue is full. Retry later.",
+				HTTPStatusCode: http.StatusServiceUnavailable,
+			}
+		}
+		return s3err.GetAPIError(s3err.ErrNoSpaceLeftOnDevice)
 	case codes.FailedPrecondition:
+		message := strings.ToLower(st.Message())
+		if strings.Contains(message, "sdk_error_unavailable") ||
+			strings.Contains(message, "open block device failed") ||
+			strings.Contains(message, "temporarily unavailable") ||
+			strings.Contains(message, "busy switching media access mode") {
+			return s3err.APIError{
+				Code:           "BurnbridgeRecorderBusy",
+				Description:    "Recorder is temporarily unavailable or busy switching media access mode. Retry later.",
+				HTTPStatusCode: http.StatusServiceUnavailable,
+			}
+		}
 		return s3err.GetAPIError(s3err.ErrPreconditionFailed)
 	case codes.Unavailable, codes.DeadlineExceeded:
 		return s3err.APIError{
@@ -229,6 +265,32 @@ func mapRecorderWriteRPCError(err error) error {
 	default:
 		return err
 	}
+}
+
+func isRecorderCapacityExhaustedError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	if st, ok := status.FromError(err); ok {
+		message += " " + strings.ToLower(st.Message())
+	}
+
+	return isRecorderCapacityExhaustedMessage(message)
+}
+
+func isRecorderCapacityExhaustedMessage(message string) bool {
+	message = strings.ToLower(message)
+	return strings.Contains(message, "insufficientstorage") ||
+		strings.Contains(message, "recordercapacityexhausted") ||
+		strings.Contains(message, "insufficient storage") ||
+		strings.Contains(message, "no space left") ||
+		strings.Contains(message, "no recordable capacity") ||
+		strings.Contains(message, "not enough recordable") ||
+		strings.Contains(message, "disc capacity exhausted") ||
+		strings.Contains(message, "media capacity exhausted") ||
+		strings.Contains(message, "sdk_error_unavailable") && strings.Contains(message, "composite write failed")
 }
 
 func isGRPCUnimplemented(err error) bool {
