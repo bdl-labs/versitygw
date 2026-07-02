@@ -3345,6 +3345,113 @@ func TestCloseDiscGetObjectFailsWhenStagedSmallObjectCannotFlush(t *testing.T) {
 	}
 }
 
+func TestForceCloseDiscDiscardsStagedSmallObjectAndCloses(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "bucket1"
+	stageDir := t.TempDir()
+	stagePath := filepath.Join(stageDir, "stage.pack")
+	if err := os.WriteFile(stagePath, []byte("staged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, bucket, "staged.txt", &meta.BurnbridgeCommittedRecord{
+		JobID:        "staged-small-object",
+		Status:       "staged",
+		Size:         6,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stage := &smallObjectStageRecord{
+		Bucket:      bucket,
+		Key:         "staged.txt",
+		PackPath:    stagePath,
+		LogicalSize: 6,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, bucket, "staged.txt", burnbridgeSmallObjectStageAttr, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	var gotCloseDisc bool
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: bucket,
+		udfLabel:     "BUCKET1",
+		smallBatch:   newSmallObjectBatcher(nil, 1024, 8, time.Minute),
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-CLOSEDISC-FORCE"), nil
+			},
+			finalizeFn: func(_ context.Context, req *burnbridgev1.FinalizeLayoutRequest, _ ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				gotCloseDisc = req.GetCloseDisc()
+				return &burnbridgev1.FinalizeLayoutResponse{Bucket: bucket, Status: "closed"}, nil
+			},
+		},
+	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("close-disc-force")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	if !gotCloseDisc {
+		t.Fatal("expected force close-disc to invoke FinalizeLayout with closeDisc=true")
+	}
+
+	body, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected force close-disc ok=true, got error %+v", envelope.Error)
+	}
+	if envelope.Action != "close-disc-force" {
+		t.Fatalf("expected action close-disc-force, got %q", envelope.Action)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc meta.BurnbridgeFinalizeLayoutDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.CloseDisc || !doc.Force {
+		t.Fatalf("expected closeDisc=true and force=true, got closeDisc=%t force=%t", doc.CloseDisc, doc.Force)
+	}
+	if len(doc.Discarded) != 1 || doc.Discarded[0].ObjectKey != "staged.txt" {
+		t.Fatalf("expected staged.txt discard report, got %#v", doc.Discarded)
+	}
+	if _, err := store.GetBurnbridgeCommittedRecord(bucket, "staged.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("staged committed metadata should be removed, got %v", err)
+	}
+	if _, err := b.loadSmallObjectStage(bucket, "staged.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("staged attribute should be removed, got %v", err)
+	}
+	if _, err := os.Stat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stage pack should be removed, got %v", err)
+	}
+}
+
 func TestMediaInsertedControlGetObjectBypassesMissingBucket(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)

@@ -1215,6 +1215,9 @@ const BurnbridgeFinalizeLayoutObjectKey = "v1/state/finalize-layout"
 // BurnbridgeCloseDiscObjectKey is the internal metadata object slot for close-disc transcript caching.
 const BurnbridgeCloseDiscObjectKey = "v1/state/close-disc"
 
+// BurnbridgeForceCloseDiscObjectKey is the internal metadata object slot for force close-disc transcript caching.
+const BurnbridgeForceCloseDiscObjectKey = "v1/state/close-disc-force"
+
 // BurnbridgeMediaRemovedObjectKey is the internal metadata object slot for media removal transcript caching.
 const BurnbridgeMediaRemovedObjectKey = "v1/state/media-removed"
 
@@ -1238,17 +1241,30 @@ const BurnbridgeTrayAttributePrefix = "burnbridge-tray"
 
 // BurnbridgeFinalizeLayoutDocument captures the outcome of invoking the recorder finalize RPC (from gateway).
 type BurnbridgeFinalizeLayoutDocument struct {
-	Bucket          string `json:"bucket"`
-	RequestID       string `json:"requestId,omitempty"`
-	RequestTime     int64  `json:"requestTime,omitempty"`
-	RecorderStatus  string `json:"recorderStatus"`
-	RecorderMessage string `json:"recorderMessage,omitempty"`
-	CloseDisc       bool   `json:"closeDisc,omitempty"`
-	CompletedAtUtc  string `json:"completedAtUtc"` // RFC3339Nano when the gateway persisted this record
-	GrpcOK          bool   `json:"grpcOk"`
-	GrpcCode        string `json:"grpcCode,omitempty"`
-	GrpcDetails     string `json:"grpcDetails,omitempty"`
-	Error           string `json:"error,omitempty"`
+	Bucket                  string                                        `json:"bucket"`
+	RequestID               string                                        `json:"requestId,omitempty"`
+	RequestTime             int64                                         `json:"requestTime,omitempty"`
+	RecorderStatus          string                                        `json:"recorderStatus"`
+	RecorderMessage         string                                        `json:"recorderMessage,omitempty"`
+	CloseDisc               bool                                          `json:"closeDisc,omitempty"`
+	Force                   bool                                          `json:"force,omitempty"`
+	Discarded               []BurnbridgeForceCloseDiscardedObjectDocument `json:"discarded,omitempty"`
+	DiscardedUploadSessions int                                           `json:"discardedUploadSessions,omitempty"`
+	CompletedAtUtc          string                                        `json:"completedAtUtc"` // RFC3339Nano when the gateway persisted this record
+	GrpcOK                  bool                                          `json:"grpcOk"`
+	GrpcCode                string                                        `json:"grpcCode,omitempty"`
+	GrpcDetails             string                                        `json:"grpcDetails,omitempty"`
+	Error                   string                                        `json:"error,omitempty"`
+}
+
+// BurnbridgeForceCloseDiscardedObjectDocument records metadata removed by a force close-disc operation.
+type BurnbridgeForceCloseDiscardedObjectDocument struct {
+	ObjectKey string `json:"objectKey"`
+	Reason    string `json:"reason"`
+	Size      int64  `json:"size,omitempty"`
+	ETag      string `json:"etag,omitempty"`
+	UploadID  string `json:"uploadId,omitempty"`
+	JobID     string `json:"jobId,omitempty"`
 }
 
 // BurnbridgeMediaChangeDocument captures the outcome of invoking the recorder media-change RPC (from gateway).
@@ -1305,6 +1321,8 @@ func burnbridgeFinalizeLayoutAttributeForObjectKey(objectKey string) (string, er
 		return BurnbridgeFinalizeLayoutAttributePrefix, nil
 	case BurnbridgeCloseDiscObjectKey:
 		return BurnbridgeFinalizeLayoutAttributePrefix + "-close-disc", nil
+	case BurnbridgeForceCloseDiscObjectKey:
+		return BurnbridgeFinalizeLayoutAttributePrefix + "-close-disc-force", nil
 	default:
 		return "", fmt.Errorf("finalize layout: unsupported object key %q", objectKey)
 	}

@@ -70,6 +70,7 @@ const (
 	burnbridgeControlActionDiscInfo       burnbridgeControlAction = "disc-info"
 	burnbridgeControlActionFinalizeLayout burnbridgeControlAction = "finalize-layout"
 	burnbridgeControlActionCloseDisc      burnbridgeControlAction = "close-disc"
+	burnbridgeControlActionCloseDiscForce burnbridgeControlAction = "close-disc-force"
 	burnbridgeControlActionMediaRemoved   burnbridgeControlAction = "media-removed"
 	burnbridgeControlActionMediaInserted  burnbridgeControlAction = "media-inserted"
 	burnbridgeControlActionTrayOpen       burnbridgeControlAction = "tray-open"
@@ -220,6 +221,8 @@ func burnbridgeControlActionFromString(value string) (burnbridgeControlAction, b
 		return burnbridgeControlActionFinalizeLayout, true
 	case string(burnbridgeControlActionCloseDisc):
 		return burnbridgeControlActionCloseDisc, true
+	case string(burnbridgeControlActionCloseDiscForce):
+		return burnbridgeControlActionCloseDiscForce, true
 	case string(burnbridgeControlActionMediaRemoved):
 		return burnbridgeControlActionMediaRemoved, true
 	case string(burnbridgeControlActionMediaInserted):
@@ -345,6 +348,7 @@ type BurnBridge struct {
 	pendingImportedConvergence  map[string]bool
 	statusWatchCancel           context.CancelFunc
 	statusWatchEnabled          atomic.Bool
+	forceCloseDiscActive        atomic.Bool
 	metaDBPath                  string
 }
 
@@ -1117,7 +1121,7 @@ func (b *BurnBridge) resolveControlPayloadBucket(ctx context.Context, requestBuc
 			return payloadBucket, payloadBucket, nil
 		}
 		return payloadBucket, targetBucket, nil
-	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc:
+	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc, burnbridgeControlActionCloseDiscForce:
 		targetBucket, err = b.resolveActiveBucketForControl(ctx)
 		if err != nil {
 			return payloadBucket, "", err
@@ -3019,6 +3023,9 @@ func (b *BurnBridge) GetObjectLockConfiguration(_ context.Context, bucket string
 }
 
 func (b *BurnBridge) CreateMultipartUpload(ctx context.Context, input s3response.CreateMultipartUploadInput) (s3response.InitiateMultipartUploadResult, error) {
+	if err := b.rejectWriteDuringForceCloseDisc(); err != nil {
+		return s3response.InitiateMultipartUploadResult{}, err
+	}
 	if input.Bucket == nil || input.Key == nil {
 		return s3response.InitiateMultipartUploadResult{}, s3err.GetAPIError(s3err.ErrInvalidRequest)
 	}
@@ -3094,6 +3101,9 @@ func (b *BurnBridge) CreateMultipartUpload(ctx context.Context, input s3response
 }
 
 func (b *BurnBridge) UploadPart(ctx context.Context, input *s3.UploadPartInput) (*s3.UploadPartOutput, error) {
+	if err := b.rejectWriteDuringForceCloseDisc(); err != nil {
+		return nil, err
+	}
 	startedAt := time.Now()
 	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil || input.PartNumber == nil {
 		return nil, s3err.GetAPIError(s3err.ErrInvalidRequest)
@@ -3522,6 +3532,9 @@ func (b *BurnBridge) ListParts(_ context.Context, input *s3.ListPartsInput) (s3r
 }
 
 func (b *BurnBridge) CompleteMultipartUpload(ctx context.Context, input *s3.CompleteMultipartUploadInput) (s3response.CompleteMultipartUploadResult, string, error) {
+	if err := b.rejectWriteDuringForceCloseDisc(); err != nil {
+		return s3response.CompleteMultipartUploadResult{}, "", err
+	}
 	if input == nil || input.Bucket == nil || input.Key == nil || input.UploadId == nil || input.MultipartUpload == nil {
 		return s3response.CompleteMultipartUploadResult{}, "", s3err.GetAPIError(s3err.ErrInvalidRequest)
 	}
@@ -4232,7 +4245,7 @@ func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req 
 		}
 		return buildDiscInfoControlJSON(req, payloadBucket, doc)
 
-	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc:
+	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc, burnbridgeControlActionCloseDiscForce:
 		payloadBucket, targetBucket, err := b.resolveControlPayloadBucket(ctx, bucket, req)
 		if err != nil {
 			return burnbridgeControlPayload{}, err
@@ -4277,13 +4290,25 @@ func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req 
 	}
 }
 
-func buildFinalizeLayoutResultJSON(bucket string, req *burnbridgeControlRequest, closeDisc bool, resp *burnbridgev1.FinalizeLayoutResponse, grpcErr error) ([]byte, error) {
+func buildFinalizeLayoutResultJSON(
+	bucket string,
+	req *burnbridgeControlRequest,
+	closeDisc bool,
+	force bool,
+	discarded []meta.BurnbridgeForceCloseDiscardedObjectDocument,
+	discardedUploadSessions int,
+	resp *burnbridgev1.FinalizeLayoutResponse,
+	grpcErr error,
+) ([]byte, error) {
 	doc := meta.BurnbridgeFinalizeLayoutDocument{
-		Bucket:         bucket,
-		RequestID:      strings.TrimSpace(req.RequestID),
-		RequestTime:    req.RequestTime,
-		CloseDisc:      closeDisc,
-		CompletedAtUtc: time.Now().UTC().Format(time.RFC3339Nano),
+		Bucket:                  bucket,
+		RequestID:               strings.TrimSpace(req.RequestID),
+		RequestTime:             req.RequestTime,
+		CloseDisc:               closeDisc,
+		Force:                   force,
+		Discarded:               discarded,
+		DiscardedUploadSessions: discardedUploadSessions,
+		CompletedAtUtc:          time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	if grpcErr != nil {
 		doc.GrpcOK = false
@@ -4330,7 +4355,7 @@ func (b *BurnBridge) finalizeAndCloseDiscAfterCapacityExceeded(ctx context.Conte
 			UdfVolumeLabel: b.udfLabel,
 			CloseDisc:      closeDisc,
 		})
-		payload, err := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, resp, grpcErr)
+		payload, err := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, false, nil, 0, resp, grpcErr)
 		if err == nil {
 			objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
 			if storeErr := b.meta.StoreBurnbridgeFinalizeLayoutJSON(bucket, objectKey, payload); storeErr != nil {
@@ -4353,6 +4378,17 @@ func finalizeObjectKeyForCloseDisc(closeDisc bool) string {
 		return meta.BurnbridgeCloseDiscObjectKey
 	}
 	return meta.BurnbridgeFinalizeLayoutObjectKey
+}
+
+func finalizeObjectKeyForAction(action burnbridgeControlAction) string {
+	switch action {
+	case burnbridgeControlActionCloseDiscForce:
+		return meta.BurnbridgeForceCloseDiscObjectKey
+	case burnbridgeControlActionCloseDisc:
+		return meta.BurnbridgeCloseDiscObjectKey
+	default:
+		return meta.BurnbridgeFinalizeLayoutObjectKey
+	}
 }
 
 func mediaChangeObjectKeyForAction(action burnbridgeControlAction) (string, burnbridgev1.MediaChangeAction, error) {
@@ -4395,6 +4431,9 @@ func shouldReuseFinalizeLayoutTranscript(bucket string, req *burnbridgeControlRe
 	if doc.CloseDisc != closeDisc {
 		return false
 	}
+	if doc.Force != (req.Action == burnbridgeControlActionCloseDiscForce) {
+		return false
+	}
 	if doc.RequestTime != req.RequestTime {
 		return false
 	}
@@ -4402,22 +4441,48 @@ func shouldReuseFinalizeLayoutTranscript(bucket string, req *burnbridgeControlRe
 }
 
 func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
-	closeDisc := req.Action == burnbridgeControlActionCloseDisc
-	objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
+	closeDisc := req.Action == burnbridgeControlActionCloseDisc || req.Action == burnbridgeControlActionCloseDiscForce
+	forceCloseDisc := req.Action == burnbridgeControlActionCloseDiscForce
+	objectKey := finalizeObjectKeyForAction(req.Action)
 	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, req, closeDisc, prev) {
 		return prev, nil
 	}
 
-	if err := b.flushStagedSmallObjects(ctx, bucket); err != nil {
-		if closeDisc {
-			return nil, burnbridgeInvalidRequest(fmt.Sprintf(
-				"close-disc blocked because staged small objects could not be flushed to optical media: %v", err))
+	var discarded []meta.BurnbridgeForceCloseDiscardedObjectDocument
+	var discardedUploadSessions int
+	if forceCloseDisc {
+		if !b.forceCloseDiscActive.CompareAndSwap(false, true) {
+			return nil, burnbridgeInvalidRequest("close-disc-force is already running")
 		}
-		return nil, err
+		defer b.forceCloseDiscActive.Store(false)
+		report, err := b.cleanupForceCloseDiscStagedObjects(bucket)
+		if err != nil {
+			return nil, burnbridgeInvalidRequest(fmt.Sprintf(
+				"close-disc-force blocked because staged object metadata could not be cleaned safely: %v", err))
+		}
+		discarded = append(discarded, report.Discarded...)
+	} else {
+		if err := b.flushStagedSmallObjects(ctx, bucket); err != nil {
+			if closeDisc {
+				return nil, burnbridgeInvalidRequest(fmt.Sprintf(
+					"close-disc blocked because staged small objects could not be flushed to optical media: %v", err))
+			}
+			return nil, err
+		}
 	}
 
 	b.putSerialMu.Lock()
 	defer b.putSerialMu.Unlock()
+
+	if forceCloseDisc {
+		report, err := b.cleanupForceCloseDiscUploadSessionsLocked(bucket)
+		if err != nil {
+			return nil, burnbridgeInvalidRequest(fmt.Sprintf(
+				"close-disc-force blocked because volatile upload metadata could not be cleaned safely: %v", err))
+		}
+		discarded = append(discarded, report.Discarded...)
+		discardedUploadSessions += report.DiscardedUploadSessions
+	}
 
 	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, req, closeDisc, prev) {
 		return prev, nil
@@ -4433,7 +4498,7 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 		CloseDisc:      closeDisc,
 	})
 
-	payload, mErr := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, resp, grpcErr)
+	payload, mErr := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, forceCloseDisc, discarded, discardedUploadSessions, resp, grpcErr)
 	if mErr != nil {
 		return nil, fmt.Errorf("burnbridge finalize layout json: %w", mErr)
 	}
@@ -4655,7 +4720,7 @@ func (b *BurnBridge) invokeTrayAgainstRecorder(ctx context.Context, bucket strin
 }
 
 func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
-	for _, objectKey := range []string{meta.BurnbridgeFinalizeLayoutObjectKey, meta.BurnbridgeCloseDiscObjectKey} {
+	for _, objectKey := range []string{meta.BurnbridgeFinalizeLayoutObjectKey, meta.BurnbridgeCloseDiscObjectKey, meta.BurnbridgeForceCloseDiscObjectKey} {
 		if err := b.meta.DeleteBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
 			slog.Warn("burnbridge: failed to invalidate cached finalize transcript",
 				"bucket", bucket, "object_key", objectKey, "err", err)
@@ -4667,8 +4732,8 @@ func (b *BurnBridge) invalidateFinalizeLayoutTranscript(bucket string) {
 }
 
 func (b *BurnBridge) loadOrFinalizeLayoutTranscript(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
-	closeDisc := req.Action == burnbridgeControlActionCloseDisc
-	objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
+	closeDisc := req.Action == burnbridgeControlActionCloseDisc || req.Action == burnbridgeControlActionCloseDiscForce
+	objectKey := finalizeObjectKeyForAction(req.Action)
 	if prev, err := b.meta.GetBurnbridgeFinalizeLayoutJSON(bucket, objectKey); err == nil && shouldReuseFinalizeLayoutTranscript(bucket, req, closeDisc, prev) {
 		return prev, nil
 	}
@@ -6400,6 +6465,118 @@ func (b *BurnBridge) cleanupCompletedMultipartObjectState(bucket, key, uploadID 
 	return nil
 }
 
+type forceCloseDiscCleanupReport struct {
+	Discarded               []meta.BurnbridgeForceCloseDiscardedObjectDocument
+	DiscardedUploadSessions int
+}
+
+func (b *BurnBridge) cleanupForceCloseDiscStagedObjects(bucket string) (forceCloseDiscCleanupReport, error) {
+	var report forceCloseDiscCleanupReport
+	if b.smallBatch != nil {
+		b.smallBatch.stageMu.Lock()
+		defer b.smallBatch.stageMu.Unlock()
+	}
+
+	objects, err := b.meta.ListCommittedObjects(bucket)
+	if err != nil {
+		return report, err
+	}
+
+	stagePackPaths := make(map[string]struct{})
+	for _, sum := range objects {
+		rec, err := b.meta.GetBurnbridgeCommittedRecord(bucket, sum.ObjectKey)
+		if err != nil {
+			if errors.Is(err, meta.ErrNoSuchKey) {
+				continue
+			}
+			return report, err
+		}
+		if !strings.EqualFold(strings.TrimSpace(rec.Status), "staged") {
+			continue
+		}
+
+		stage, stageErr := b.loadSmallObjectStage(bucket, sum.ObjectKey)
+		if stageErr != nil && !errors.Is(stageErr, meta.ErrNoSuchKey) {
+			return report, stageErr
+		}
+		if stage != nil && strings.TrimSpace(stage.PackPath) != "" {
+			stagePackPaths[stage.PackPath] = struct{}{}
+		}
+
+		report.Discarded = append(report.Discarded, meta.BurnbridgeForceCloseDiscardedObjectDocument{
+			ObjectKey: sum.ObjectKey,
+			Reason:    "staged-small-object-not-flushed",
+			Size:      rec.Size,
+			ETag:      rec.ETag,
+			JobID:     rec.JobID,
+		})
+		if err := b.clearStaleLocalObjectState(bucket, sum.ObjectKey); err != nil {
+			return report, err
+		}
+	}
+
+	for path := range stagePackPaths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			slog.Warn("burnbridge: failed to remove discarded staged small-object pack during force close-disc",
+				"bucket", bucket, "path", path, "error", err)
+		}
+	}
+	b.invalidateCachedSmallObjectStageBytes(bucket)
+	return report, nil
+}
+
+func (b *BurnBridge) cleanupForceCloseDiscUploadSessionsLocked(bucket string) (forceCloseDiscCleanupReport, error) {
+	var report forceCloseDiscCleanupReport
+	sessions, err := b.meta.ListBurnUploadSessionsByBucket(bucket)
+	if err != nil {
+		return report, err
+	}
+
+	for _, session := range sessions {
+		if session.State == meta.BurnUploadStateCompleted {
+			continue
+		}
+		if strings.TrimSpace(session.RecorderJobID) != "" {
+			b.cancelRecorderJob(session.RecorderJobID)
+		}
+
+		report.DiscardedUploadSessions++
+		report.Discarded = append(report.Discarded, meta.BurnbridgeForceCloseDiscardedObjectDocument{
+			ObjectKey: session.ObjectName,
+			Reason:    "incomplete-upload-session",
+			Size:      session.BytesReceived,
+			UploadID:  session.UploadID,
+			JobID:     session.RecorderJobID,
+		})
+
+		if session.Kind == meta.BurnUploadKindMultipart {
+			if err := b.cleanupMultipartUploadState(bucket, session.ObjectName, session.UploadID, nil); err != nil {
+				return report, err
+			}
+			continue
+		}
+
+		if err := b.meta.DeleteBurnUploadParts(bucket, session.ObjectName, session.UploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			return report, err
+		}
+		if err := b.meta.DeleteBurnUploadSession(bucket, session.ObjectName, session.UploadID); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+			return report, err
+		}
+		if _, err := b.meta.GetBurnbridgeCommittedRecord(bucket, session.ObjectName); errors.Is(err, meta.ErrNoSuchKey) {
+			if err := b.meta.DeleteBurnObjectSegments(bucket, session.ObjectName); err != nil && !errors.Is(err, meta.ErrNoSuchKey) {
+				return report, err
+			}
+		} else if err != nil {
+			return report, err
+		}
+	}
+
+	if len(report.Discarded) > 0 {
+		b.invalidateFinalizeLayoutTranscript(bucket)
+	}
+	return report, nil
+}
+
 func buildFinalizeManifestFromSegments(key string, objectSize int64, segments []meta.BurnObjectSegmentDetail) (*burnbridgev1.FinalizeManifest, error) {
 	if len(segments) == 0 {
 		return &burnbridgev1.FinalizeManifest{
@@ -7276,7 +7453,17 @@ func (b *BurnBridge) cancelRecorderJob(jobID string) {
 	_, _ = b.grpc.CancelJob(cctx, &burnbridgev1.CancelJobRequest{JobId: jobID})
 }
 
+func (b *BurnBridge) rejectWriteDuringForceCloseDisc() error {
+	if b != nil && b.forceCloseDiscActive.Load() {
+		return burnbridgeInvalidRequest("close-disc-force is running; writes are temporarily blocked")
+	}
+	return nil
+}
+
 func (b *BurnBridge) PutObject(ctx context.Context, input s3response.PutObjectInput) (s3response.PutObjectOutput, error) {
+	if err := b.rejectWriteDuringForceCloseDisc(); err != nil {
+		return s3response.PutObjectOutput{}, err
+	}
 	if out, handled, err := b.tryPutSmallObjectPack(ctx, input); handled || err != nil {
 		return out, err
 	}

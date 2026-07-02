@@ -45,6 +45,7 @@ const (
 	modeDiscInfo        mode = "discinfo"
 	modeFinalize        mode = "finalize"
 	modeCloseDisc       mode = "closedisc"
+	modeCloseDiscForce  mode = "close-disc-force"
 	modeMediaRemoved    mode = "media-removed"
 	modeMediaInserted   mode = "media-inserted"
 	modeTrayOpen        mode = "tray-open"
@@ -174,6 +175,8 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parseBucketOnly(args[1:], modeFinalize), nil
 	case "closedisc", "close-disc":
 		return parseBucketOnly(args[1:], modeCloseDisc), nil
+	case "closedisc-force", "close-disc-force", "force-close", "force-closedisc":
+		return parseBucketOnly(args[1:], modeCloseDiscForce), nil
 	case "media-removed", "mediaremoved", "unmount", "removed":
 		return parseBucketOnly(args[1:], modeMediaRemoved), nil
 	case "media-inserted", "mediainserted", "mount", "inserted":
@@ -471,6 +474,8 @@ func parseBucketOnly(args []string, m mode) cliOptions {
 		opts.finalizeOnly = true
 	case modeCloseDisc:
 		opts.closeDiscOnly = true
+	case modeCloseDiscForce:
+		opts.closeDiscOnly = true
 	case modeMediaRemoved:
 		opts.mediaRemovedOnly = true
 	case modeMediaInserted:
@@ -723,6 +728,7 @@ func printUsage(stream *os.File) {
 		"  test-burn-upload-go.exe discinfo [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe finalize [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe closedisc [Bucket] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe close-disc-force [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe media-removed [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe media-inserted [Bucket] [AwsProfile] [ConfigPath]",
 		"  test-burn-upload-go.exe tray-open [Bucket] [AwsProfile] [ConfigPath]",
@@ -803,6 +809,9 @@ func printUsage(stream *os.File) {
 		"",
 		"  closedisc",
 		"    Generate a burnbridge control key for close-disc and request disc close/finalize on recorder.",
+		"",
+		"  close-disc-force",
+		"    Generate a burnbridge control key for close-disc-force, discard volatile upload metadata, and request disc close/finalize.",
 		"",
 		"  media-removed",
 		"    Generate a burnbridge control key for media-removed and notify recorder that media was removed.",

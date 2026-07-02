@@ -696,16 +696,22 @@ func (r *runner) runFinalizeOnly(bucket string) error {
 }
 
 func (r *runner) runCloseDiscOnly(bucket string) error {
-	r.logf("[3/3] Triggering CloseDisc...")
-	outputPath := filepath.Join(r.runRoot, "close-disc-response.json")
+	action := "close-disc"
+	label := "CloseDisc"
+	if r.opts.mode == modeCloseDiscForce {
+		action = "close-disc-force"
+		label = "CloseDiscForce"
+	}
+	r.logf("[3/3] Triggering %s...", label)
+	outputPath := filepath.Join(r.runRoot, action+"-response.json")
 	start := time.Now()
-	controlKey, raw, err := r.downloadShortControlObject(bucket, "close-disc", outputPath)
+	controlKey, raw, err := r.downloadShortControlObject(bucket, action, outputPath)
 	if err != nil {
 		return err
 	}
-	r.logf("CloseDisc control key: %s", controlKey)
-	r.logf("CloseDisc response saved to: %s", outputPath)
-	r.logf("CloseDisc elapsed: %.3fs", roundSeconds(time.Since(start)))
+	r.logf("%s control key: %s", label, controlKey)
+	r.logf("%s response saved to: %s", label, outputPath)
+	r.logf("%s elapsed: %.3fs", label, roundSeconds(time.Since(start)))
 	r.writeControlJSONLog(raw)
 	return nil
 }
