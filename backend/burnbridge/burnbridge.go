@@ -4295,6 +4295,7 @@ func buildFinalizeLayoutResultJSON(
 	req *burnbridgeControlRequest,
 	closeDisc bool,
 	force bool,
+	stagedFlushError string,
 	discarded []meta.BurnbridgeForceCloseDiscardedObjectDocument,
 	discardedUploadSessions int,
 	resp *burnbridgev1.FinalizeLayoutResponse,
@@ -4306,6 +4307,7 @@ func buildFinalizeLayoutResultJSON(
 		RequestTime:             req.RequestTime,
 		CloseDisc:               closeDisc,
 		Force:                   force,
+		StagedFlushError:        stagedFlushError,
 		Discarded:               discarded,
 		DiscardedUploadSessions: discardedUploadSessions,
 		CompletedAtUtc:          time.Now().UTC().Format(time.RFC3339Nano),
@@ -4355,7 +4357,7 @@ func (b *BurnBridge) finalizeAndCloseDiscAfterCapacityExceeded(ctx context.Conte
 			UdfVolumeLabel: b.udfLabel,
 			CloseDisc:      closeDisc,
 		})
-		payload, err := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, false, nil, 0, resp, grpcErr)
+		payload, err := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, false, "", nil, 0, resp, grpcErr)
 		if err == nil {
 			objectKey := finalizeObjectKeyForCloseDisc(closeDisc)
 			if storeErr := b.meta.StoreBurnbridgeFinalizeLayoutJSON(bucket, objectKey, payload); storeErr != nil {
@@ -4450,17 +4452,25 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 
 	var discarded []meta.BurnbridgeForceCloseDiscardedObjectDocument
 	var discardedUploadSessions int
+	var stagedFlushError string
 	if forceCloseDisc {
 		if !b.forceCloseDiscActive.CompareAndSwap(false, true) {
 			return nil, burnbridgeInvalidRequest("close-disc-force is already running")
 		}
 		defer b.forceCloseDiscActive.Store(false)
-		report, err := b.cleanupForceCloseDiscStagedObjects(bucket)
-		if err != nil {
-			return nil, burnbridgeInvalidRequest(fmt.Sprintf(
-				"close-disc-force blocked because staged object metadata could not be cleaned safely: %v", err))
+		if err := b.flushStagedSmallObjects(ctx, bucket); err != nil {
+			stagedFlushError = err.Error()
+			slog.Warn("burnbridge: staged small-object flush failed during force close-disc; disc close will continue after discarding unflushed staged objects",
+				"bucket", bucket, "error", err)
+			report, cleanupErr := b.cleanupForceCloseDiscStagedObjects(bucket)
+			if cleanupErr != nil {
+				return nil, burnbridgeInvalidRequest(fmt.Sprintf(
+					"close-disc-force blocked because staged object metadata could not be cleaned safely after flush failure %q: %v",
+					stagedFlushError,
+					cleanupErr))
+			}
+			discarded = append(discarded, report.Discarded...)
 		}
-		discarded = append(discarded, report.Discarded...)
 	} else {
 		if err := b.flushStagedSmallObjects(ctx, bucket); err != nil {
 			if closeDisc {
@@ -4498,7 +4508,7 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 		CloseDisc:      closeDisc,
 	})
 
-	payload, mErr := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, forceCloseDisc, discarded, discardedUploadSessions, resp, grpcErr)
+	payload, mErr := buildFinalizeLayoutResultJSON(bucket, req, closeDisc, forceCloseDisc, stagedFlushError, discarded, discardedUploadSessions, resp, grpcErr)
 	if mErr != nil {
 		return nil, fmt.Errorf("burnbridge finalize layout json: %w", mErr)
 	}

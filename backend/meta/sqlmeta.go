@@ -1248,6 +1248,7 @@ type BurnbridgeFinalizeLayoutDocument struct {
 	RecorderMessage         string                                        `json:"recorderMessage,omitempty"`
 	CloseDisc               bool                                          `json:"closeDisc,omitempty"`
 	Force                   bool                                          `json:"force,omitempty"`
+	StagedFlushError        string                                        `json:"stagedFlushError,omitempty"`
 	Discarded               []BurnbridgeForceCloseDiscardedObjectDocument `json:"discarded,omitempty"`
 	DiscardedUploadSessions int                                           `json:"discardedUploadSessions,omitempty"`
 	CompletedAtUtc          string                                        `json:"completedAtUtc"` // RFC3339Nano when the gateway persisted this record

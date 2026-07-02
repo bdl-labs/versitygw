@@ -3345,7 +3345,7 @@ func TestCloseDiscGetObjectFailsWhenStagedSmallObjectCannotFlush(t *testing.T) {
 	}
 }
 
-func TestForceCloseDiscDiscardsStagedSmallObjectAndCloses(t *testing.T) {
+func TestForceCloseDiscFlushesStagedSmallObjectBeforeClosing(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
 	if err != nil {
@@ -3354,11 +3354,143 @@ func TestForceCloseDiscDiscardsStagedSmallObjectAndCloses(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	const bucket = "bucket1"
+	payload := []byte("staged")
 	stageDir := t.TempDir()
 	stagePath := filepath.Join(stageDir, "stage.pack")
-	if err := os.WriteFile(stagePath, []byte("staged"), 0o600); err != nil {
+	if err := os.WriteFile(stagePath, payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.StoreBurnbridgeCommitted(nil, bucket, "staged.txt", &meta.BurnbridgeCommittedRecord{
+		JobID:        "staged-small-object",
+		Status:       "staged",
+		Size:         int64(len(payload)),
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stage := &smallObjectStageRecord{
+		Bucket:      bucket,
+		Key:         "staged.txt",
+		PackPath:    stagePath,
+		LogicalSize: int64(len(payload)),
+		ChecksumMD5: bbSegmentMD5Hex(payload),
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, bucket, "staged.txt", burnbridgeSmallObjectStageAttr, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	stream := &testUploadObjectStream{
+		dynamicAck: true,
+		ackQueue: []*burnbridgev1.UploadObjectAck{
+			{DiscExtents: []*burnbridgev1.DiscExtent{{DiscAddress: "1000", FileSize: 2048}}},
+		},
+	}
+	var gotCloseDisc bool
+	var createCalls atomic.Int32
+	var commitCalls atomic.Int32
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: bucket,
+		udfLabel:     "BUCKET1",
+		chunkSize:    1024,
+		smallBatch:   newSmallObjectBatcher(nil, 1024, 8, time.Minute),
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-CLOSEDISC-FORCE-FLUSH"), nil
+			},
+			createJobFn: func(context.Context, *burnbridgev1.CreateJobRequest, ...grpc.CallOption) (*burnbridgev1.CreateJobResponse, error) {
+				createCalls.Add(1)
+				return &burnbridgev1.CreateJobResponse{JobId: "job-pack"}, nil
+			},
+			uploadObjectFn: func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error) {
+				return stream, nil
+			},
+			commitJobFn: func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error) {
+				commitCalls.Add(1)
+				return &burnbridgev1.CommitJobResponse{JobId: "job-pack", Status: "layout_persisted"}, nil
+			},
+			finalizeFn: func(_ context.Context, req *burnbridgev1.FinalizeLayoutRequest, _ ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				gotCloseDisc = req.GetCloseDisc()
+				return &burnbridgev1.FinalizeLayoutResponse{Bucket: bucket, Status: "closed"}, nil
+			},
+		},
+	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
+
+	out, err := b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("close-disc-force")),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = out.Body.Close() }()
+	if !gotCloseDisc {
+		t.Fatal("expected force close-disc to invoke FinalizeLayout with closeDisc=true")
+	}
+	if createCalls.Load() != 1 || commitCalls.Load() != 1 {
+		t.Fatalf("expected staged flush to create and commit one pack, create=%d commit=%d", createCalls.Load(), commitCalls.Load())
+	}
+
+	body, err := io.ReadAll(out.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var envelope burnbridgeControlEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if !envelope.Ok {
+		t.Fatalf("expected force close-disc ok=true, got error %+v", envelope.Error)
+	}
+	data, err := json.Marshal(envelope.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc meta.BurnbridgeFinalizeLayoutDocument
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if !doc.CloseDisc || !doc.Force {
+		t.Fatalf("expected closeDisc=true and force=true, got closeDisc=%t force=%t", doc.CloseDisc, doc.Force)
+	}
+	if doc.StagedFlushError != "" {
+		t.Fatalf("expected no staged flush error, got %q", doc.StagedFlushError)
+	}
+	if len(doc.Discarded) != 0 {
+		t.Fatalf("expected no discarded objects when staged flush succeeds, got %#v", doc.Discarded)
+	}
+	rec, err := store.GetBurnbridgeCommittedRecord(bucket, "staged.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "layout_persisted" || rec.JobID != "job-pack" {
+		t.Fatalf("expected staged object to be persisted, got %#v", rec)
+	}
+	if _, err := b.loadSmallObjectStage(bucket, "staged.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
+		t.Fatalf("staged attribute should be removed after successful flush, got %v", err)
+	}
+	if _, err := os.Stat(stagePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stage pack should be removed after successful flush, got %v", err)
+	}
+}
+
+func TestForceCloseDiscDiscardsStagedSmallObjectWhenFlushFailsAndCloses(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "bucket1"
+	stagePath := filepath.Join(t.TempDir(), "missing-stage.pack")
 	if err := store.StoreBurnbridgeCommitted(nil, bucket, "staged.txt", &meta.BurnbridgeCommittedRecord{
 		JobID:        "staged-small-object",
 		Status:       "staged",
@@ -3438,6 +3570,9 @@ func TestForceCloseDiscDiscardsStagedSmallObjectAndCloses(t *testing.T) {
 	if !doc.CloseDisc || !doc.Force {
 		t.Fatalf("expected closeDisc=true and force=true, got closeDisc=%t force=%t", doc.CloseDisc, doc.Force)
 	}
+	if doc.StagedFlushError == "" {
+		t.Fatal("expected staged flush error to be recorded")
+	}
 	if len(doc.Discarded) != 1 || doc.Discarded[0].ObjectKey != "staged.txt" {
 		t.Fatalf("expected staged.txt discard report, got %#v", doc.Discarded)
 	}
@@ -3446,9 +3581,6 @@ func TestForceCloseDiscDiscardsStagedSmallObjectAndCloses(t *testing.T) {
 	}
 	if _, err := b.loadSmallObjectStage(bucket, "staged.txt"); !errors.Is(err, meta.ErrNoSuchKey) {
 		t.Fatalf("staged attribute should be removed, got %v", err)
-	}
-	if _, err := os.Stat(stagePath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stage pack should be removed, got %v", err)
 	}
 }
 
