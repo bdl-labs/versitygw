@@ -44,29 +44,44 @@ type Gateway struct {
 }
 
 type Recorder struct {
-	DriveIndex                       int    `json:"DriveIndex"`
-	LayoutDbPath                     string `json:"LayoutDbPath"`
-	MetadataDbFileNameTemplate       string `json:"MetadataDbFileNameTemplate"`
-	GrpcChunkSize                    int    `json:"GrpcChunkSize"`
-	MaxReceiveMessageSize            int    `json:"MaxReceiveMessageSize"`
-	MaxSendMessageSize               int    `json:"MaxSendMessageSize"`
-	Http2InitialConnectionWindowSize int    `json:"Http2InitialConnectionWindowSize"`
-	Http2InitialStreamWindowSize     int    `json:"Http2InitialStreamWindowSize"`
-	FinalizeReservePercent           int    `json:"FinalizeReservePercent"`
-	FinalizeReserveBytes             int64  `json:"FinalizeReserveBytes"`
-	DiscSerialStrategy               string `json:"DiscSerialStrategy"`
-	VolumeLabelStrategy              string `json:"VolumeLabelStrategy"`
-	SerialPrefix                     string `json:"SerialPrefix"`
-	VolumeLabelPrefix                string `json:"VolumeLabelPrefix"`
-	GeneratedSerialLength            int    `json:"GeneratedSerialLength"`
-	GeneratedVolumeLabelLength       int    `json:"GeneratedVolumeLabelLength"`
-	AllowCreateBucketBinding         bool   `json:"AllowCreateBucketBinding"`
-	LicenseFilePath                  string `json:"LicenseFilePath"`
+	DriveIndex                               int    `json:"DriveIndex"`
+	LayoutDbPath                             string `json:"LayoutDbPath"`
+	MetadataDbFileNameTemplate               string `json:"MetadataDbFileNameTemplate"`
+	GrpcChunkSize                            int    `json:"GrpcChunkSize"`
+	MaxReceiveMessageSize                    int    `json:"MaxReceiveMessageSize"`
+	MaxSendMessageSize                       int    `json:"MaxSendMessageSize"`
+	Http2InitialConnectionWindowSize         int    `json:"Http2InitialConnectionWindowSize"`
+	Http2InitialStreamWindowSize             int    `json:"Http2InitialStreamWindowSize"`
+	FinalizeReservePercent                   int    `json:"FinalizeReservePercent"`
+	FinalizeReserveBytes                     int64  `json:"FinalizeReserveBytes"`
+	UncommittedUploadJobTimeoutSeconds       int    `json:"UncommittedUploadJobTimeoutSeconds"`
+	UncommittedUploadJobScanSeconds          int    `json:"UncommittedUploadJobScanSeconds"`
+	PostFinalizeMediaRecoveryMode            string `json:"PostFinalizeMediaRecoveryMode"`
+	DisableExplicitSpeedControl              bool   `json:"DisableExplicitSpeedControl"`
+	CdWriteSpeedX                            string `json:"CdWriteSpeedX"`
+	DvdWriteSpeedX                           string `json:"DvdWriteSpeedX"`
+	BdWriteSpeedX                            string `json:"BdWriteSpeedX"`
+	DiscSerialStrategy                       string `json:"DiscSerialStrategy"`
+	VolumeLabelStrategy                      string `json:"VolumeLabelStrategy"`
+	SerialPrefix                             string `json:"SerialPrefix"`
+	VolumeLabelPrefix                        string `json:"VolumeLabelPrefix"`
+	GeneratedSerialLength                    int    `json:"GeneratedSerialLength"`
+	GeneratedVolumeLabelLength               int    `json:"GeneratedVolumeLabelLength"`
+	AllowCreateBucketBinding                 bool   `json:"AllowCreateBucketBinding"`
+	AnchorEnabled                            bool   `json:"AnchorEnabled"`
+	AnchorRecoveryEnabled                    bool   `json:"AnchorRecoveryEnabled"`
+	AnchorCopies                             int    `json:"AnchorCopies"`
+	AnchorScanBlocks                         int    `json:"AnchorScanBlocks"`
+	AnchorScanReadBatchBlocks                int    `json:"AnchorScanReadBatchBlocks"`
+	AnchorScanMaxConsecutiveUnreadableBlocks int    `json:"AnchorScanMaxConsecutiveUnreadableBlocks"`
+	HiddenUdfLayoutEnabled                   bool   `json:"HiddenUdfLayoutEnabled"`
+	LicenseFilePath                          string `json:"LicenseFilePath"`
 }
 
 type Runtime struct {
 	SectorSizeBytes            int   `json:"SectorSizeBytes"`
 	BlocksPerTransfer          int   `json:"BlocksPerTransfer"`
+	ReadBlocksPerTransfer      int   `json:"ReadBlocksPerTransfer"`
 	SessionCacheCapacityBytes  int64 `json:"SessionCacheCapacityBytes"`
 	WriteBufferBytes           int   `json:"WriteBufferBytes"`
 	WriteBufferSlotCount       int   `json:"WriteBufferSlotCount"`
@@ -74,6 +89,8 @@ type Runtime struct {
 	ReadQueueCapacity          int   `json:"ReadQueueCapacity"`
 	RedundancyReadWindowBlocks int   `json:"RedundancyReadWindowBlocks"`
 	PlainReadWindowBlocks      int   `json:"PlainReadWindowBlocks"`
+	ReadOutputBufferBytes      int   `json:"ReadOutputBufferBytes"`
+	ReadOutputBufferSlotCount  int   `json:"ReadOutputBufferSlotCount"`
 }
 
 type Redundancy struct {
@@ -150,28 +167,43 @@ func DefaultFile(path string) File {
 			},
 			ReadMountPath: "",
 			Recorder: Recorder{
-				DriveIndex:                       0,
-				LayoutDbPath:                     "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\udf-layout.db",
-				MetadataDbFileNameTemplate:       "__archive_{bucket}.sqlite3",
-				GrpcChunkSize:                    65536,
-				MaxReceiveMessageSize:            81920,
-				MaxSendMessageSize:               81920,
-				Http2InitialConnectionWindowSize: 4194304,
-				Http2InitialStreamWindowSize:     2097152,
-				FinalizeReservePercent:           3,
-				FinalizeReserveBytes:             67108864,
-				DiscSerialStrategy:               "hash",
-				VolumeLabelStrategy:              "serial",
-				SerialPrefix:                     "OA",
-				VolumeLabelPrefix:                "DISC",
-				GeneratedSerialLength:            24,
-				GeneratedVolumeLabelLength:       24,
-				AllowCreateBucketBinding:         true,
-				LicenseFilePath:                  "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\license.xml",
+				DriveIndex:                               0,
+				LayoutDbPath:                             "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\udf-layout.db",
+				MetadataDbFileNameTemplate:               "__archive_{bucket}.sqlite3",
+				GrpcChunkSize:                            65536,
+				MaxReceiveMessageSize:                    81920,
+				MaxSendMessageSize:                       81920,
+				Http2InitialConnectionWindowSize:         4194304,
+				Http2InitialStreamWindowSize:             2097152,
+				FinalizeReservePercent:                   3,
+				FinalizeReserveBytes:                     67108864,
+				UncommittedUploadJobTimeoutSeconds:       600,
+				UncommittedUploadJobScanSeconds:          5,
+				PostFinalizeMediaRecoveryMode:            "tray-refresh-reload-host",
+				DisableExplicitSpeedControl:              true,
+				CdWriteSpeedX:                            "max",
+				DvdWriteSpeedX:                           "max",
+				BdWriteSpeedX:                            "max",
+				DiscSerialStrategy:                       "hash",
+				VolumeLabelStrategy:                      "serial",
+				SerialPrefix:                             "OA",
+				VolumeLabelPrefix:                        "DISC",
+				GeneratedSerialLength:                    24,
+				GeneratedVolumeLabelLength:               24,
+				AllowCreateBucketBinding:                 true,
+				AnchorEnabled:                            true,
+				AnchorRecoveryEnabled:                    true,
+				AnchorCopies:                             2,
+				AnchorScanBlocks:                         1048576,
+				AnchorScanReadBatchBlocks:                256,
+				AnchorScanMaxConsecutiveUnreadableBlocks: 128,
+				HiddenUdfLayoutEnabled:                   false,
+				LicenseFilePath:                          "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\license.xml",
 			},
 			Runtime: Runtime{
 				SectorSizeBytes:            2048,
 				BlocksPerTransfer:          32,
+				ReadBlocksPerTransfer:      0,
 				SessionCacheCapacityBytes:  67108864,
 				WriteBufferBytes:           33554432,
 				WriteBufferSlotCount:       2,
@@ -179,6 +211,8 @@ func DefaultFile(path string) File {
 				ReadQueueCapacity:          1,
 				RedundancyReadWindowBlocks: 320,
 				PlainReadWindowBlocks:      320,
+				ReadOutputBufferBytes:      134217728,
+				ReadOutputBufferSlotCount:  2,
 			},
 			Redundancy: Redundancy{
 				Enabled:          true,
@@ -309,6 +343,36 @@ func Load(configPath string) (File, string, error) {
 	if cfg.OpticalArchive.Recorder.FinalizeReserveBytes < 0 {
 		cfg.OpticalArchive.Recorder.FinalizeReserveBytes = defaults.OpticalArchive.Recorder.FinalizeReserveBytes
 	}
+	if cfg.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds <= 0 {
+		cfg.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds = defaults.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds
+	}
+	if cfg.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds <= 0 {
+		cfg.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds = defaults.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode) == "" {
+		cfg.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode = defaults.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.CdWriteSpeedX) == "" {
+		cfg.OpticalArchive.Recorder.CdWriteSpeedX = defaults.OpticalArchive.Recorder.CdWriteSpeedX
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.DvdWriteSpeedX) == "" {
+		cfg.OpticalArchive.Recorder.DvdWriteSpeedX = defaults.OpticalArchive.Recorder.DvdWriteSpeedX
+	}
+	if strings.TrimSpace(cfg.OpticalArchive.Recorder.BdWriteSpeedX) == "" {
+		cfg.OpticalArchive.Recorder.BdWriteSpeedX = defaults.OpticalArchive.Recorder.BdWriteSpeedX
+	}
+	if cfg.OpticalArchive.Recorder.AnchorCopies <= 0 {
+		cfg.OpticalArchive.Recorder.AnchorCopies = defaults.OpticalArchive.Recorder.AnchorCopies
+	}
+	if cfg.OpticalArchive.Recorder.AnchorScanBlocks <= 0 {
+		cfg.OpticalArchive.Recorder.AnchorScanBlocks = defaults.OpticalArchive.Recorder.AnchorScanBlocks
+	}
+	if cfg.OpticalArchive.Recorder.AnchorScanReadBatchBlocks <= 0 {
+		cfg.OpticalArchive.Recorder.AnchorScanReadBatchBlocks = defaults.OpticalArchive.Recorder.AnchorScanReadBatchBlocks
+	}
+	if cfg.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks <= 0 {
+		cfg.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks = defaults.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks
+	}
 	if strings.TrimSpace(cfg.OpticalArchive.Recorder.LicenseFilePath) == "" {
 		cfg.OpticalArchive.Recorder.LicenseFilePath = defaults.OpticalArchive.Recorder.LicenseFilePath
 	}
@@ -406,6 +470,13 @@ func applyEnvOverrides(cfg *File) {
 	applyIntOverride(&cfg.OpticalArchive.Recorder.Http2InitialStreamWindowSize, "OpticalArchive", "Recorder", "Http2InitialStreamWindowSize")
 	applyIntOverride(&cfg.OpticalArchive.Recorder.FinalizeReservePercent, "OpticalArchive", "Recorder", "FinalizeReservePercent")
 	applyInt64Override(&cfg.OpticalArchive.Recorder.FinalizeReserveBytes, "OpticalArchive", "Recorder", "FinalizeReserveBytes")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds, "OpticalArchive", "Recorder", "UncommittedUploadJobTimeoutSeconds")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds, "OpticalArchive", "Recorder", "UncommittedUploadJobScanSeconds")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode, "OpticalArchive", "Recorder", "PostFinalizeMediaRecoveryMode")
+	applyBoolOverride(&cfg.OpticalArchive.Recorder.DisableExplicitSpeedControl, "OpticalArchive", "Recorder", "DisableExplicitSpeedControl")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.CdWriteSpeedX, "OpticalArchive", "Recorder", "CdWriteSpeedX")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.DvdWriteSpeedX, "OpticalArchive", "Recorder", "DvdWriteSpeedX")
+	applyStringOverride(&cfg.OpticalArchive.Recorder.BdWriteSpeedX, "OpticalArchive", "Recorder", "BdWriteSpeedX")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.DiscSerialStrategy, "OpticalArchive", "Recorder", "DiscSerialStrategy")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.VolumeLabelStrategy, "OpticalArchive", "Recorder", "VolumeLabelStrategy")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.SerialPrefix, "OpticalArchive", "Recorder", "SerialPrefix")
@@ -413,10 +484,18 @@ func applyEnvOverrides(cfg *File) {
 	applyIntOverride(&cfg.OpticalArchive.Recorder.GeneratedSerialLength, "OpticalArchive", "Recorder", "GeneratedSerialLength")
 	applyIntOverride(&cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength, "OpticalArchive", "Recorder", "GeneratedVolumeLabelLength")
 	applyBoolOverride(&cfg.OpticalArchive.Recorder.AllowCreateBucketBinding, "OpticalArchive", "Recorder", "AllowCreateBucketBinding")
+	applyBoolOverride(&cfg.OpticalArchive.Recorder.AnchorEnabled, "OpticalArchive", "Recorder", "AnchorEnabled")
+	applyBoolOverride(&cfg.OpticalArchive.Recorder.AnchorRecoveryEnabled, "OpticalArchive", "Recorder", "AnchorRecoveryEnabled")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.AnchorCopies, "OpticalArchive", "Recorder", "AnchorCopies")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.AnchorScanBlocks, "OpticalArchive", "Recorder", "AnchorScanBlocks")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.AnchorScanReadBatchBlocks, "OpticalArchive", "Recorder", "AnchorScanReadBatchBlocks")
+	applyIntOverride(&cfg.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks, "OpticalArchive", "Recorder", "AnchorScanMaxConsecutiveUnreadableBlocks")
+	applyBoolOverride(&cfg.OpticalArchive.Recorder.HiddenUdfLayoutEnabled, "OpticalArchive", "Recorder", "HiddenUdfLayoutEnabled")
 	applyStringOverride(&cfg.OpticalArchive.Recorder.LicenseFilePath, "OpticalArchive", "Recorder", "LicenseFilePath")
 
 	applyIntOverride(&cfg.OpticalArchive.Runtime.SectorSizeBytes, "OpticalArchive", "Runtime", "SectorSizeBytes")
 	applyIntOverride(&cfg.OpticalArchive.Runtime.BlocksPerTransfer, "OpticalArchive", "Runtime", "BlocksPerTransfer")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.ReadBlocksPerTransfer, "OpticalArchive", "Runtime", "ReadBlocksPerTransfer")
 	applyInt64Override(&cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes, "OpticalArchive", "Runtime", "SessionCacheCapacityBytes")
 	applyIntOverride(&cfg.OpticalArchive.Runtime.WriteBufferBytes, "OpticalArchive", "Runtime", "WriteBufferBytes")
 	applyIntOverride(&cfg.OpticalArchive.Runtime.WriteBufferSlotCount, "OpticalArchive", "Runtime", "WriteBufferSlotCount")
@@ -424,6 +503,8 @@ func applyEnvOverrides(cfg *File) {
 	applyIntOverride(&cfg.OpticalArchive.Runtime.ReadQueueCapacity, "OpticalArchive", "Runtime", "ReadQueueCapacity")
 	applyIntOverride(&cfg.OpticalArchive.Runtime.RedundancyReadWindowBlocks, "OpticalArchive", "Runtime", "RedundancyReadWindowBlocks")
 	applyIntOverride(&cfg.OpticalArchive.Runtime.PlainReadWindowBlocks, "OpticalArchive", "Runtime", "PlainReadWindowBlocks")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.ReadOutputBufferBytes, "OpticalArchive", "Runtime", "ReadOutputBufferBytes")
+	applyIntOverride(&cfg.OpticalArchive.Runtime.ReadOutputBufferSlotCount, "OpticalArchive", "Runtime", "ReadOutputBufferSlotCount")
 
 	applyBoolOverride(&cfg.OpticalArchive.Redundancy.Enabled, "OpticalArchive", "Redundancy", "Enabled")
 	applyIntOverride(&cfg.OpticalArchive.Redundancy.DataBlockCount, "OpticalArchive", "Redundancy", "DataBlockCount")

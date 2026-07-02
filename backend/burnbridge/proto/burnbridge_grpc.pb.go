@@ -34,6 +34,11 @@ const (
 	BurnBridge_HandleMediaChange_FullMethodName          = "/burnbridge.v1.BurnBridge/HandleMediaChange"
 	BurnBridge_HandleTray_FullMethodName                 = "/burnbridge.v1.BurnBridge/HandleTray"
 	BurnBridge_GetImportedBucketState_FullMethodName     = "/burnbridge.v1.BurnBridge/GetImportedBucketState"
+	BurnBridge_DeleteObjects_FullMethodName              = "/burnbridge.v1.BurnBridge/DeleteObjects"
+	BurnBridge_ListMetadataDbVersions_FullMethodName     = "/burnbridge.v1.BurnBridge/ListMetadataDbVersions"
+	BurnBridge_RestoreMetadataDbVersion_FullMethodName   = "/burnbridge.v1.BurnBridge/RestoreMetadataDbVersion"
+	BurnBridge_GetAnchorStatus_FullMethodName            = "/burnbridge.v1.BurnBridge/GetAnchorStatus"
+	BurnBridge_ConfigureRuntimeOptions_FullMethodName    = "/burnbridge.v1.BurnBridge/ConfigureRuntimeOptions"
 	BurnBridge_FinalizeLayout_FullMethodName             = "/burnbridge.v1.BurnBridge/FinalizeLayout"
 	BurnBridge_UpdateLicense_FullMethodName              = "/burnbridge.v1.BurnBridge/UpdateLicense"
 	BurnBridge_UploadUpgradePackage_FullMethodName       = "/burnbridge.v1.BurnBridge/UploadUpgradePackage"
@@ -82,6 +87,16 @@ type BurnBridgeClient interface {
 	HandleTray(ctx context.Context, in *HandleTrayRequest, opts ...grpc.CallOption) (*HandleTrayResponse, error)
 	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
 	GetImportedBucketState(ctx context.Context, in *GetImportedBucketStateRequest, opts ...grpc.CallOption) (*GetImportedBucketStateResponse, error)
+	// Mark one or more objects as logically deleted in recorder metadata.
+	DeleteObjects(ctx context.Context, in *DeleteObjectsRequest, opts ...grpc.CallOption) (*DeleteObjectsResponse, error)
+	// List metadata database artifact versions known by the recorder.
+	ListMetadataDbVersions(ctx context.Context, in *ListMetadataDbVersionsRequest, opts ...grpc.CallOption) (*ListMetadataDbVersionsResponse, error)
+	// Restore a metadata database artifact generation as the recorder's current working view.
+	RestoreMetadataDbVersion(ctx context.Context, in *RestoreMetadataDbVersionRequest, opts ...grpc.CallOption) (*RestoreMetadataDbVersionResponse, error)
+	// Report BRS anchor state for the active disc/bucket.
+	GetAnchorStatus(ctx context.Context, in *GetAnchorStatusRequest, opts ...grpc.CallOption) (*GetAnchorStatusResponse, error)
+	// Configure recorder runtime-only options without editing config files or restarting.
+	ConfigureRuntimeOptions(ctx context.Context, in *ConfigureRuntimeOptionsRequest, opts ...grpc.CallOption) (*ConfigureRuntimeOptionsResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
 	FinalizeLayout(ctx context.Context, in *FinalizeLayoutRequest, opts ...grpc.CallOption) (*FinalizeLayoutResponse, error)
 	// Replace recorder license.xml content and optionally reload the shared burner host.
@@ -271,6 +286,56 @@ func (c *burnBridgeClient) GetImportedBucketState(ctx context.Context, in *GetIm
 	return out, nil
 }
 
+func (c *burnBridgeClient) DeleteObjects(ctx context.Context, in *DeleteObjectsRequest, opts ...grpc.CallOption) (*DeleteObjectsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteObjectsResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_DeleteObjects_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) ListMetadataDbVersions(ctx context.Context, in *ListMetadataDbVersionsRequest, opts ...grpc.CallOption) (*ListMetadataDbVersionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListMetadataDbVersionsResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_ListMetadataDbVersions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) RestoreMetadataDbVersion(ctx context.Context, in *RestoreMetadataDbVersionRequest, opts ...grpc.CallOption) (*RestoreMetadataDbVersionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RestoreMetadataDbVersionResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_RestoreMetadataDbVersion_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) GetAnchorStatus(ctx context.Context, in *GetAnchorStatusRequest, opts ...grpc.CallOption) (*GetAnchorStatusResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetAnchorStatusResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_GetAnchorStatus_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *burnBridgeClient) ConfigureRuntimeOptions(ctx context.Context, in *ConfigureRuntimeOptionsRequest, opts ...grpc.CallOption) (*ConfigureRuntimeOptionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ConfigureRuntimeOptionsResponse)
+	err := c.cc.Invoke(ctx, BurnBridge_ConfigureRuntimeOptions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *burnBridgeClient) FinalizeLayout(ctx context.Context, in *FinalizeLayoutRequest, opts ...grpc.CallOption) (*FinalizeLayoutResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(FinalizeLayoutResponse)
@@ -356,6 +421,16 @@ type BurnBridgeServer interface {
 	HandleTray(context.Context, *HandleTrayRequest) (*HandleTrayResponse, error)
 	// Return the currently imported on-disc metadata snapshot maintained by the recorder.
 	GetImportedBucketState(context.Context, *GetImportedBucketStateRequest) (*GetImportedBucketStateResponse, error)
+	// Mark one or more objects as logically deleted in recorder metadata.
+	DeleteObjects(context.Context, *DeleteObjectsRequest) (*DeleteObjectsResponse, error)
+	// List metadata database artifact versions known by the recorder.
+	ListMetadataDbVersions(context.Context, *ListMetadataDbVersionsRequest) (*ListMetadataDbVersionsResponse, error)
+	// Restore a metadata database artifact generation as the recorder's current working view.
+	RestoreMetadataDbVersion(context.Context, *RestoreMetadataDbVersionRequest) (*RestoreMetadataDbVersionResponse, error)
+	// Report BRS anchor state for the active disc/bucket.
+	GetAnchorStatus(context.Context, *GetAnchorStatusRequest) (*GetAnchorStatusResponse, error)
+	// Configure recorder runtime-only options without editing config files or restarting.
+	ConfigureRuntimeOptions(context.Context, *ConfigureRuntimeOptionsRequest) (*ConfigureRuntimeOptionsResponse, error)
 	// Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
 	FinalizeLayout(context.Context, *FinalizeLayoutRequest) (*FinalizeLayoutResponse, error)
 	// Replace recorder license.xml content and optionally reload the shared burner host.
@@ -418,6 +493,21 @@ func (UnimplementedBurnBridgeServer) HandleTray(context.Context, *HandleTrayRequ
 }
 func (UnimplementedBurnBridgeServer) GetImportedBucketState(context.Context, *GetImportedBucketStateRequest) (*GetImportedBucketStateResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method GetImportedBucketState not implemented")
+}
+func (UnimplementedBurnBridgeServer) DeleteObjects(context.Context, *DeleteObjectsRequest) (*DeleteObjectsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method DeleteObjects not implemented")
+}
+func (UnimplementedBurnBridgeServer) ListMetadataDbVersions(context.Context, *ListMetadataDbVersionsRequest) (*ListMetadataDbVersionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ListMetadataDbVersions not implemented")
+}
+func (UnimplementedBurnBridgeServer) RestoreMetadataDbVersion(context.Context, *RestoreMetadataDbVersionRequest) (*RestoreMetadataDbVersionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method RestoreMetadataDbVersion not implemented")
+}
+func (UnimplementedBurnBridgeServer) GetAnchorStatus(context.Context, *GetAnchorStatusRequest) (*GetAnchorStatusResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method GetAnchorStatus not implemented")
+}
+func (UnimplementedBurnBridgeServer) ConfigureRuntimeOptions(context.Context, *ConfigureRuntimeOptionsRequest) (*ConfigureRuntimeOptionsResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method ConfigureRuntimeOptions not implemented")
 }
 func (UnimplementedBurnBridgeServer) FinalizeLayout(context.Context, *FinalizeLayoutRequest) (*FinalizeLayoutResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method FinalizeLayout not implemented")
@@ -697,6 +787,96 @@ func _BurnBridge_GetImportedBucketState_Handler(srv interface{}, ctx context.Con
 	return interceptor(ctx, in, info, handler)
 }
 
+func _BurnBridge_DeleteObjects_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteObjectsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).DeleteObjects(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_DeleteObjects_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).DeleteObjects(ctx, req.(*DeleteObjectsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_ListMetadataDbVersions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListMetadataDbVersionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).ListMetadataDbVersions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_ListMetadataDbVersions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).ListMetadataDbVersions(ctx, req.(*ListMetadataDbVersionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_RestoreMetadataDbVersion_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RestoreMetadataDbVersionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).RestoreMetadataDbVersion(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_RestoreMetadataDbVersion_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).RestoreMetadataDbVersion(ctx, req.(*RestoreMetadataDbVersionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_GetAnchorStatus_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetAnchorStatusRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).GetAnchorStatus(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_GetAnchorStatus_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).GetAnchorStatus(ctx, req.(*GetAnchorStatusRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _BurnBridge_ConfigureRuntimeOptions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfigureRuntimeOptionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BurnBridgeServer).ConfigureRuntimeOptions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: BurnBridge_ConfigureRuntimeOptions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BurnBridgeServer).ConfigureRuntimeOptions(ctx, req.(*ConfigureRuntimeOptionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _BurnBridge_FinalizeLayout_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(FinalizeLayoutRequest)
 	if err := dec(in); err != nil {
@@ -812,6 +992,26 @@ var BurnBridge_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetImportedBucketState",
 			Handler:    _BurnBridge_GetImportedBucketState_Handler,
+		},
+		{
+			MethodName: "DeleteObjects",
+			Handler:    _BurnBridge_DeleteObjects_Handler,
+		},
+		{
+			MethodName: "ListMetadataDbVersions",
+			Handler:    _BurnBridge_ListMetadataDbVersions_Handler,
+		},
+		{
+			MethodName: "RestoreMetadataDbVersion",
+			Handler:    _BurnBridge_RestoreMetadataDbVersion_Handler,
+		},
+		{
+			MethodName: "GetAnchorStatus",
+			Handler:    _BurnBridge_GetAnchorStatus_Handler,
+		},
+		{
+			MethodName: "ConfigureRuntimeOptions",
+			Handler:    _BurnBridge_ConfigureRuntimeOptions_Handler,
 		},
 		{
 			MethodName: "FinalizeLayout",

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/versity/versitygw/archiveconfig"
+	burnbridgev1 "github.com/versity/versitygw/backend/burnbridge/proto"
 	"github.com/versity/versitygw/s3api"
 )
 
@@ -14,6 +17,7 @@ func archiveConfigRouteOptions() []s3api.Option {
 	var options []s3api.Option
 	options = append(options, archiveRoute(http.MethodGet, "/__archive/config", archiveConfigGetHandler())...)
 	options = append(options, archiveRoute(http.MethodPut, "/__archive/config", archiveConfigPutHandler())...)
+	options = append(options, archiveRoute(http.MethodPost, "/__archive/config/refresh", archiveConfigRefreshHandler())...)
 	return options
 }
 
@@ -56,11 +60,38 @@ func archiveConfigPutHandler() fiber.Handler {
 			return writeArchiveError(c, http.StatusInternalServerError, err.Error())
 		}
 
+		applyResult, applyErr := applyArchiveConfigRuntimeOptions(next)
 		return c.JSON(map[string]any{
-			"saved":  true,
-			"path":   path,
-			"groups": archiveConfigGroups(next),
-			"config": next,
+			"saved":        true,
+			"path":         path,
+			"groups":       archiveConfigGroups(next),
+			"config":       next,
+			"runtimeApply": archiveConfigRuntimeApplyPayload(applyResult, applyErr),
+		})
+	}
+}
+
+func archiveConfigRefreshHandler() fiber.Handler {
+	return func(c fiber.Ctx) error {
+		cfg, path, ok, err := authorizeArchiveConfigRequest(c)
+		if err != nil {
+			return writeArchiveErrorFrom(c, err, http.StatusInternalServerError)
+		}
+		if !ok {
+			return writeArchiveConfigUnauthorized(c)
+		}
+
+		result, applyErr := applyArchiveConfigRuntimeOptions(cfg)
+		if applyErr != nil {
+			return writeArchiveError(c, http.StatusBadGateway, applyErr.Error())
+		}
+
+		return c.JSON(map[string]any{
+			"saved":        true,
+			"path":         path,
+			"groups":       archiveConfigGroups(cfg),
+			"config":       cfg,
+			"runtimeApply": archiveConfigRuntimeApplyPayload(result, nil),
 		})
 	}
 }
@@ -118,6 +149,42 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if next.OpticalArchive.Recorder.GrpcChunkSize <= 0 {
 		next.OpticalArchive.Recorder.GrpcChunkSize = current.OpticalArchive.Recorder.GrpcChunkSize
 	}
+	if next.OpticalArchive.Recorder.MaxReceiveMessageSize <= 0 {
+		next.OpticalArchive.Recorder.MaxReceiveMessageSize = current.OpticalArchive.Recorder.MaxReceiveMessageSize
+	}
+	if next.OpticalArchive.Recorder.MaxSendMessageSize <= 0 {
+		next.OpticalArchive.Recorder.MaxSendMessageSize = current.OpticalArchive.Recorder.MaxSendMessageSize
+	}
+	if next.OpticalArchive.Recorder.Http2InitialConnectionWindowSize <= 0 {
+		next.OpticalArchive.Recorder.Http2InitialConnectionWindowSize = current.OpticalArchive.Recorder.Http2InitialConnectionWindowSize
+	}
+	if next.OpticalArchive.Recorder.Http2InitialStreamWindowSize <= 0 {
+		next.OpticalArchive.Recorder.Http2InitialStreamWindowSize = current.OpticalArchive.Recorder.Http2InitialStreamWindowSize
+	}
+	if next.OpticalArchive.Recorder.FinalizeReservePercent < 0 {
+		next.OpticalArchive.Recorder.FinalizeReservePercent = current.OpticalArchive.Recorder.FinalizeReservePercent
+	}
+	if next.OpticalArchive.Recorder.FinalizeReserveBytes < 0 {
+		next.OpticalArchive.Recorder.FinalizeReserveBytes = current.OpticalArchive.Recorder.FinalizeReserveBytes
+	}
+	if next.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds <= 0 {
+		next.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds = current.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds
+	}
+	if next.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds <= 0 {
+		next.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds = current.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds
+	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode) == "" {
+		next.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode = current.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode
+	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.CdWriteSpeedX) == "" {
+		next.OpticalArchive.Recorder.CdWriteSpeedX = current.OpticalArchive.Recorder.CdWriteSpeedX
+	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.DvdWriteSpeedX) == "" {
+		next.OpticalArchive.Recorder.DvdWriteSpeedX = current.OpticalArchive.Recorder.DvdWriteSpeedX
+	}
+	if strings.TrimSpace(next.OpticalArchive.Recorder.BdWriteSpeedX) == "" {
+		next.OpticalArchive.Recorder.BdWriteSpeedX = current.OpticalArchive.Recorder.BdWriteSpeedX
+	}
 	if strings.TrimSpace(next.OpticalArchive.Recorder.DiscSerialStrategy) == "" {
 		next.OpticalArchive.Recorder.DiscSerialStrategy = current.OpticalArchive.Recorder.DiscSerialStrategy
 	}
@@ -136,17 +203,53 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if next.OpticalArchive.Recorder.GeneratedVolumeLabelLength <= 0 {
 		next.OpticalArchive.Recorder.GeneratedVolumeLabelLength = current.OpticalArchive.Recorder.GeneratedVolumeLabelLength
 	}
+	if next.OpticalArchive.Recorder.AnchorCopies <= 0 {
+		next.OpticalArchive.Recorder.AnchorCopies = current.OpticalArchive.Recorder.AnchorCopies
+	}
+	if next.OpticalArchive.Recorder.AnchorScanBlocks <= 0 {
+		next.OpticalArchive.Recorder.AnchorScanBlocks = current.OpticalArchive.Recorder.AnchorScanBlocks
+	}
+	if next.OpticalArchive.Recorder.AnchorScanReadBatchBlocks <= 0 {
+		next.OpticalArchive.Recorder.AnchorScanReadBatchBlocks = current.OpticalArchive.Recorder.AnchorScanReadBatchBlocks
+	}
+	if next.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks <= 0 {
+		next.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks = current.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks
+	}
 	if next.OpticalArchive.Runtime.SectorSizeBytes <= 0 {
 		next.OpticalArchive.Runtime.SectorSizeBytes = current.OpticalArchive.Runtime.SectorSizeBytes
 	}
 	if next.OpticalArchive.Runtime.BlocksPerTransfer <= 0 {
 		next.OpticalArchive.Runtime.BlocksPerTransfer = current.OpticalArchive.Runtime.BlocksPerTransfer
 	}
+	if next.OpticalArchive.Runtime.ReadBlocksPerTransfer < 0 {
+		next.OpticalArchive.Runtime.ReadBlocksPerTransfer = current.OpticalArchive.Runtime.ReadBlocksPerTransfer
+	}
 	if next.OpticalArchive.Runtime.SessionCacheCapacityBytes <= 0 {
 		next.OpticalArchive.Runtime.SessionCacheCapacityBytes = current.OpticalArchive.Runtime.SessionCacheCapacityBytes
 	}
 	if next.OpticalArchive.Runtime.WriteBufferBytes < 0 {
 		next.OpticalArchive.Runtime.WriteBufferBytes = current.OpticalArchive.Runtime.WriteBufferBytes
+	}
+	if next.OpticalArchive.Runtime.WriteBufferSlotCount <= 0 {
+		next.OpticalArchive.Runtime.WriteBufferSlotCount = current.OpticalArchive.Runtime.WriteBufferSlotCount
+	}
+	if next.OpticalArchive.Runtime.GlobalWriteQueueCapacity <= 0 {
+		next.OpticalArchive.Runtime.GlobalWriteQueueCapacity = current.OpticalArchive.Runtime.GlobalWriteQueueCapacity
+	}
+	if next.OpticalArchive.Runtime.ReadQueueCapacity <= 0 {
+		next.OpticalArchive.Runtime.ReadQueueCapacity = current.OpticalArchive.Runtime.ReadQueueCapacity
+	}
+	if next.OpticalArchive.Runtime.RedundancyReadWindowBlocks <= 0 {
+		next.OpticalArchive.Runtime.RedundancyReadWindowBlocks = current.OpticalArchive.Runtime.RedundancyReadWindowBlocks
+	}
+	if next.OpticalArchive.Runtime.PlainReadWindowBlocks <= 0 {
+		next.OpticalArchive.Runtime.PlainReadWindowBlocks = current.OpticalArchive.Runtime.PlainReadWindowBlocks
+	}
+	if next.OpticalArchive.Runtime.ReadOutputBufferBytes <= 0 {
+		next.OpticalArchive.Runtime.ReadOutputBufferBytes = current.OpticalArchive.Runtime.ReadOutputBufferBytes
+	}
+	if next.OpticalArchive.Runtime.ReadOutputBufferSlotCount <= 0 {
+		next.OpticalArchive.Runtime.ReadOutputBufferSlotCount = current.OpticalArchive.Runtime.ReadOutputBufferSlotCount
 	}
 	if next.OpticalArchive.Redundancy.DataBlockCount <= 0 {
 		next.OpticalArchive.Redundancy.DataBlockCount = current.OpticalArchive.Redundancy.DataBlockCount
@@ -235,24 +338,52 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"ReadMountPath": cfg.OpticalArchive.ReadMountPath,
 		},
 		"Recorder": map[string]any{
-			"DriveIndex":                 cfg.OpticalArchive.Recorder.DriveIndex,
-			"LayoutDbPath":               cfg.OpticalArchive.Recorder.LayoutDbPath,
-			"MetadataDbFileNameTemplate": cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate,
-			"LicenseFilePath":            cfg.OpticalArchive.Recorder.LicenseFilePath,
-			"GrpcChunkSize":              cfg.OpticalArchive.Recorder.GrpcChunkSize,
-			"DiscSerialStrategy":         cfg.OpticalArchive.Recorder.DiscSerialStrategy,
-			"VolumeLabelStrategy":        cfg.OpticalArchive.Recorder.VolumeLabelStrategy,
-			"SerialPrefix":               cfg.OpticalArchive.Recorder.SerialPrefix,
-			"VolumeLabelPrefix":          cfg.OpticalArchive.Recorder.VolumeLabelPrefix,
-			"GeneratedSerialLength":      cfg.OpticalArchive.Recorder.GeneratedSerialLength,
-			"GeneratedVolumeLabelLength": cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength,
-			"AllowCreateBucketBinding":   cfg.OpticalArchive.Recorder.AllowCreateBucketBinding,
+			"DriveIndex":                               cfg.OpticalArchive.Recorder.DriveIndex,
+			"LayoutDbPath":                             cfg.OpticalArchive.Recorder.LayoutDbPath,
+			"MetadataDbFileNameTemplate":               cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate,
+			"LicenseFilePath":                          cfg.OpticalArchive.Recorder.LicenseFilePath,
+			"GrpcChunkSize":                            cfg.OpticalArchive.Recorder.GrpcChunkSize,
+			"MaxReceiveMessageSize":                    cfg.OpticalArchive.Recorder.MaxReceiveMessageSize,
+			"MaxSendMessageSize":                       cfg.OpticalArchive.Recorder.MaxSendMessageSize,
+			"Http2InitialConnectionWindowSize":         cfg.OpticalArchive.Recorder.Http2InitialConnectionWindowSize,
+			"Http2InitialStreamWindowSize":             cfg.OpticalArchive.Recorder.Http2InitialStreamWindowSize,
+			"FinalizeReservePercent":                   cfg.OpticalArchive.Recorder.FinalizeReservePercent,
+			"FinalizeReserveBytes":                     cfg.OpticalArchive.Recorder.FinalizeReserveBytes,
+			"UncommittedUploadJobTimeoutSeconds":       cfg.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds,
+			"UncommittedUploadJobScanSeconds":          cfg.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds,
+			"PostFinalizeMediaRecoveryMode":            cfg.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode,
+			"DisableExplicitSpeedControl":              cfg.OpticalArchive.Recorder.DisableExplicitSpeedControl,
+			"CdWriteSpeedX":                            cfg.OpticalArchive.Recorder.CdWriteSpeedX,
+			"DvdWriteSpeedX":                           cfg.OpticalArchive.Recorder.DvdWriteSpeedX,
+			"BdWriteSpeedX":                            cfg.OpticalArchive.Recorder.BdWriteSpeedX,
+			"DiscSerialStrategy":                       cfg.OpticalArchive.Recorder.DiscSerialStrategy,
+			"VolumeLabelStrategy":                      cfg.OpticalArchive.Recorder.VolumeLabelStrategy,
+			"SerialPrefix":                             cfg.OpticalArchive.Recorder.SerialPrefix,
+			"VolumeLabelPrefix":                        cfg.OpticalArchive.Recorder.VolumeLabelPrefix,
+			"GeneratedSerialLength":                    cfg.OpticalArchive.Recorder.GeneratedSerialLength,
+			"GeneratedVolumeLabelLength":               cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength,
+			"AllowCreateBucketBinding":                 cfg.OpticalArchive.Recorder.AllowCreateBucketBinding,
+			"AnchorEnabled":                            cfg.OpticalArchive.Recorder.AnchorEnabled,
+			"AnchorRecoveryEnabled":                    cfg.OpticalArchive.Recorder.AnchorRecoveryEnabled,
+			"AnchorCopies":                             cfg.OpticalArchive.Recorder.AnchorCopies,
+			"AnchorScanBlocks":                         cfg.OpticalArchive.Recorder.AnchorScanBlocks,
+			"AnchorScanReadBatchBlocks":                cfg.OpticalArchive.Recorder.AnchorScanReadBatchBlocks,
+			"AnchorScanMaxConsecutiveUnreadableBlocks": cfg.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks,
+			"HiddenUdfLayoutEnabled":                   cfg.OpticalArchive.Recorder.HiddenUdfLayoutEnabled,
 		},
 		"Runtime": map[string]any{
-			"SectorSizeBytes":           cfg.OpticalArchive.Runtime.SectorSizeBytes,
-			"BlocksPerTransfer":         cfg.OpticalArchive.Runtime.BlocksPerTransfer,
-			"SessionCacheCapacityBytes": cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes,
-			"WriteBufferBytes":          cfg.OpticalArchive.Runtime.WriteBufferBytes,
+			"SectorSizeBytes":            cfg.OpticalArchive.Runtime.SectorSizeBytes,
+			"BlocksPerTransfer":          cfg.OpticalArchive.Runtime.BlocksPerTransfer,
+			"ReadBlocksPerTransfer":      cfg.OpticalArchive.Runtime.ReadBlocksPerTransfer,
+			"SessionCacheCapacityBytes":  cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes,
+			"WriteBufferBytes":           cfg.OpticalArchive.Runtime.WriteBufferBytes,
+			"WriteBufferSlotCount":       cfg.OpticalArchive.Runtime.WriteBufferSlotCount,
+			"GlobalWriteQueueCapacity":   cfg.OpticalArchive.Runtime.GlobalWriteQueueCapacity,
+			"ReadQueueCapacity":          cfg.OpticalArchive.Runtime.ReadQueueCapacity,
+			"RedundancyReadWindowBlocks": cfg.OpticalArchive.Runtime.RedundancyReadWindowBlocks,
+			"PlainReadWindowBlocks":      cfg.OpticalArchive.Runtime.PlainReadWindowBlocks,
+			"ReadOutputBufferBytes":      cfg.OpticalArchive.Runtime.ReadOutputBufferBytes,
+			"ReadOutputBufferSlotCount":  cfg.OpticalArchive.Runtime.ReadOutputBufferSlotCount,
 		},
 		"Redundancy": map[string]any{
 			"Enabled":          cfg.OpticalArchive.Redundancy.Enabled,
@@ -301,4 +432,53 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"MountRefreshCommand":          cfg.OpticalArchive.LinuxServices.MountRefreshCommand,
 		},
 	}
+}
+
+func applyArchiveConfigRuntimeOptions(cfg archiveconfig.File) (map[string]any, error) {
+	client, conn, err := openRecorderClient(cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := client.ConfigureRuntimeOptions(ctx, &burnbridgev1.ConfigureRuntimeOptionsRequest{
+		SetHiddenUdfLayoutEnabled: true,
+		HiddenUdfLayoutEnabled:    cfg.OpticalArchive.Recorder.HiddenUdfLayoutEnabled,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]any{
+		"applied":                   true,
+		"hiddenUdfLayoutEnabled":    resp.GetHiddenUdfLayoutEnabled(),
+		"hiddenUdfLayoutOverridden": resp.GetHiddenUdfLayoutOverridden(),
+		"hiddenUdfLayoutSource":     resp.GetHiddenUdfLayoutSource(),
+		"message":                   resp.GetMessage(),
+		"restartRequiredFields": []string{
+			"Recorder.AnchorEnabled",
+			"Recorder.AnchorRecoveryEnabled",
+			"Recorder.AnchorCopies",
+			"Recorder.AnchorScanBlocks",
+			"Recorder.AnchorScanReadBatchBlocks",
+			"Recorder.AnchorScanMaxConsecutiveUnreadableBlocks",
+			"Runtime.*",
+			"GatewayInterop.*",
+		},
+	}, nil
+}
+
+func archiveConfigRuntimeApplyPayload(result map[string]any, err error) map[string]any {
+	if err != nil {
+		return map[string]any{
+			"applied": false,
+			"error":   err.Error(),
+		}
+	}
+	if result == nil {
+		return map[string]any{"applied": false}
+	}
+	return result
 }

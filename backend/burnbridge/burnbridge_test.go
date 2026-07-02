@@ -35,9 +35,14 @@ type testBurnBridgeClient struct {
 	uploadObjectFn        func(context.Context, ...grpc.CallOption) (grpc.BidiStreamingClient[burnbridgev1.UploadObjectChunk, burnbridgev1.UploadObjectAck], error)
 	commitJobFn           func(context.Context, *burnbridgev1.CommitJobRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobResponse, error)
 	commitJobBatchFn      func(context.Context, *burnbridgev1.CommitJobBatchRequest, ...grpc.CallOption) (*burnbridgev1.CommitJobBatchResponse, error)
+	deleteObjectsFn       func(context.Context, *burnbridgev1.DeleteObjectsRequest, ...grpc.CallOption) (*burnbridgev1.DeleteObjectsResponse, error)
 	cancelJobFn           func(context.Context, *burnbridgev1.CancelJobRequest, ...grpc.CallOption) (*burnbridgev1.CancelJobResponse, error)
 	registerPullSourceFn  func(context.Context, *burnbridgev1.RegisterS3ObjectPullSourceRequest, ...grpc.CallOption) (*burnbridgev1.RegisterS3ObjectPullSourceResponse, error)
 	finalizeFn            func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error)
+	listDbVersionsFn      func(context.Context, *burnbridgev1.ListMetadataDbVersionsRequest, ...grpc.CallOption) (*burnbridgev1.ListMetadataDbVersionsResponse, error)
+	restoreDbVersionFn    func(context.Context, *burnbridgev1.RestoreMetadataDbVersionRequest, ...grpc.CallOption) (*burnbridgev1.RestoreMetadataDbVersionResponse, error)
+	anchorStatusFn        func(context.Context, *burnbridgev1.GetAnchorStatusRequest, ...grpc.CallOption) (*burnbridgev1.GetAnchorStatusResponse, error)
+	runtimeOptionsFn      func(context.Context, *burnbridgev1.ConfigureRuntimeOptionsRequest, ...grpc.CallOption) (*burnbridgev1.ConfigureRuntimeOptionsResponse, error)
 	getDiscInfoFn         func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error)
 	handleMediaChangeFn   func(context.Context, *burnbridgev1.HandleMediaChangeRequest, ...grpc.CallOption) (*burnbridgev1.HandleMediaChangeResponse, error)
 	handleTrayFn          func(context.Context, *burnbridgev1.HandleTrayRequest, ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error)
@@ -100,6 +105,21 @@ func (c testBurnBridgeClient) CommitJobBatch(ctx context.Context, req *burnbridg
 		return c.commitJobBatchFn(ctx, req, opts...)
 	}
 	panic("unexpected CommitJobBatch call")
+}
+
+func (c testBurnBridgeClient) DeleteObjects(ctx context.Context, req *burnbridgev1.DeleteObjectsRequest, opts ...grpc.CallOption) (*burnbridgev1.DeleteObjectsResponse, error) {
+	if c.deleteObjectsFn != nil {
+		return c.deleteObjectsFn(ctx, req, opts...)
+	}
+	resp := &burnbridgev1.DeleteObjectsResponse{Bucket: req.GetBucket()}
+	for _, key := range req.GetObjectKeys() {
+		resp.Objects = append(resp.Objects, &burnbridgev1.DeleteObjectResult{
+			ObjectKey: key,
+			Deleted:   true,
+			Message:   "deleted",
+		})
+	}
+	return resp, nil
 }
 
 func (testBurnBridgeClient) GetJobStatus(context.Context, *burnbridgev1.GetJobStatusRequest, ...grpc.CallOption) (*burnbridgev1.GetJobStatusResponse, error) {
@@ -174,6 +194,42 @@ func (c testBurnBridgeClient) FinalizeLayout(ctx context.Context, req *burnbridg
 		return c.finalizeFn(ctx, req, opts...)
 	}
 	panic("unexpected FinalizeLayout call")
+}
+
+func (c testBurnBridgeClient) ListMetadataDbVersions(ctx context.Context, req *burnbridgev1.ListMetadataDbVersionsRequest, opts ...grpc.CallOption) (*burnbridgev1.ListMetadataDbVersionsResponse, error) {
+	if c.listDbVersionsFn != nil {
+		return c.listDbVersionsFn(ctx, req, opts...)
+	}
+	return &burnbridgev1.ListMetadataDbVersionsResponse{Bucket: req.GetBucket()}, nil
+}
+
+func (c testBurnBridgeClient) RestoreMetadataDbVersion(ctx context.Context, req *burnbridgev1.RestoreMetadataDbVersionRequest, opts ...grpc.CallOption) (*burnbridgev1.RestoreMetadataDbVersionResponse, error) {
+	if c.restoreDbVersionFn != nil {
+		return c.restoreDbVersionFn(ctx, req, opts...)
+	}
+	return &burnbridgev1.RestoreMetadataDbVersionResponse{
+		Bucket:     req.GetBucket(),
+		Generation: req.GetGeneration(),
+		Status:     "ok",
+	}, nil
+}
+
+func (c testBurnBridgeClient) GetAnchorStatus(ctx context.Context, req *burnbridgev1.GetAnchorStatusRequest, opts ...grpc.CallOption) (*burnbridgev1.GetAnchorStatusResponse, error) {
+	if c.anchorStatusFn != nil {
+		return c.anchorStatusFn(ctx, req, opts...)
+	}
+	return &burnbridgev1.GetAnchorStatusResponse{Bucket: req.GetBucket()}, nil
+}
+
+func (c testBurnBridgeClient) ConfigureRuntimeOptions(ctx context.Context, req *burnbridgev1.ConfigureRuntimeOptionsRequest, opts ...grpc.CallOption) (*burnbridgev1.ConfigureRuntimeOptionsResponse, error) {
+	if c.runtimeOptionsFn != nil {
+		return c.runtimeOptionsFn(ctx, req, opts...)
+	}
+	return &burnbridgev1.ConfigureRuntimeOptionsResponse{
+		HiddenUdfLayoutEnabled:    req.GetHiddenUdfLayoutEnabled(),
+		HiddenUdfLayoutOverridden: req.GetSetHiddenUdfLayoutEnabled(),
+		HiddenUdfLayoutSource:     "test",
+	}, nil
 }
 
 func (testBurnBridgeClient) UpdateLicense(context.Context, *burnbridgev1.UpdateLicenseRequest, ...grpc.CallOption) (*burnbridgev1.UpdateLicenseResponse, error) {

@@ -41,6 +41,7 @@
         </div>
         <div class="flex gap-3">
           <button id="reload-config-btn" class="px-3 py-2 rounded-lg border border-gray-200 text-charcoal hover:bg-gray-50 transition-colors">Reload</button>
+          <button id="apply-runtime-config-btn" class="px-3 py-2 rounded-lg border border-gray-200 text-charcoal hover:bg-gray-50 transition-colors">Refresh Runtime</button>
           <button id="save-config-btn" class="px-4 py-2 rounded-lg bg-primary text-white font-medium hover:opacity-90 transition-opacity">Save Config</button>
         </div>
       </header>
@@ -123,12 +124,33 @@
               <div><label class="block text-sm font-medium mb-2">Metadata DB File Template</label><input id="rec-meta-template" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">License File Path</label><input id="rec-license-path" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">gRPC Chunk Size</label><input id="rec-grpc-chunk" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Max Receive Message Size</label><input id="rec-max-receive" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Max Send Message Size</label><input id="rec-max-send" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">HTTP/2 Connection Window</label><input id="rec-http2-conn-window" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">HTTP/2 Stream Window</label><input id="rec-http2-stream-window" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Finalize Reserve Percent</label><input id="rec-finalize-reserve-percent" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Finalize Reserve Bytes</label><input id="rec-finalize-reserve-bytes" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Uncommitted Upload Timeout Seconds</label><input id="rec-uncommitted-timeout" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Uncommitted Upload Scan Seconds</label><input id="rec-uncommitted-scan" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Post Finalize Media Recovery Mode</label><input id="rec-post-finalize-recovery" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div class="flex items-center gap-3 pt-8"><input id="rec-disable-speed-control" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Disable explicit speed control</label></div>
+              <div><label class="block text-sm font-medium mb-2">CD Write Speed X</label><input id="rec-cd-speed" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">DVD Write Speed X</label><input id="rec-dvd-speed" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">BD Write Speed X</label><input id="rec-bd-speed" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Disc Serial Strategy</label><input id="rec-disc-serial-strategy" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Volume Label Strategy</label><input id="rec-volume-label-strategy" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Serial Prefix</label><input id="rec-serial-prefix" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Volume Label Prefix</label><input id="rec-volume-prefix" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Generated Serial Length</label><input id="rec-serial-length" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Generated Volume Length</label><input id="rec-volume-length" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div class="flex items-center gap-3 pt-8"><input id="rec-allow-create-binding" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Allow create-bucket binding</label></div>
+              <div class="flex items-center gap-3 pt-8"><input id="rec-anchor-enabled" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Enable BRS Anchor</label></div>
+              <div class="flex items-center gap-3 pt-8"><input id="rec-anchor-recovery" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Enable Anchor recovery</label></div>
+              <div class="flex items-center gap-3 pt-8"><input id="rec-hidden-udf" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Hidden UDF layout (encrypted disc mode)</label></div>
+              <div><label class="block text-sm font-medium mb-2">Anchor Copies</label><input id="rec-anchor-copies" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Anchor Scan Blocks</label><input id="rec-anchor-scan-blocks" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Anchor Scan Read Batch Blocks</label><input id="rec-anchor-scan-batch" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Anchor Max Consecutive Unreadable Blocks</label><input id="rec-anchor-scan-unreadable" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
             </div>
           </section>
 
@@ -137,8 +159,16 @@
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div><label class="block text-sm font-medium mb-2">Sector Size Bytes</label><input id="rt-sector-size" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Blocks Per Transfer</label><input id="rt-blocks-per-transfer" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Read Blocks Per Transfer</label><input id="rt-read-blocks-per-transfer" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Session Cache Capacity Bytes</label><input id="rt-session-cache" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Write Buffer Bytes</label><input id="rt-write-buffer" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Write Buffer Slot Count</label><input id="rt-write-buffer-slots" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Global Write Queue Capacity</label><input id="rt-global-write-queue" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Read Queue Capacity</label><input id="rt-read-queue" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Redundancy Read Window Blocks</label><input id="rt-rs-read-window" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Plain Read Window Blocks</label><input id="rt-plain-read-window" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Read Output Buffer Bytes</label><input id="rt-read-output-buffer" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Read Output Buffer Slot Count</label><input id="rt-read-output-slots" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
             </div>
           </section>
 
@@ -248,6 +278,7 @@
 
   <script>
     let archiveConfigState = null;
+    let archiveConfigBusy = false;
 
     function hydrateArchiveAuthInputs() {
       const savedUser = sessionStorage.getItem('archive_config_user');
@@ -417,16 +448,45 @@
       document.getElementById('rec-meta-template').value = recorder.MetadataDbFileNameTemplate || '';
       document.getElementById('rec-license-path').value = recorder.LicenseFilePath || '';
       document.getElementById('rec-grpc-chunk').value = recorder.GrpcChunkSize ?? 65536;
+      document.getElementById('rec-max-receive').value = recorder.MaxReceiveMessageSize ?? 0;
+      document.getElementById('rec-max-send').value = recorder.MaxSendMessageSize ?? 0;
+      document.getElementById('rec-http2-conn-window').value = recorder.Http2InitialConnectionWindowSize ?? 0;
+      document.getElementById('rec-http2-stream-window').value = recorder.Http2InitialStreamWindowSize ?? 0;
+      document.getElementById('rec-finalize-reserve-percent').value = recorder.FinalizeReservePercent ?? 3;
+      document.getElementById('rec-finalize-reserve-bytes').value = recorder.FinalizeReserveBytes ?? 0;
+      document.getElementById('rec-uncommitted-timeout').value = recorder.UncommittedUploadJobTimeoutSeconds ?? 600;
+      document.getElementById('rec-uncommitted-scan').value = recorder.UncommittedUploadJobScanSeconds ?? 5;
+      document.getElementById('rec-post-finalize-recovery').value = recorder.PostFinalizeMediaRecoveryMode || '';
+      document.getElementById('rec-disable-speed-control').checked = !!recorder.DisableExplicitSpeedControl;
+      document.getElementById('rec-cd-speed').value = recorder.CdWriteSpeedX || '';
+      document.getElementById('rec-dvd-speed').value = recorder.DvdWriteSpeedX || '';
+      document.getElementById('rec-bd-speed').value = recorder.BdWriteSpeedX || '';
       document.getElementById('rec-disc-serial-strategy').value = recorder.DiscSerialStrategy || '';
       document.getElementById('rec-volume-label-strategy').value = recorder.VolumeLabelStrategy || '';
       document.getElementById('rec-serial-prefix').value = recorder.SerialPrefix || '';
       document.getElementById('rec-volume-prefix').value = recorder.VolumeLabelPrefix || '';
       document.getElementById('rec-serial-length').value = recorder.GeneratedSerialLength ?? 24;
       document.getElementById('rec-volume-length').value = recorder.GeneratedVolumeLabelLength ?? 24;
+      document.getElementById('rec-allow-create-binding').checked = !!recorder.AllowCreateBucketBinding;
+      document.getElementById('rec-anchor-enabled').checked = !!recorder.AnchorEnabled;
+      document.getElementById('rec-anchor-recovery').checked = !!recorder.AnchorRecoveryEnabled;
+      document.getElementById('rec-hidden-udf').checked = !!recorder.HiddenUdfLayoutEnabled;
+      document.getElementById('rec-anchor-copies').value = recorder.AnchorCopies ?? 2;
+      document.getElementById('rec-anchor-scan-blocks').value = recorder.AnchorScanBlocks ?? 1048576;
+      document.getElementById('rec-anchor-scan-batch').value = recorder.AnchorScanReadBatchBlocks ?? 256;
+      document.getElementById('rec-anchor-scan-unreadable').value = recorder.AnchorScanMaxConsecutiveUnreadableBlocks ?? 128;
       document.getElementById('rt-sector-size').value = runtime.SectorSizeBytes ?? 2048;
       document.getElementById('rt-blocks-per-transfer').value = runtime.BlocksPerTransfer ?? 16;
+      document.getElementById('rt-read-blocks-per-transfer').value = runtime.ReadBlocksPerTransfer ?? 0;
       document.getElementById('rt-session-cache').value = runtime.SessionCacheCapacityBytes ?? 0;
       document.getElementById('rt-write-buffer').value = runtime.WriteBufferBytes ?? 0;
+      document.getElementById('rt-write-buffer-slots').value = runtime.WriteBufferSlotCount ?? 2;
+      document.getElementById('rt-global-write-queue').value = runtime.GlobalWriteQueueCapacity ?? 4;
+      document.getElementById('rt-read-queue').value = runtime.ReadQueueCapacity ?? 1;
+      document.getElementById('rt-rs-read-window').value = runtime.RedundancyReadWindowBlocks ?? 320;
+      document.getElementById('rt-plain-read-window').value = runtime.PlainReadWindowBlocks ?? 320;
+      document.getElementById('rt-read-output-buffer').value = runtime.ReadOutputBufferBytes ?? 0;
+      document.getElementById('rt-read-output-slots').value = runtime.ReadOutputBufferSlotCount ?? 2;
       document.getElementById('rs-enabled').checked = !!redundancy.Enabled;
       document.getElementById('rs-block-size').value = redundancy.BlockSizeBytes ?? 2048;
       document.getElementById('rs-data-count').value = redundancy.DataBlockCount ?? 30;
@@ -476,16 +536,45 @@
       cfg.OpticalArchive.Recorder.MetadataDbFileNameTemplate = document.getElementById('rec-meta-template').value.trim();
       cfg.OpticalArchive.Recorder.LicenseFilePath = document.getElementById('rec-license-path').value.trim();
       cfg.OpticalArchive.Recorder.GrpcChunkSize = Number(document.getElementById('rec-grpc-chunk').value || 0);
+      cfg.OpticalArchive.Recorder.MaxReceiveMessageSize = Number(document.getElementById('rec-max-receive').value || 0);
+      cfg.OpticalArchive.Recorder.MaxSendMessageSize = Number(document.getElementById('rec-max-send').value || 0);
+      cfg.OpticalArchive.Recorder.Http2InitialConnectionWindowSize = Number(document.getElementById('rec-http2-conn-window').value || 0);
+      cfg.OpticalArchive.Recorder.Http2InitialStreamWindowSize = Number(document.getElementById('rec-http2-stream-window').value || 0);
+      cfg.OpticalArchive.Recorder.FinalizeReservePercent = Number(document.getElementById('rec-finalize-reserve-percent').value || 0);
+      cfg.OpticalArchive.Recorder.FinalizeReserveBytes = Number(document.getElementById('rec-finalize-reserve-bytes').value || 0);
+      cfg.OpticalArchive.Recorder.UncommittedUploadJobTimeoutSeconds = Number(document.getElementById('rec-uncommitted-timeout').value || 0);
+      cfg.OpticalArchive.Recorder.UncommittedUploadJobScanSeconds = Number(document.getElementById('rec-uncommitted-scan').value || 0);
+      cfg.OpticalArchive.Recorder.PostFinalizeMediaRecoveryMode = document.getElementById('rec-post-finalize-recovery').value.trim();
+      cfg.OpticalArchive.Recorder.DisableExplicitSpeedControl = document.getElementById('rec-disable-speed-control').checked;
+      cfg.OpticalArchive.Recorder.CdWriteSpeedX = document.getElementById('rec-cd-speed').value.trim();
+      cfg.OpticalArchive.Recorder.DvdWriteSpeedX = document.getElementById('rec-dvd-speed').value.trim();
+      cfg.OpticalArchive.Recorder.BdWriteSpeedX = document.getElementById('rec-bd-speed').value.trim();
       cfg.OpticalArchive.Recorder.DiscSerialStrategy = document.getElementById('rec-disc-serial-strategy').value.trim();
       cfg.OpticalArchive.Recorder.VolumeLabelStrategy = document.getElementById('rec-volume-label-strategy').value.trim();
       cfg.OpticalArchive.Recorder.SerialPrefix = document.getElementById('rec-serial-prefix').value.trim();
       cfg.OpticalArchive.Recorder.VolumeLabelPrefix = document.getElementById('rec-volume-prefix').value.trim();
       cfg.OpticalArchive.Recorder.GeneratedSerialLength = Number(document.getElementById('rec-serial-length').value || 0);
       cfg.OpticalArchive.Recorder.GeneratedVolumeLabelLength = Number(document.getElementById('rec-volume-length').value || 0);
+      cfg.OpticalArchive.Recorder.AllowCreateBucketBinding = document.getElementById('rec-allow-create-binding').checked;
+      cfg.OpticalArchive.Recorder.AnchorEnabled = document.getElementById('rec-anchor-enabled').checked;
+      cfg.OpticalArchive.Recorder.AnchorRecoveryEnabled = document.getElementById('rec-anchor-recovery').checked;
+      cfg.OpticalArchive.Recorder.HiddenUdfLayoutEnabled = document.getElementById('rec-hidden-udf').checked;
+      cfg.OpticalArchive.Recorder.AnchorCopies = Number(document.getElementById('rec-anchor-copies').value || 0);
+      cfg.OpticalArchive.Recorder.AnchorScanBlocks = Number(document.getElementById('rec-anchor-scan-blocks').value || 0);
+      cfg.OpticalArchive.Recorder.AnchorScanReadBatchBlocks = Number(document.getElementById('rec-anchor-scan-batch').value || 0);
+      cfg.OpticalArchive.Recorder.AnchorScanMaxConsecutiveUnreadableBlocks = Number(document.getElementById('rec-anchor-scan-unreadable').value || 0);
       cfg.OpticalArchive.Runtime.SectorSizeBytes = Number(document.getElementById('rt-sector-size').value || 0);
       cfg.OpticalArchive.Runtime.BlocksPerTransfer = Number(document.getElementById('rt-blocks-per-transfer').value || 0);
+      cfg.OpticalArchive.Runtime.ReadBlocksPerTransfer = Number(document.getElementById('rt-read-blocks-per-transfer').value || 0);
       cfg.OpticalArchive.Runtime.SessionCacheCapacityBytes = Number(document.getElementById('rt-session-cache').value || 0);
       cfg.OpticalArchive.Runtime.WriteBufferBytes = Number(document.getElementById('rt-write-buffer').value || 0);
+      cfg.OpticalArchive.Runtime.WriteBufferSlotCount = Number(document.getElementById('rt-write-buffer-slots').value || 0);
+      cfg.OpticalArchive.Runtime.GlobalWriteQueueCapacity = Number(document.getElementById('rt-global-write-queue').value || 0);
+      cfg.OpticalArchive.Runtime.ReadQueueCapacity = Number(document.getElementById('rt-read-queue').value || 0);
+      cfg.OpticalArchive.Runtime.RedundancyReadWindowBlocks = Number(document.getElementById('rt-rs-read-window').value || 0);
+      cfg.OpticalArchive.Runtime.PlainReadWindowBlocks = Number(document.getElementById('rt-plain-read-window').value || 0);
+      cfg.OpticalArchive.Runtime.ReadOutputBufferBytes = Number(document.getElementById('rt-read-output-buffer').value || 0);
+      cfg.OpticalArchive.Runtime.ReadOutputBufferSlotCount = Number(document.getElementById('rt-read-output-slots').value || 0);
       cfg.OpticalArchive.Redundancy.Enabled = document.getElementById('rs-enabled').checked;
       cfg.OpticalArchive.Redundancy.BlockSizeBytes = Number(document.getElementById('rs-block-size').value || 0);
       cfg.OpticalArchive.Redundancy.DataBlockCount = Number(document.getElementById('rs-data-count').value || 0);
@@ -525,6 +614,10 @@
     }
 
     async function saveArchiveConfig() {
+      if (archiveConfigBusy) {
+        return;
+      }
+      setArchiveConfigBusy(true);
       try {
         const response = await fetch(api.getEndpoint(false) + '/__archive/config', {
           method: 'PUT',
@@ -537,17 +630,69 @@
         if (!response.ok) throw new Error(await response.text());
         const payload = await response.json();
         archiveConfigState = payload.config;
-        document.getElementById('auth-user').value = payload.config.OpticalArchive.Gateway.ConfigApiUsername || '';
-        document.getElementById('auth-pass').value = payload.config.OpticalArchive.Gateway.ConfigApiPassword || '';
+        renderArchiveConfig(payload.path, payload);
         sessionStorage.setItem('archive_config_user', payload.config.OpticalArchive.Gateway.ConfigApiUsername || 'admin');
         sessionStorage.setItem('archive_config_pass', payload.config.OpticalArchive.Gateway.ConfigApiPassword || 'admin123456');
-        showToast('Archive config saved.', 'success');
+        renderRuntimeApplyResult(payload.runtimeApply);
+        if (payload.runtimeApply?.applied) {
+          showToast('Archive config saved and runtime options refreshed.', 'success');
+        } else {
+          showToast('Archive config saved, but runtime refresh failed. See Admin Actions output.', 'warning');
+        }
       } catch (error) {
         showToast('Failed to save archive config: ' + error.message, 'error');
+      } finally {
+        setArchiveConfigBusy(false);
       }
     }
 
+    async function refreshRuntimeConfig() {
+      if (archiveConfigBusy) {
+        return;
+      }
+      setArchiveConfigBusy(true);
+      try {
+        const response = await fetch(api.getEndpoint(false) + '/__archive/config/refresh', {
+          method: 'POST',
+          headers: { 'Authorization': buildArchiveAuthHeader() }
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const payload = await response.json();
+        archiveConfigState = payload.config;
+        renderArchiveConfig(payload.path, payload);
+        renderRuntimeApplyResult(payload.runtimeApply);
+        showToast('Runtime config refreshed.', 'success');
+      } catch (error) {
+        showToast('Failed to refresh runtime config: ' + error.message, 'error');
+      } finally {
+        setArchiveConfigBusy(false);
+      }
+    }
+
+    function setArchiveConfigBusy(isBusy) {
+      archiveConfigBusy = !!isBusy;
+      ['save-config-btn', 'apply-runtime-config-btn', 'reload-config-btn'].forEach(id => {
+        const button = document.getElementById(id);
+        if (button) {
+          button.disabled = archiveConfigBusy;
+          button.classList.toggle('opacity-50', archiveConfigBusy);
+          button.classList.toggle('cursor-not-allowed', archiveConfigBusy);
+        }
+      });
+    }
+
+    function renderRuntimeApplyResult(result) {
+      if (!result) {
+        return;
+      }
+      document.getElementById('admin-actions-output').textContent = JSON.stringify({
+        action: 'config-runtime-refresh',
+        result
+      }, null, 2);
+    }
+
     document.getElementById('reload-config-btn').addEventListener('click', loadArchiveConfig);
+    document.getElementById('apply-runtime-config-btn').addEventListener('click', refreshRuntimeConfig);
     document.getElementById('save-config-btn').addEventListener('click', saveArchiveConfig);
     document.getElementById('refresh-archive-version-btn').addEventListener('click', loadArchiveVersion);
     document.getElementById('refresh-archive-logs-btn').addEventListener('click', loadArchiveLogs);

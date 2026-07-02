@@ -2942,6 +2942,814 @@ func (x *FinalizeLayoutResponse) GetMessage() string {
 	return ""
 }
 
+type DeleteObjectsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	ObjectKeys    []string               `protobuf:"bytes,2,rep,name=object_keys,json=objectKeys,proto3" json:"object_keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteObjectsRequest) Reset() {
+	*x = DeleteObjectsRequest{}
+	mi := &file_burnbridge_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteObjectsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteObjectsRequest) ProtoMessage() {}
+
+func (x *DeleteObjectsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteObjectsRequest.ProtoReflect.Descriptor instead.
+func (*DeleteObjectsRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *DeleteObjectsRequest) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *DeleteObjectsRequest) GetObjectKeys() []string {
+	if x != nil {
+		return x.ObjectKeys
+	}
+	return nil
+}
+
+type DeleteObjectResult struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ObjectKey     string                 `protobuf:"bytes,1,opt,name=object_key,json=objectKey,proto3" json:"object_key,omitempty"`
+	Deleted       bool                   `protobuf:"varint,2,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteObjectResult) Reset() {
+	*x = DeleteObjectResult{}
+	mi := &file_burnbridge_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteObjectResult) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteObjectResult) ProtoMessage() {}
+
+func (x *DeleteObjectResult) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteObjectResult.ProtoReflect.Descriptor instead.
+func (*DeleteObjectResult) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *DeleteObjectResult) GetObjectKey() string {
+	if x != nil {
+		return x.ObjectKey
+	}
+	return ""
+}
+
+func (x *DeleteObjectResult) GetDeleted() bool {
+	if x != nil {
+		return x.Deleted
+	}
+	return false
+}
+
+func (x *DeleteObjectResult) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type DeleteObjectsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Objects       []*DeleteObjectResult  `protobuf:"bytes,2,rep,name=objects,proto3" json:"objects,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteObjectsResponse) Reset() {
+	*x = DeleteObjectsResponse{}
+	mi := &file_burnbridge_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteObjectsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteObjectsResponse) ProtoMessage() {}
+
+func (x *DeleteObjectsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteObjectsResponse.ProtoReflect.Descriptor instead.
+func (*DeleteObjectsResponse) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *DeleteObjectsResponse) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *DeleteObjectsResponse) GetObjects() []*DeleteObjectResult {
+	if x != nil {
+		return x.Objects
+	}
+	return nil
+}
+
+type ListMetadataDbVersionsRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListMetadataDbVersionsRequest) Reset() {
+	*x = ListMetadataDbVersionsRequest{}
+	mi := &file_burnbridge_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListMetadataDbVersionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListMetadataDbVersionsRequest) ProtoMessage() {}
+
+func (x *ListMetadataDbVersionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListMetadataDbVersionsRequest.ProtoReflect.Descriptor instead.
+func (*ListMetadataDbVersionsRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *ListMetadataDbVersionsRequest) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+type MetadataDbVersion struct {
+	state                    protoimpl.MessageState `protogen:"open.v1"`
+	Bucket                   string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Generation               int64                  `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	FileName                 string                 `protobuf:"bytes,3,opt,name=file_name,json=fileName,proto3" json:"file_name,omitempty"`
+	StartDiscAddress         int32                  `protobuf:"varint,4,opt,name=start_disc_address,json=startDiscAddress,proto3" json:"start_disc_address,omitempty"`
+	EndDiscAddress           int32                  `protobuf:"varint,5,opt,name=end_disc_address,json=endDiscAddress,proto3" json:"end_disc_address,omitempty"`
+	SizeBytes                int64                  `protobuf:"varint,6,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
+	FinalizedAtUtc           string                 `protobuf:"bytes,7,opt,name=finalized_at_utc,json=finalizedAtUtc,proto3" json:"finalized_at_utc,omitempty"`
+	PreviousGeneration       int64                  `protobuf:"varint,8,opt,name=previous_generation,json=previousGeneration,proto3" json:"previous_generation,omitempty"`
+	PreviousStartDiscAddress int32                  `protobuf:"varint,9,opt,name=previous_start_disc_address,json=previousStartDiscAddress,proto3" json:"previous_start_disc_address,omitempty"`
+	PreviousEndDiscAddress   int32                  `protobuf:"varint,10,opt,name=previous_end_disc_address,json=previousEndDiscAddress,proto3" json:"previous_end_disc_address,omitempty"`
+	Sha256                   string                 `protobuf:"bytes,11,opt,name=sha256,proto3" json:"sha256,omitempty"`
+	State                    string                 `protobuf:"bytes,12,opt,name=state,proto3" json:"state,omitempty"`
+	AnchorPreWritten         bool                   `protobuf:"varint,13,opt,name=anchor_pre_written,json=anchorPreWritten,proto3" json:"anchor_pre_written,omitempty"`
+	AnchorPostWritten        bool                   `protobuf:"varint,14,opt,name=anchor_post_written,json=anchorPostWritten,proto3" json:"anchor_post_written,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
+}
+
+func (x *MetadataDbVersion) Reset() {
+	*x = MetadataDbVersion{}
+	mi := &file_burnbridge_proto_msgTypes[45]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MetadataDbVersion) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MetadataDbVersion) ProtoMessage() {}
+
+func (x *MetadataDbVersion) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[45]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MetadataDbVersion.ProtoReflect.Descriptor instead.
+func (*MetadataDbVersion) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{45}
+}
+
+func (x *MetadataDbVersion) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *MetadataDbVersion) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *MetadataDbVersion) GetFileName() string {
+	if x != nil {
+		return x.FileName
+	}
+	return ""
+}
+
+func (x *MetadataDbVersion) GetStartDiscAddress() int32 {
+	if x != nil {
+		return x.StartDiscAddress
+	}
+	return 0
+}
+
+func (x *MetadataDbVersion) GetEndDiscAddress() int32 {
+	if x != nil {
+		return x.EndDiscAddress
+	}
+	return 0
+}
+
+func (x *MetadataDbVersion) GetSizeBytes() int64 {
+	if x != nil {
+		return x.SizeBytes
+	}
+	return 0
+}
+
+func (x *MetadataDbVersion) GetFinalizedAtUtc() string {
+	if x != nil {
+		return x.FinalizedAtUtc
+	}
+	return ""
+}
+
+func (x *MetadataDbVersion) GetPreviousGeneration() int64 {
+	if x != nil {
+		return x.PreviousGeneration
+	}
+	return 0
+}
+
+func (x *MetadataDbVersion) GetPreviousStartDiscAddress() int32 {
+	if x != nil {
+		return x.PreviousStartDiscAddress
+	}
+	return 0
+}
+
+func (x *MetadataDbVersion) GetPreviousEndDiscAddress() int32 {
+	if x != nil {
+		return x.PreviousEndDiscAddress
+	}
+	return 0
+}
+
+func (x *MetadataDbVersion) GetSha256() string {
+	if x != nil {
+		return x.Sha256
+	}
+	return ""
+}
+
+func (x *MetadataDbVersion) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *MetadataDbVersion) GetAnchorPreWritten() bool {
+	if x != nil {
+		return x.AnchorPreWritten
+	}
+	return false
+}
+
+func (x *MetadataDbVersion) GetAnchorPostWritten() bool {
+	if x != nil {
+		return x.AnchorPostWritten
+	}
+	return false
+}
+
+type ListMetadataDbVersionsResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Versions      []*MetadataDbVersion   `protobuf:"bytes,2,rep,name=versions,proto3" json:"versions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListMetadataDbVersionsResponse) Reset() {
+	*x = ListMetadataDbVersionsResponse{}
+	mi := &file_burnbridge_proto_msgTypes[46]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListMetadataDbVersionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListMetadataDbVersionsResponse) ProtoMessage() {}
+
+func (x *ListMetadataDbVersionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[46]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListMetadataDbVersionsResponse.ProtoReflect.Descriptor instead.
+func (*ListMetadataDbVersionsResponse) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{46}
+}
+
+func (x *ListMetadataDbVersionsResponse) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *ListMetadataDbVersionsResponse) GetVersions() []*MetadataDbVersion {
+	if x != nil {
+		return x.Versions
+	}
+	return nil
+}
+
+type RestoreMetadataDbVersionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Generation    int64                  `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	PreviewOnly   bool                   `protobuf:"varint,3,opt,name=preview_only,json=previewOnly,proto3" json:"preview_only,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreMetadataDbVersionRequest) Reset() {
+	*x = RestoreMetadataDbVersionRequest{}
+	mi := &file_burnbridge_proto_msgTypes[47]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreMetadataDbVersionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreMetadataDbVersionRequest) ProtoMessage() {}
+
+func (x *RestoreMetadataDbVersionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[47]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreMetadataDbVersionRequest.ProtoReflect.Descriptor instead.
+func (*RestoreMetadataDbVersionRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{47}
+}
+
+func (x *RestoreMetadataDbVersionRequest) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *RestoreMetadataDbVersionRequest) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *RestoreMetadataDbVersionRequest) GetPreviewOnly() bool {
+	if x != nil {
+		return x.PreviewOnly
+	}
+	return false
+}
+
+type RestoreMetadataDbVersionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Generation    int64                  `protobuf:"varint,2,opt,name=generation,proto3" json:"generation,omitempty"`
+	Status        string                 `protobuf:"bytes,3,opt,name=status,proto3" json:"status,omitempty"`
+	Message       string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreMetadataDbVersionResponse) Reset() {
+	*x = RestoreMetadataDbVersionResponse{}
+	mi := &file_burnbridge_proto_msgTypes[48]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreMetadataDbVersionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreMetadataDbVersionResponse) ProtoMessage() {}
+
+func (x *RestoreMetadataDbVersionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[48]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreMetadataDbVersionResponse.ProtoReflect.Descriptor instead.
+func (*RestoreMetadataDbVersionResponse) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{48}
+}
+
+func (x *RestoreMetadataDbVersionResponse) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *RestoreMetadataDbVersionResponse) GetGeneration() int64 {
+	if x != nil {
+		return x.Generation
+	}
+	return 0
+}
+
+func (x *RestoreMetadataDbVersionResponse) GetStatus() string {
+	if x != nil {
+		return x.Status
+	}
+	return ""
+}
+
+func (x *RestoreMetadataDbVersionResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type GetAnchorStatusRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bucket        string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetAnchorStatusRequest) Reset() {
+	*x = GetAnchorStatusRequest{}
+	mi := &file_burnbridge_proto_msgTypes[49]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAnchorStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAnchorStatusRequest) ProtoMessage() {}
+
+func (x *GetAnchorStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[49]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAnchorStatusRequest.ProtoReflect.Descriptor instead.
+func (*GetAnchorStatusRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{49}
+}
+
+func (x *GetAnchorStatusRequest) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+type GetAnchorStatusResponse struct {
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	Bucket                     string                 `protobuf:"bytes,1,opt,name=bucket,proto3" json:"bucket,omitempty"`
+	Enabled                    bool                   `protobuf:"varint,2,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	LatestGeneration           int64                  `protobuf:"varint,3,opt,name=latest_generation,json=latestGeneration,proto3" json:"latest_generation,omitempty"`
+	PreAnchorWritten           bool                   `protobuf:"varint,4,opt,name=pre_anchor_written,json=preAnchorWritten,proto3" json:"pre_anchor_written,omitempty"`
+	PostAnchorWritten          bool                   `protobuf:"varint,5,opt,name=post_anchor_written,json=postAnchorWritten,proto3" json:"post_anchor_written,omitempty"`
+	PreAnchorStartDiscAddress  int32                  `protobuf:"varint,6,opt,name=pre_anchor_start_disc_address,json=preAnchorStartDiscAddress,proto3" json:"pre_anchor_start_disc_address,omitempty"`
+	PostAnchorStartDiscAddress int32                  `protobuf:"varint,7,opt,name=post_anchor_start_disc_address,json=postAnchorStartDiscAddress,proto3" json:"post_anchor_start_disc_address,omitempty"`
+	Copies                     int32                  `protobuf:"varint,8,opt,name=copies,proto3" json:"copies,omitempty"`
+	Message                    string                 `protobuf:"bytes,9,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *GetAnchorStatusResponse) Reset() {
+	*x = GetAnchorStatusResponse{}
+	mi := &file_burnbridge_proto_msgTypes[50]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetAnchorStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetAnchorStatusResponse) ProtoMessage() {}
+
+func (x *GetAnchorStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[50]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetAnchorStatusResponse.ProtoReflect.Descriptor instead.
+func (*GetAnchorStatusResponse) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{50}
+}
+
+func (x *GetAnchorStatusResponse) GetBucket() string {
+	if x != nil {
+		return x.Bucket
+	}
+	return ""
+}
+
+func (x *GetAnchorStatusResponse) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *GetAnchorStatusResponse) GetLatestGeneration() int64 {
+	if x != nil {
+		return x.LatestGeneration
+	}
+	return 0
+}
+
+func (x *GetAnchorStatusResponse) GetPreAnchorWritten() bool {
+	if x != nil {
+		return x.PreAnchorWritten
+	}
+	return false
+}
+
+func (x *GetAnchorStatusResponse) GetPostAnchorWritten() bool {
+	if x != nil {
+		return x.PostAnchorWritten
+	}
+	return false
+}
+
+func (x *GetAnchorStatusResponse) GetPreAnchorStartDiscAddress() int32 {
+	if x != nil {
+		return x.PreAnchorStartDiscAddress
+	}
+	return 0
+}
+
+func (x *GetAnchorStatusResponse) GetPostAnchorStartDiscAddress() int32 {
+	if x != nil {
+		return x.PostAnchorStartDiscAddress
+	}
+	return 0
+}
+
+func (x *GetAnchorStatusResponse) GetCopies() int32 {
+	if x != nil {
+		return x.Copies
+	}
+	return 0
+}
+
+func (x *GetAnchorStatusResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type ConfigureRuntimeOptionsRequest struct {
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	SetHiddenUdfLayoutEnabled bool                   `protobuf:"varint,1,opt,name=set_hidden_udf_layout_enabled,json=setHiddenUdfLayoutEnabled,proto3" json:"set_hidden_udf_layout_enabled,omitempty"`
+	HiddenUdfLayoutEnabled    bool                   `protobuf:"varint,2,opt,name=hidden_udf_layout_enabled,json=hiddenUdfLayoutEnabled,proto3" json:"hidden_udf_layout_enabled,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *ConfigureRuntimeOptionsRequest) Reset() {
+	*x = ConfigureRuntimeOptionsRequest{}
+	mi := &file_burnbridge_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigureRuntimeOptionsRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigureRuntimeOptionsRequest) ProtoMessage() {}
+
+func (x *ConfigureRuntimeOptionsRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigureRuntimeOptionsRequest.ProtoReflect.Descriptor instead.
+func (*ConfigureRuntimeOptionsRequest) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *ConfigureRuntimeOptionsRequest) GetSetHiddenUdfLayoutEnabled() bool {
+	if x != nil {
+		return x.SetHiddenUdfLayoutEnabled
+	}
+	return false
+}
+
+func (x *ConfigureRuntimeOptionsRequest) GetHiddenUdfLayoutEnabled() bool {
+	if x != nil {
+		return x.HiddenUdfLayoutEnabled
+	}
+	return false
+}
+
+type ConfigureRuntimeOptionsResponse struct {
+	state                     protoimpl.MessageState `protogen:"open.v1"`
+	HiddenUdfLayoutEnabled    bool                   `protobuf:"varint,1,opt,name=hidden_udf_layout_enabled,json=hiddenUdfLayoutEnabled,proto3" json:"hidden_udf_layout_enabled,omitempty"`
+	HiddenUdfLayoutOverridden bool                   `protobuf:"varint,2,opt,name=hidden_udf_layout_overridden,json=hiddenUdfLayoutOverridden,proto3" json:"hidden_udf_layout_overridden,omitempty"`
+	HiddenUdfLayoutSource     string                 `protobuf:"bytes,3,opt,name=hidden_udf_layout_source,json=hiddenUdfLayoutSource,proto3" json:"hidden_udf_layout_source,omitempty"`
+	Message                   string                 `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
+}
+
+func (x *ConfigureRuntimeOptionsResponse) Reset() {
+	*x = ConfigureRuntimeOptionsResponse{}
+	mi := &file_burnbridge_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigureRuntimeOptionsResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigureRuntimeOptionsResponse) ProtoMessage() {}
+
+func (x *ConfigureRuntimeOptionsResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_burnbridge_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigureRuntimeOptionsResponse.ProtoReflect.Descriptor instead.
+func (*ConfigureRuntimeOptionsResponse) Descriptor() ([]byte, []int) {
+	return file_burnbridge_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *ConfigureRuntimeOptionsResponse) GetHiddenUdfLayoutEnabled() bool {
+	if x != nil {
+		return x.HiddenUdfLayoutEnabled
+	}
+	return false
+}
+
+func (x *ConfigureRuntimeOptionsResponse) GetHiddenUdfLayoutOverridden() bool {
+	if x != nil {
+		return x.HiddenUdfLayoutOverridden
+	}
+	return false
+}
+
+func (x *ConfigureRuntimeOptionsResponse) GetHiddenUdfLayoutSource() string {
+	if x != nil {
+		return x.HiddenUdfLayoutSource
+	}
+	return ""
+}
+
+func (x *ConfigureRuntimeOptionsResponse) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 type UpdateLicenseRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	FileName      string                 `protobuf:"bytes,1,opt,name=file_name,json=fileName,proto3" json:"file_name,omitempty"`
@@ -2953,7 +3761,7 @@ type UpdateLicenseRequest struct {
 
 func (x *UpdateLicenseRequest) Reset() {
 	*x = UpdateLicenseRequest{}
-	mi := &file_burnbridge_proto_msgTypes[41]
+	mi := &file_burnbridge_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2965,7 +3773,7 @@ func (x *UpdateLicenseRequest) String() string {
 func (*UpdateLicenseRequest) ProtoMessage() {}
 
 func (x *UpdateLicenseRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[41]
+	mi := &file_burnbridge_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2978,7 +3786,7 @@ func (x *UpdateLicenseRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLicenseRequest.ProtoReflect.Descriptor instead.
 func (*UpdateLicenseRequest) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{41}
+	return file_burnbridge_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *UpdateLicenseRequest) GetFileName() string {
@@ -3014,7 +3822,7 @@ type UpdateLicenseResponse struct {
 
 func (x *UpdateLicenseResponse) Reset() {
 	*x = UpdateLicenseResponse{}
-	mi := &file_burnbridge_proto_msgTypes[42]
+	mi := &file_burnbridge_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3026,7 +3834,7 @@ func (x *UpdateLicenseResponse) String() string {
 func (*UpdateLicenseResponse) ProtoMessage() {}
 
 func (x *UpdateLicenseResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[42]
+	mi := &file_burnbridge_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3039,7 +3847,7 @@ func (x *UpdateLicenseResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateLicenseResponse.ProtoReflect.Descriptor instead.
 func (*UpdateLicenseResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{42}
+	return file_burnbridge_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *UpdateLicenseResponse) GetStatus() string {
@@ -3081,7 +3889,7 @@ type UploadUpgradePackageChunk struct {
 
 func (x *UploadUpgradePackageChunk) Reset() {
 	*x = UploadUpgradePackageChunk{}
-	mi := &file_burnbridge_proto_msgTypes[43]
+	mi := &file_burnbridge_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3093,7 +3901,7 @@ func (x *UploadUpgradePackageChunk) String() string {
 func (*UploadUpgradePackageChunk) ProtoMessage() {}
 
 func (x *UploadUpgradePackageChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[43]
+	mi := &file_burnbridge_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3106,7 +3914,7 @@ func (x *UploadUpgradePackageChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadUpgradePackageChunk.ProtoReflect.Descriptor instead.
 func (*UploadUpgradePackageChunk) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{43}
+	return file_burnbridge_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *UploadUpgradePackageChunk) GetFileName() string {
@@ -3143,7 +3951,7 @@ type UploadUpgradePackageResponse struct {
 
 func (x *UploadUpgradePackageResponse) Reset() {
 	*x = UploadUpgradePackageResponse{}
-	mi := &file_burnbridge_proto_msgTypes[44]
+	mi := &file_burnbridge_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3155,7 +3963,7 @@ func (x *UploadUpgradePackageResponse) String() string {
 func (*UploadUpgradePackageResponse) ProtoMessage() {}
 
 func (x *UploadUpgradePackageResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[44]
+	mi := &file_burnbridge_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3168,7 +3976,7 @@ func (x *UploadUpgradePackageResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadUpgradePackageResponse.ProtoReflect.Descriptor instead.
 func (*UploadUpgradePackageResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{44}
+	return file_burnbridge_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *UploadUpgradePackageResponse) GetStatus() string {
@@ -3215,7 +4023,7 @@ type ApplyUpgradeRequest struct {
 
 func (x *ApplyUpgradeRequest) Reset() {
 	*x = ApplyUpgradeRequest{}
-	mi := &file_burnbridge_proto_msgTypes[45]
+	mi := &file_burnbridge_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3227,7 +4035,7 @@ func (x *ApplyUpgradeRequest) String() string {
 func (*ApplyUpgradeRequest) ProtoMessage() {}
 
 func (x *ApplyUpgradeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[45]
+	mi := &file_burnbridge_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3240,7 +4048,7 @@ func (x *ApplyUpgradeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyUpgradeRequest.ProtoReflect.Descriptor instead.
 func (*ApplyUpgradeRequest) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{45}
+	return file_burnbridge_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *ApplyUpgradeRequest) GetStagedFileName() string {
@@ -3264,7 +4072,7 @@ type ApplyUpgradeResponse struct {
 
 func (x *ApplyUpgradeResponse) Reset() {
 	*x = ApplyUpgradeResponse{}
-	mi := &file_burnbridge_proto_msgTypes[46]
+	mi := &file_burnbridge_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3276,7 +4084,7 @@ func (x *ApplyUpgradeResponse) String() string {
 func (*ApplyUpgradeResponse) ProtoMessage() {}
 
 func (x *ApplyUpgradeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[46]
+	mi := &file_burnbridge_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3289,7 +4097,7 @@ func (x *ApplyUpgradeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyUpgradeResponse.ProtoReflect.Descriptor instead.
 func (*ApplyUpgradeResponse) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{46}
+	return file_burnbridge_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *ApplyUpgradeResponse) GetStatus() string {
@@ -3343,7 +4151,7 @@ type FinalizeManifest struct {
 
 func (x *FinalizeManifest) Reset() {
 	*x = FinalizeManifest{}
-	mi := &file_burnbridge_proto_msgTypes[47]
+	mi := &file_burnbridge_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3355,7 +4163,7 @@ func (x *FinalizeManifest) String() string {
 func (*FinalizeManifest) ProtoMessage() {}
 
 func (x *FinalizeManifest) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[47]
+	mi := &file_burnbridge_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3368,7 +4176,7 @@ func (x *FinalizeManifest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeManifest.ProtoReflect.Descriptor instead.
 func (*FinalizeManifest) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{47}
+	return file_burnbridge_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *FinalizeManifest) GetFiles() []*FinalizeFile {
@@ -3389,7 +4197,7 @@ type FinalizeFile struct {
 
 func (x *FinalizeFile) Reset() {
 	*x = FinalizeFile{}
-	mi := &file_burnbridge_proto_msgTypes[48]
+	mi := &file_burnbridge_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3401,7 +4209,7 @@ func (x *FinalizeFile) String() string {
 func (*FinalizeFile) ProtoMessage() {}
 
 func (x *FinalizeFile) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[48]
+	mi := &file_burnbridge_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3414,7 +4222,7 @@ func (x *FinalizeFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeFile.ProtoReflect.Descriptor instead.
 func (*FinalizeFile) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{48}
+	return file_burnbridge_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *FinalizeFile) GetObjectKey() string {
@@ -3451,7 +4259,7 @@ type SegmentLayout struct {
 
 func (x *SegmentLayout) Reset() {
 	*x = SegmentLayout{}
-	mi := &file_burnbridge_proto_msgTypes[49]
+	mi := &file_burnbridge_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3463,7 +4271,7 @@ func (x *SegmentLayout) String() string {
 func (*SegmentLayout) ProtoMessage() {}
 
 func (x *SegmentLayout) ProtoReflect() protoreflect.Message {
-	mi := &file_burnbridge_proto_msgTypes[49]
+	mi := &file_burnbridge_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3476,7 +4284,7 @@ func (x *SegmentLayout) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SegmentLayout.ProtoReflect.Descriptor instead.
 func (*SegmentLayout) Descriptor() ([]byte, []int) {
-	return file_burnbridge_proto_rawDescGZIP(), []int{49}
+	return file_burnbridge_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *SegmentLayout) GetSegmentIndex() int32 {
@@ -3742,7 +4550,76 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\x16FinalizeLayoutResponse\x12\x16\n" +
 	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x16\n" +
 	"\x06status\x18\x02 \x01(\tR\x06status\x12\x18\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"O\n" +
+	"\x14DeleteObjectsRequest\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x1f\n" +
+	"\vobject_keys\x18\x02 \x03(\tR\n" +
+	"objectKeys\"g\n" +
+	"\x12DeleteObjectResult\x12\x1d\n" +
+	"\n" +
+	"object_key\x18\x01 \x01(\tR\tobjectKey\x12\x18\n" +
+	"\adeleted\x18\x02 \x01(\bR\adeleted\x12\x18\n" +
 	"\amessage\x18\x03 \x01(\tR\amessage\"l\n" +
+	"\x15DeleteObjectsResponse\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12;\n" +
+	"\aobjects\x18\x02 \x03(\v2!.burnbridge.v1.DeleteObjectResultR\aobjects\"7\n" +
+	"\x1dListMetadataDbVersionsRequest\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\"\xc0\x04\n" +
+	"\x11MetadataDbVersion\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x03R\n" +
+	"generation\x12\x1b\n" +
+	"\tfile_name\x18\x03 \x01(\tR\bfileName\x12,\n" +
+	"\x12start_disc_address\x18\x04 \x01(\x05R\x10startDiscAddress\x12(\n" +
+	"\x10end_disc_address\x18\x05 \x01(\x05R\x0eendDiscAddress\x12\x1d\n" +
+	"\n" +
+	"size_bytes\x18\x06 \x01(\x03R\tsizeBytes\x12(\n" +
+	"\x10finalized_at_utc\x18\a \x01(\tR\x0efinalizedAtUtc\x12/\n" +
+	"\x13previous_generation\x18\b \x01(\x03R\x12previousGeneration\x12=\n" +
+	"\x1bprevious_start_disc_address\x18\t \x01(\x05R\x18previousStartDiscAddress\x129\n" +
+	"\x19previous_end_disc_address\x18\n" +
+	" \x01(\x05R\x16previousEndDiscAddress\x12\x16\n" +
+	"\x06sha256\x18\v \x01(\tR\x06sha256\x12\x14\n" +
+	"\x05state\x18\f \x01(\tR\x05state\x12,\n" +
+	"\x12anchor_pre_written\x18\r \x01(\bR\x10anchorPreWritten\x12.\n" +
+	"\x13anchor_post_written\x18\x0e \x01(\bR\x11anchorPostWritten\"v\n" +
+	"\x1eListMetadataDbVersionsResponse\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12<\n" +
+	"\bversions\x18\x02 \x03(\v2 .burnbridge.v1.MetadataDbVersionR\bversions\"|\n" +
+	"\x1fRestoreMetadataDbVersionRequest\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x03R\n" +
+	"generation\x12!\n" +
+	"\fpreview_only\x18\x03 \x01(\bR\vpreviewOnly\"\x8c\x01\n" +
+	" RestoreMetadataDbVersionResponse\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x1e\n" +
+	"\n" +
+	"generation\x18\x02 \x01(\x03R\n" +
+	"generation\x12\x16\n" +
+	"\x06status\x18\x03 \x01(\tR\x06status\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\"0\n" +
+	"\x16GetAnchorStatusRequest\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\"\x8e\x03\n" +
+	"\x17GetAnchorStatusResponse\x12\x16\n" +
+	"\x06bucket\x18\x01 \x01(\tR\x06bucket\x12\x18\n" +
+	"\aenabled\x18\x02 \x01(\bR\aenabled\x12+\n" +
+	"\x11latest_generation\x18\x03 \x01(\x03R\x10latestGeneration\x12,\n" +
+	"\x12pre_anchor_written\x18\x04 \x01(\bR\x10preAnchorWritten\x12.\n" +
+	"\x13post_anchor_written\x18\x05 \x01(\bR\x11postAnchorWritten\x12@\n" +
+	"\x1dpre_anchor_start_disc_address\x18\x06 \x01(\x05R\x19preAnchorStartDiscAddress\x12B\n" +
+	"\x1epost_anchor_start_disc_address\x18\a \x01(\x05R\x1apostAnchorStartDiscAddress\x12\x16\n" +
+	"\x06copies\x18\b \x01(\x05R\x06copies\x12\x18\n" +
+	"\amessage\x18\t \x01(\tR\amessage\"\x9d\x01\n" +
+	"\x1eConfigureRuntimeOptionsRequest\x12@\n" +
+	"\x1dset_hidden_udf_layout_enabled\x18\x01 \x01(\bR\x19setHiddenUdfLayoutEnabled\x129\n" +
+	"\x19hidden_udf_layout_enabled\x18\x02 \x01(\bR\x16hiddenUdfLayoutEnabled\"\xf0\x01\n" +
+	"\x1fConfigureRuntimeOptionsResponse\x129\n" +
+	"\x19hidden_udf_layout_enabled\x18\x01 \x01(\bR\x16hiddenUdfLayoutEnabled\x12?\n" +
+	"\x1chidden_udf_layout_overridden\x18\x02 \x01(\bR\x19hiddenUdfLayoutOverridden\x127\n" +
+	"\x18hidden_udf_layout_source\x18\x03 \x01(\tR\x15hiddenUdfLayoutSource\x12\x18\n" +
+	"\amessage\x18\x04 \x01(\tR\amessage\"l\n" +
 	"\x14UpdateLicenseRequest\x12\x1b\n" +
 	"\tfile_name\x18\x01 \x01(\tR\bfileName\x12\x18\n" +
 	"\acontent\x18\x02 \x01(\fR\acontent\x12\x1d\n" +
@@ -3800,7 +4677,7 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\x11SegmentBurnResult\x12#\n" +
 	"\x1fSEGMENT_BURN_RESULT_UNSPECIFIED\x10\x00\x12\x1a\n" +
 	"\x16SEGMENT_BURN_RESULT_OK\x10\x01\x12\x1e\n" +
-	"\x1aSEGMENT_BURN_RESULT_FAILED\x10\x022\xf8\r\n" +
+	"\x1aSEGMENT_BURN_RESULT_FAILED\x10\x022\xa4\x12\n" +
 	"\n" +
 	"BurnBridge\x12Q\n" +
 	"\n" +
@@ -3820,7 +4697,12 @@ const file_burnbridge_proto_rawDesc = "" +
 	"\x11HandleMediaChange\x12'.burnbridge.v1.HandleMediaChangeRequest\x1a(.burnbridge.v1.HandleMediaChangeResponse\x12Q\n" +
 	"\n" +
 	"HandleTray\x12 .burnbridge.v1.HandleTrayRequest\x1a!.burnbridge.v1.HandleTrayResponse\x12u\n" +
-	"\x16GetImportedBucketState\x12,.burnbridge.v1.GetImportedBucketStateRequest\x1a-.burnbridge.v1.GetImportedBucketStateResponse\x12]\n" +
+	"\x16GetImportedBucketState\x12,.burnbridge.v1.GetImportedBucketStateRequest\x1a-.burnbridge.v1.GetImportedBucketStateResponse\x12Z\n" +
+	"\rDeleteObjects\x12#.burnbridge.v1.DeleteObjectsRequest\x1a$.burnbridge.v1.DeleteObjectsResponse\x12u\n" +
+	"\x16ListMetadataDbVersions\x12,.burnbridge.v1.ListMetadataDbVersionsRequest\x1a-.burnbridge.v1.ListMetadataDbVersionsResponse\x12{\n" +
+	"\x18RestoreMetadataDbVersion\x12..burnbridge.v1.RestoreMetadataDbVersionRequest\x1a/.burnbridge.v1.RestoreMetadataDbVersionResponse\x12`\n" +
+	"\x0fGetAnchorStatus\x12%.burnbridge.v1.GetAnchorStatusRequest\x1a&.burnbridge.v1.GetAnchorStatusResponse\x12x\n" +
+	"\x17ConfigureRuntimeOptions\x12-.burnbridge.v1.ConfigureRuntimeOptionsRequest\x1a..burnbridge.v1.ConfigureRuntimeOptionsResponse\x12]\n" +
 	"\x0eFinalizeLayout\x12$.burnbridge.v1.FinalizeLayoutRequest\x1a%.burnbridge.v1.FinalizeLayoutResponse\x12Z\n" +
 	"\rUpdateLicense\x12#.burnbridge.v1.UpdateLicenseRequest\x1a$.burnbridge.v1.UpdateLicenseResponse\x12o\n" +
 	"\x14UploadUpgradePackage\x12(.burnbridge.v1.UploadUpgradePackageChunk\x1a+.burnbridge.v1.UploadUpgradePackageResponse(\x01\x12W\n" +
@@ -3839,7 +4721,7 @@ func file_burnbridge_proto_rawDescGZIP() []byte {
 }
 
 var file_burnbridge_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_burnbridge_proto_msgTypes = make([]protoimpl.MessageInfo, 50)
+var file_burnbridge_proto_msgTypes = make([]protoimpl.MessageInfo, 62)
 var file_burnbridge_proto_goTypes = []any{
 	(MediaChangeAction)(0),                     // 0: burnbridge.v1.MediaChangeAction
 	(TrayAction)(0),                            // 1: burnbridge.v1.TrayAction
@@ -3885,15 +4767,27 @@ var file_burnbridge_proto_goTypes = []any{
 	(*CancelJobResponse)(nil),                  // 41: burnbridge.v1.CancelJobResponse
 	(*FinalizeLayoutRequest)(nil),              // 42: burnbridge.v1.FinalizeLayoutRequest
 	(*FinalizeLayoutResponse)(nil),             // 43: burnbridge.v1.FinalizeLayoutResponse
-	(*UpdateLicenseRequest)(nil),               // 44: burnbridge.v1.UpdateLicenseRequest
-	(*UpdateLicenseResponse)(nil),              // 45: burnbridge.v1.UpdateLicenseResponse
-	(*UploadUpgradePackageChunk)(nil),          // 46: burnbridge.v1.UploadUpgradePackageChunk
-	(*UploadUpgradePackageResponse)(nil),       // 47: burnbridge.v1.UploadUpgradePackageResponse
-	(*ApplyUpgradeRequest)(nil),                // 48: burnbridge.v1.ApplyUpgradeRequest
-	(*ApplyUpgradeResponse)(nil),               // 49: burnbridge.v1.ApplyUpgradeResponse
-	(*FinalizeManifest)(nil),                   // 50: burnbridge.v1.FinalizeManifest
-	(*FinalizeFile)(nil),                       // 51: burnbridge.v1.FinalizeFile
-	(*SegmentLayout)(nil),                      // 52: burnbridge.v1.SegmentLayout
+	(*DeleteObjectsRequest)(nil),               // 44: burnbridge.v1.DeleteObjectsRequest
+	(*DeleteObjectResult)(nil),                 // 45: burnbridge.v1.DeleteObjectResult
+	(*DeleteObjectsResponse)(nil),              // 46: burnbridge.v1.DeleteObjectsResponse
+	(*ListMetadataDbVersionsRequest)(nil),      // 47: burnbridge.v1.ListMetadataDbVersionsRequest
+	(*MetadataDbVersion)(nil),                  // 48: burnbridge.v1.MetadataDbVersion
+	(*ListMetadataDbVersionsResponse)(nil),     // 49: burnbridge.v1.ListMetadataDbVersionsResponse
+	(*RestoreMetadataDbVersionRequest)(nil),    // 50: burnbridge.v1.RestoreMetadataDbVersionRequest
+	(*RestoreMetadataDbVersionResponse)(nil),   // 51: burnbridge.v1.RestoreMetadataDbVersionResponse
+	(*GetAnchorStatusRequest)(nil),             // 52: burnbridge.v1.GetAnchorStatusRequest
+	(*GetAnchorStatusResponse)(nil),            // 53: burnbridge.v1.GetAnchorStatusResponse
+	(*ConfigureRuntimeOptionsRequest)(nil),     // 54: burnbridge.v1.ConfigureRuntimeOptionsRequest
+	(*ConfigureRuntimeOptionsResponse)(nil),    // 55: burnbridge.v1.ConfigureRuntimeOptionsResponse
+	(*UpdateLicenseRequest)(nil),               // 56: burnbridge.v1.UpdateLicenseRequest
+	(*UpdateLicenseResponse)(nil),              // 57: burnbridge.v1.UpdateLicenseResponse
+	(*UploadUpgradePackageChunk)(nil),          // 58: burnbridge.v1.UploadUpgradePackageChunk
+	(*UploadUpgradePackageResponse)(nil),       // 59: burnbridge.v1.UploadUpgradePackageResponse
+	(*ApplyUpgradeRequest)(nil),                // 60: burnbridge.v1.ApplyUpgradeRequest
+	(*ApplyUpgradeResponse)(nil),               // 61: burnbridge.v1.ApplyUpgradeResponse
+	(*FinalizeManifest)(nil),                   // 62: burnbridge.v1.FinalizeManifest
+	(*FinalizeFile)(nil),                       // 63: burnbridge.v1.FinalizeFile
+	(*SegmentLayout)(nil),                      // 64: burnbridge.v1.SegmentLayout
 }
 var file_burnbridge_proto_depIdxs = []int32{
 	7,  // 0: burnbridge.v1.UnitStatusEvent.snapshot:type_name -> burnbridge.v1.TestUnitReadyResponse
@@ -3912,55 +4806,67 @@ var file_burnbridge_proto_depIdxs = []int32{
 	28, // 13: burnbridge.v1.CreateJobRequest.metadata:type_name -> burnbridge.v1.ObjectMetadata
 	32, // 14: burnbridge.v1.UploadObjectAck.disc_extents:type_name -> burnbridge.v1.DiscExtent
 	2,  // 15: burnbridge.v1.UploadObjectAck.segment_burn_result:type_name -> burnbridge.v1.SegmentBurnResult
-	50, // 16: burnbridge.v1.CommitJobRequest.finalize_manifest:type_name -> burnbridge.v1.FinalizeManifest
+	62, // 16: burnbridge.v1.CommitJobRequest.finalize_manifest:type_name -> burnbridge.v1.FinalizeManifest
 	34, // 17: burnbridge.v1.CommitJobBatchRequest.jobs:type_name -> burnbridge.v1.CommitJobRequest
 	35, // 18: burnbridge.v1.CommitJobBatchResponse.jobs:type_name -> burnbridge.v1.CommitJobResponse
-	51, // 19: burnbridge.v1.FinalizeManifest.files:type_name -> burnbridge.v1.FinalizeFile
-	52, // 20: burnbridge.v1.FinalizeFile.segments:type_name -> burnbridge.v1.SegmentLayout
-	32, // 21: burnbridge.v1.SegmentLayout.disc_extents:type_name -> burnbridge.v1.DiscExtent
-	3,  // 22: burnbridge.v1.BurnBridge.GetVersion:input_type -> burnbridge.v1.GetVersionRequest
-	29, // 23: burnbridge.v1.BurnBridge.CreateJob:input_type -> burnbridge.v1.CreateJobRequest
-	31, // 24: burnbridge.v1.BurnBridge.UploadObject:input_type -> burnbridge.v1.UploadObjectChunk
-	34, // 25: burnbridge.v1.BurnBridge.CommitJob:input_type -> burnbridge.v1.CommitJobRequest
-	36, // 26: burnbridge.v1.BurnBridge.CommitJobBatch:input_type -> burnbridge.v1.CommitJobBatchRequest
-	38, // 27: burnbridge.v1.BurnBridge.GetJobStatus:input_type -> burnbridge.v1.GetJobStatusRequest
-	40, // 28: burnbridge.v1.BurnBridge.CancelJob:input_type -> burnbridge.v1.CancelJobRequest
-	26, // 29: burnbridge.v1.BurnBridge.ReadObject:input_type -> burnbridge.v1.ReadObjectRequest
-	24, // 30: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:input_type -> burnbridge.v1.RegisterS3ObjectPullSourceRequest
-	5,  // 31: burnbridge.v1.BurnBridge.TestUnitReady:input_type -> burnbridge.v1.TestUnitReadyRequest
-	6,  // 32: burnbridge.v1.BurnBridge.WatchUnitStatus:input_type -> burnbridge.v1.WatchUnitStatusRequest
-	9,  // 33: burnbridge.v1.BurnBridge.GetDiscInfo:input_type -> burnbridge.v1.GetDiscInfoRequest
-	11, // 34: burnbridge.v1.BurnBridge.HandleMediaChange:input_type -> burnbridge.v1.HandleMediaChangeRequest
-	13, // 35: burnbridge.v1.BurnBridge.HandleTray:input_type -> burnbridge.v1.HandleTrayRequest
-	15, // 36: burnbridge.v1.BurnBridge.GetImportedBucketState:input_type -> burnbridge.v1.GetImportedBucketStateRequest
-	42, // 37: burnbridge.v1.BurnBridge.FinalizeLayout:input_type -> burnbridge.v1.FinalizeLayoutRequest
-	44, // 38: burnbridge.v1.BurnBridge.UpdateLicense:input_type -> burnbridge.v1.UpdateLicenseRequest
-	46, // 39: burnbridge.v1.BurnBridge.UploadUpgradePackage:input_type -> burnbridge.v1.UploadUpgradePackageChunk
-	48, // 40: burnbridge.v1.BurnBridge.ApplyUpgrade:input_type -> burnbridge.v1.ApplyUpgradeRequest
-	4,  // 41: burnbridge.v1.BurnBridge.GetVersion:output_type -> burnbridge.v1.GetVersionResponse
-	30, // 42: burnbridge.v1.BurnBridge.CreateJob:output_type -> burnbridge.v1.CreateJobResponse
-	33, // 43: burnbridge.v1.BurnBridge.UploadObject:output_type -> burnbridge.v1.UploadObjectAck
-	35, // 44: burnbridge.v1.BurnBridge.CommitJob:output_type -> burnbridge.v1.CommitJobResponse
-	37, // 45: burnbridge.v1.BurnBridge.CommitJobBatch:output_type -> burnbridge.v1.CommitJobBatchResponse
-	39, // 46: burnbridge.v1.BurnBridge.GetJobStatus:output_type -> burnbridge.v1.GetJobStatusResponse
-	41, // 47: burnbridge.v1.BurnBridge.CancelJob:output_type -> burnbridge.v1.CancelJobResponse
-	27, // 48: burnbridge.v1.BurnBridge.ReadObject:output_type -> burnbridge.v1.ReadObjectChunk
-	25, // 49: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:output_type -> burnbridge.v1.RegisterS3ObjectPullSourceResponse
-	7,  // 50: burnbridge.v1.BurnBridge.TestUnitReady:output_type -> burnbridge.v1.TestUnitReadyResponse
-	8,  // 51: burnbridge.v1.BurnBridge.WatchUnitStatus:output_type -> burnbridge.v1.UnitStatusEvent
-	10, // 52: burnbridge.v1.BurnBridge.GetDiscInfo:output_type -> burnbridge.v1.GetDiscInfoResponse
-	12, // 53: burnbridge.v1.BurnBridge.HandleMediaChange:output_type -> burnbridge.v1.HandleMediaChangeResponse
-	14, // 54: burnbridge.v1.BurnBridge.HandleTray:output_type -> burnbridge.v1.HandleTrayResponse
-	16, // 55: burnbridge.v1.BurnBridge.GetImportedBucketState:output_type -> burnbridge.v1.GetImportedBucketStateResponse
-	43, // 56: burnbridge.v1.BurnBridge.FinalizeLayout:output_type -> burnbridge.v1.FinalizeLayoutResponse
-	45, // 57: burnbridge.v1.BurnBridge.UpdateLicense:output_type -> burnbridge.v1.UpdateLicenseResponse
-	47, // 58: burnbridge.v1.BurnBridge.UploadUpgradePackage:output_type -> burnbridge.v1.UploadUpgradePackageResponse
-	49, // 59: burnbridge.v1.BurnBridge.ApplyUpgrade:output_type -> burnbridge.v1.ApplyUpgradeResponse
-	41, // [41:60] is the sub-list for method output_type
-	22, // [22:41] is the sub-list for method input_type
-	22, // [22:22] is the sub-list for extension type_name
-	22, // [22:22] is the sub-list for extension extendee
-	0,  // [0:22] is the sub-list for field type_name
+	45, // 19: burnbridge.v1.DeleteObjectsResponse.objects:type_name -> burnbridge.v1.DeleteObjectResult
+	48, // 20: burnbridge.v1.ListMetadataDbVersionsResponse.versions:type_name -> burnbridge.v1.MetadataDbVersion
+	63, // 21: burnbridge.v1.FinalizeManifest.files:type_name -> burnbridge.v1.FinalizeFile
+	64, // 22: burnbridge.v1.FinalizeFile.segments:type_name -> burnbridge.v1.SegmentLayout
+	32, // 23: burnbridge.v1.SegmentLayout.disc_extents:type_name -> burnbridge.v1.DiscExtent
+	3,  // 24: burnbridge.v1.BurnBridge.GetVersion:input_type -> burnbridge.v1.GetVersionRequest
+	29, // 25: burnbridge.v1.BurnBridge.CreateJob:input_type -> burnbridge.v1.CreateJobRequest
+	31, // 26: burnbridge.v1.BurnBridge.UploadObject:input_type -> burnbridge.v1.UploadObjectChunk
+	34, // 27: burnbridge.v1.BurnBridge.CommitJob:input_type -> burnbridge.v1.CommitJobRequest
+	36, // 28: burnbridge.v1.BurnBridge.CommitJobBatch:input_type -> burnbridge.v1.CommitJobBatchRequest
+	38, // 29: burnbridge.v1.BurnBridge.GetJobStatus:input_type -> burnbridge.v1.GetJobStatusRequest
+	40, // 30: burnbridge.v1.BurnBridge.CancelJob:input_type -> burnbridge.v1.CancelJobRequest
+	26, // 31: burnbridge.v1.BurnBridge.ReadObject:input_type -> burnbridge.v1.ReadObjectRequest
+	24, // 32: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:input_type -> burnbridge.v1.RegisterS3ObjectPullSourceRequest
+	5,  // 33: burnbridge.v1.BurnBridge.TestUnitReady:input_type -> burnbridge.v1.TestUnitReadyRequest
+	6,  // 34: burnbridge.v1.BurnBridge.WatchUnitStatus:input_type -> burnbridge.v1.WatchUnitStatusRequest
+	9,  // 35: burnbridge.v1.BurnBridge.GetDiscInfo:input_type -> burnbridge.v1.GetDiscInfoRequest
+	11, // 36: burnbridge.v1.BurnBridge.HandleMediaChange:input_type -> burnbridge.v1.HandleMediaChangeRequest
+	13, // 37: burnbridge.v1.BurnBridge.HandleTray:input_type -> burnbridge.v1.HandleTrayRequest
+	15, // 38: burnbridge.v1.BurnBridge.GetImportedBucketState:input_type -> burnbridge.v1.GetImportedBucketStateRequest
+	44, // 39: burnbridge.v1.BurnBridge.DeleteObjects:input_type -> burnbridge.v1.DeleteObjectsRequest
+	47, // 40: burnbridge.v1.BurnBridge.ListMetadataDbVersions:input_type -> burnbridge.v1.ListMetadataDbVersionsRequest
+	50, // 41: burnbridge.v1.BurnBridge.RestoreMetadataDbVersion:input_type -> burnbridge.v1.RestoreMetadataDbVersionRequest
+	52, // 42: burnbridge.v1.BurnBridge.GetAnchorStatus:input_type -> burnbridge.v1.GetAnchorStatusRequest
+	54, // 43: burnbridge.v1.BurnBridge.ConfigureRuntimeOptions:input_type -> burnbridge.v1.ConfigureRuntimeOptionsRequest
+	42, // 44: burnbridge.v1.BurnBridge.FinalizeLayout:input_type -> burnbridge.v1.FinalizeLayoutRequest
+	56, // 45: burnbridge.v1.BurnBridge.UpdateLicense:input_type -> burnbridge.v1.UpdateLicenseRequest
+	58, // 46: burnbridge.v1.BurnBridge.UploadUpgradePackage:input_type -> burnbridge.v1.UploadUpgradePackageChunk
+	60, // 47: burnbridge.v1.BurnBridge.ApplyUpgrade:input_type -> burnbridge.v1.ApplyUpgradeRequest
+	4,  // 48: burnbridge.v1.BurnBridge.GetVersion:output_type -> burnbridge.v1.GetVersionResponse
+	30, // 49: burnbridge.v1.BurnBridge.CreateJob:output_type -> burnbridge.v1.CreateJobResponse
+	33, // 50: burnbridge.v1.BurnBridge.UploadObject:output_type -> burnbridge.v1.UploadObjectAck
+	35, // 51: burnbridge.v1.BurnBridge.CommitJob:output_type -> burnbridge.v1.CommitJobResponse
+	37, // 52: burnbridge.v1.BurnBridge.CommitJobBatch:output_type -> burnbridge.v1.CommitJobBatchResponse
+	39, // 53: burnbridge.v1.BurnBridge.GetJobStatus:output_type -> burnbridge.v1.GetJobStatusResponse
+	41, // 54: burnbridge.v1.BurnBridge.CancelJob:output_type -> burnbridge.v1.CancelJobResponse
+	27, // 55: burnbridge.v1.BurnBridge.ReadObject:output_type -> burnbridge.v1.ReadObjectChunk
+	25, // 56: burnbridge.v1.BurnBridge.RegisterS3ObjectPullSource:output_type -> burnbridge.v1.RegisterS3ObjectPullSourceResponse
+	7,  // 57: burnbridge.v1.BurnBridge.TestUnitReady:output_type -> burnbridge.v1.TestUnitReadyResponse
+	8,  // 58: burnbridge.v1.BurnBridge.WatchUnitStatus:output_type -> burnbridge.v1.UnitStatusEvent
+	10, // 59: burnbridge.v1.BurnBridge.GetDiscInfo:output_type -> burnbridge.v1.GetDiscInfoResponse
+	12, // 60: burnbridge.v1.BurnBridge.HandleMediaChange:output_type -> burnbridge.v1.HandleMediaChangeResponse
+	14, // 61: burnbridge.v1.BurnBridge.HandleTray:output_type -> burnbridge.v1.HandleTrayResponse
+	16, // 62: burnbridge.v1.BurnBridge.GetImportedBucketState:output_type -> burnbridge.v1.GetImportedBucketStateResponse
+	46, // 63: burnbridge.v1.BurnBridge.DeleteObjects:output_type -> burnbridge.v1.DeleteObjectsResponse
+	49, // 64: burnbridge.v1.BurnBridge.ListMetadataDbVersions:output_type -> burnbridge.v1.ListMetadataDbVersionsResponse
+	51, // 65: burnbridge.v1.BurnBridge.RestoreMetadataDbVersion:output_type -> burnbridge.v1.RestoreMetadataDbVersionResponse
+	53, // 66: burnbridge.v1.BurnBridge.GetAnchorStatus:output_type -> burnbridge.v1.GetAnchorStatusResponse
+	55, // 67: burnbridge.v1.BurnBridge.ConfigureRuntimeOptions:output_type -> burnbridge.v1.ConfigureRuntimeOptionsResponse
+	43, // 68: burnbridge.v1.BurnBridge.FinalizeLayout:output_type -> burnbridge.v1.FinalizeLayoutResponse
+	57, // 69: burnbridge.v1.BurnBridge.UpdateLicense:output_type -> burnbridge.v1.UpdateLicenseResponse
+	59, // 70: burnbridge.v1.BurnBridge.UploadUpgradePackage:output_type -> burnbridge.v1.UploadUpgradePackageResponse
+	61, // 71: burnbridge.v1.BurnBridge.ApplyUpgrade:output_type -> burnbridge.v1.ApplyUpgradeResponse
+	48, // [48:72] is the sub-list for method output_type
+	24, // [24:48] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_burnbridge_proto_init() }
@@ -3974,7 +4880,7 @@ func file_burnbridge_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_burnbridge_proto_rawDesc), len(file_burnbridge_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   50,
+			NumMessages:   62,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

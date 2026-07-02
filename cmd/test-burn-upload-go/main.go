@@ -43,6 +43,11 @@ const (
 	modeListObjects     mode = "listobjects"
 	modeDriveInfo       mode = "driveinfo"
 	modeDiscInfo        mode = "discinfo"
+	modeDbVersions      mode = "db-versions"
+	modeDbRestore       mode = "db-restore"
+	modeDbUseVersion    mode = "db-use-version"
+	modeAnchorStatus    mode = "anchor-status"
+	modeEncrypt         mode = "encrypt"
 	modeFinalize        mode = "finalize"
 	modeCloseDisc       mode = "closedisc"
 	modeCloseDiscForce  mode = "close-disc-force"
@@ -70,6 +75,11 @@ type cliOptions struct {
 	remoteOnly         bool
 	listObjectsOnly    bool
 	driveInfoOnly      bool
+	dbVersionsOnly     bool
+	dbRestoreOnly      bool
+	dbUseVersionOnly   bool
+	anchorStatusOnly   bool
+	encryptOnly        bool
 	headObjectOnly     bool
 	discInfoOnly       bool
 	finalizeOnly       bool
@@ -91,6 +101,7 @@ type cliOptions struct {
 	smallConcurrency   int
 	variableSmallFiles bool
 	failAfterBytes     int64
+	controlArgument    string
 }
 
 func main() {
@@ -171,6 +182,16 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parseBucketOnly(args[1:], modeDriveInfo), nil
 	case "discinfo", "disc-info", "disc":
 		return parseBucketOnly(args[1:], modeDiscInfo), nil
+	case "db-versions", "dbversions", "metadata-db-versions", "metadata-versions", "db":
+		return parseBucketOnly(args[1:], modeDbVersions), nil
+	case "db-restore", "dbrestore", "restore":
+		return parseControlArgument(args[1:], modeDbRestore)
+	case "db-use-version", "dbuse", "use-db", "use-version":
+		return parseControlArgument(args[1:], modeDbUseVersion)
+	case "anchor-status", "anchor":
+		return parseBucketOnly(args[1:], modeAnchorStatus), nil
+	case "encrypt", "encryption":
+		return parseControlArgumentOptional(args[1:], modeEncrypt), nil
 	case "finalize", "final":
 		return parseBucketOnly(args[1:], modeFinalize), nil
 	case "closedisc", "close-disc":
@@ -470,6 +491,21 @@ func parseBucketOnly(args []string, m mode) cliOptions {
 	case modeDiscInfo:
 		opts.skipFinalize = true
 		opts.discInfoOnly = true
+	case modeDbVersions:
+		opts.skipFinalize = true
+		opts.dbVersionsOnly = true
+	case modeDbRestore:
+		opts.skipFinalize = true
+		opts.dbRestoreOnly = true
+	case modeDbUseVersion:
+		opts.skipFinalize = true
+		opts.dbUseVersionOnly = true
+	case modeAnchorStatus:
+		opts.skipFinalize = true
+		opts.anchorStatusOnly = true
+	case modeEncrypt:
+		opts.skipFinalize = true
+		opts.encryptOnly = true
 	case modeFinalize:
 		opts.finalizeOnly = true
 	case modeCloseDisc:
@@ -486,6 +522,21 @@ func parseBucketOnly(args []string, m mode) cliOptions {
 		opts.trayCloseOnly = true
 	}
 
+	return opts
+}
+
+func parseControlArgument(args []string, m mode) (cliOptions, error) {
+	if strings.TrimSpace(positionalOrDefault(args, 0, "")) == "" {
+		return cliOptions{}, fmt.Errorf("%s argument is required", m)
+	}
+	opts := parseBucketOnly(nil, m)
+	opts.controlArgument = strings.TrimSpace(args[0])
+	return opts, nil
+}
+
+func parseControlArgumentOptional(args []string, m mode) cliOptions {
+	opts := parseBucketOnly(nil, m)
+	opts.controlArgument = strings.TrimSpace(positionalOrDefault(args, 0, "status"))
 	return opts
 }
 
@@ -674,15 +725,15 @@ func resolveConfigPath(configPath string) string {
 		return configPath
 	}
 
-	if env := strings.TrimSpace(os.Getenv("OPTICAL_ARCHIVE_CONFIG_PATH")); env != "" {
-		return env
-	}
-
 	if executablePath, err := os.Executable(); err == nil {
 		siblingConfigPath := filepath.Join(filepath.Dir(executablePath), defaultConfigFileName)
 		if _, statErr := os.Stat(siblingConfigPath); statErr == nil {
 			return siblingConfigPath
 		}
+	}
+
+	if env := strings.TrimSpace(os.Getenv("OPTICAL_ARCHIVE_CONFIG_PATH")); env != "" {
+		return env
 	}
 
 	return defaultConfigPath
@@ -702,52 +753,50 @@ func printUsage(stream *os.File) {
 		"  test-burn-upload-go.exe close",
 		"  test-burn-upload-go.exe mount",
 		"  test-burn-upload-go.exe unmount",
+		"  test-burn-upload-go.exe db",
+		"  test-burn-upload-go.exe restore [Generation]",
+		"  test-burn-upload-go.exe use-db [Generation]",
+		"  test-burn-upload-go.exe anchor",
+		"  test-burn-upload-go.exe encrypt [on|off|status]",
 		"  test-burn-upload-go.exe get [ObjectKey] [OutputPath]",
 		"",
 		"Compatibility usage:",
-		"  test-burn-upload-go.exe [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe mixed [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe mixed-md5 [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe mixed-nomd5 [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe putobject [DataFile] [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe putobject-md5 [DataFile] [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe small-batch [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe small-batch-md5 [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe var-small-batch [DataDir] [Bucket] [FileCount] [MaxFileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe var-small-batch-md5 [DataDir] [Bucket] [FileCount] [MaxFileSizeBytes] [Concurrency] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe multipart [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe multipart-md5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe multipart-nomd5 [DataFile] [Bucket] [PartSizeMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe multipart-resume [DataFile] [Bucket] [ObjectKey] [UploadId] [StartPartNumber] [PartSizeMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe download [DataDir] [Bucket] [AwsProfile] [ConfigPath] [nomd5]",
-		"  test-burn-upload-go.exe download-nomd5 [DataDir] [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe remote-download [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe remote-download-nomd5 [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe listobjects [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe driveinfo [ControlBucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe discinfo [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe finalize [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe closedisc [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe close-disc-force [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe media-removed [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe media-inserted [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe tray-open [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe tray-close [Bucket] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe headobject [Bucket] [ObjectKey] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe getobject [Bucket] [ObjectKey] [OutputPath] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe getobject-nomd5 [Bucket] [ObjectKey] [OutputPath] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe interrupt-retry [DataFile] [Bucket] [FailAfterMiB] [AwsProfile] [ConfigPath]",
-		"  test-burn-upload-go.exe multipart-interrupt-retry [DataFile] [Bucket] [PartSizeMiB] [FailAfterMiB] [AwsProfile] [ConfigPath]",
+		"  test-burn-upload-go.exe [DataDir] [Bucket]",
+		"  test-burn-upload-go.exe mixed [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB]",
+		"  test-burn-upload-go.exe putobject [DataFile] [Bucket]",
+		"  test-burn-upload-go.exe small-batch [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency]",
+		"  test-burn-upload-go.exe var-small-batch [DataDir] [Bucket] [FileCount] [MaxFileSizeBytes] [Concurrency]",
+		"  test-burn-upload-go.exe multipart [DataFile] [Bucket] [PartSizeMiB]",
+		"  test-burn-upload-go.exe download [DataDir] [Bucket]",
+		"  test-burn-upload-go.exe remote-download [Bucket]",
+		"  test-burn-upload-go.exe listobjects [Bucket]",
+		"  test-burn-upload-go.exe driveinfo [ControlBucket]",
+		"  test-burn-upload-go.exe discinfo [Bucket]",
+		"  test-burn-upload-go.exe db-versions [Bucket]",
+		"  test-burn-upload-go.exe db-restore [Generation]",
+		"  test-burn-upload-go.exe db-use-version [Generation]",
+		"  test-burn-upload-go.exe anchor-status [Bucket]",
+		"  test-burn-upload-go.exe finalize [Bucket]",
+		"  test-burn-upload-go.exe closedisc [Bucket]",
+		"  test-burn-upload-go.exe close-disc-force [Bucket]",
+		"  test-burn-upload-go.exe media-removed [Bucket]",
+		"  test-burn-upload-go.exe media-inserted [Bucket]",
+		"  test-burn-upload-go.exe tray-open [Bucket]",
+		"  test-burn-upload-go.exe tray-close [Bucket]",
+		"  test-burn-upload-go.exe headobject [Bucket] [ObjectKey]",
+		"  test-burn-upload-go.exe getobject [Bucket] [ObjectKey] [OutputPath]",
+		"  test-burn-upload-go.exe getobject-nomd5 [Bucket] [ObjectKey] [OutputPath]",
+		"  test-burn-upload-go.exe interrupt-retry [DataFile] [Bucket] [FailAfterMiB]",
+		"  test-burn-upload-go.exe multipart-interrupt-retry [DataFile] [Bucket] [PartSizeMiB] [FailAfterMiB]",
 		"",
 		"Short aliases:",
-		"  ls=listobjects, drive=driveinfo, disc=discinfo, open=tray-open, close=tray-close",
+		"  ls=listobjects, drive=driveinfo, disc=discinfo, db=db-versions, anchor=anchor-status, open=tray-open, close=tray-close",
 		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, put=putobject, po=putobject, sb=small-batch, vsb=var-small-batch, mp=multipart, mix=mixed",
 		"",
 		"Config resolution:",
-		"  1. explicit ConfigPath argument",
+		"  1. optical-archive.config.json next to this exe",
 		"  2. OPTICAL_ARCHIVE_CONFIG_PATH",
-		"  3. optical-archive.config.json next to this exe",
-		"  4. D:\\BRS\\publisher\\config\\optical-archive.config.json",
+		"  3. D:\\BRS\\publisher\\config\\optical-archive.config.json",
 		"",
 		"Modes:",
 		"  full-flow",
@@ -803,6 +852,21 @@ func printUsage(stream *os.File) {
 		"",
 		"  discinfo",
 		"    Generate a burnbridge control key for disc-info and print the returned JSON fields.",
+		"",
+		"  db-versions",
+		"    Generate a burnbridge control key for db-versions and print metadata database versions.",
+		"",
+		"  db-restore",
+		"    Restore one metadata database generation as the recorder's current working view.",
+		"",
+		"  db-use-version",
+		"    Verify one metadata database generation without changing the current recorder view.",
+		"",
+		"  anchor-status",
+		"    Read BRS Anchor status for the active disc.",
+		"",
+		"  encrypt",
+		"    Set or read runtime hidden-UDF mode: encrypt on, encrypt off, or encrypt status.",
 		"",
 		"  finalize",
 		"    Generate a burnbridge control key for finalize-layout and print the returned JSON fields.",

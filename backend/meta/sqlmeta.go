@@ -1113,6 +1113,9 @@ type CommittedObjectSummary struct {
 // BurnbridgeCommittedAttribute is the metadata_entries key for a JSON snapshot after successful BurnBridge PutObject.
 const BurnbridgeCommittedAttribute = "burnbridge-committed"
 
+// BurnbridgeDeletedAttribute is a logical delete tombstone used to suppress mounted fallback reads/listing.
+const BurnbridgeDeletedAttribute = "burnbridge-deleted"
+
 // BurnbridgeDiscInfoObjectKey is the internal metadata object slot used to persist burnbridge disc JSON.
 const BurnbridgeDiscInfoObjectKey = "v1/state/disc-info"
 
@@ -1630,7 +1633,13 @@ func (s SqlMeta) StoreBurnbridgeCommitted(_ *os.File, bucket, object string, rec
 	if err != nil {
 		return fmt.Errorf("encode burnbridge committed json: %w", err)
 	}
-	return s.StoreAttribute(nil, bucket, object, BurnbridgeCommittedAttribute, b)
+	if err := s.StoreAttribute(nil, bucket, object, BurnbridgeCommittedAttribute, b); err != nil {
+		return err
+	}
+	if err := s.DeleteAttribute(bucket, object, BurnbridgeDeletedAttribute); err != nil && !errors.Is(err, ErrNoSuchKey) {
+		return err
+	}
+	return nil
 }
 
 // ListCommittedObjects returns summaries for objects that have burnbridge committed JSON, ordered by object_name.

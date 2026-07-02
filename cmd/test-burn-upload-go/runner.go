@@ -306,7 +306,7 @@ func newRunner(opts cliOptions) (*runner, error) {
 			return nil, fmt.Errorf("data file not found: %s", opts.dataDir)
 		}
 	}
-	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modeMultipartResume && opts.mode != modePutObjectFlow && !isSmallBatchMode(opts.mode) && opts.mode != modeSmallPackFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
+	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modeMultipartResume && opts.mode != modePutObjectFlow && !isSmallBatchMode(opts.mode) && opts.mode != modeSmallPackFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.dbVersionsOnly && !opts.dbRestoreOnly && !opts.dbUseVersionOnly && !opts.anchorStatusOnly && !opts.encryptOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("data directory not found: %s", opts.dataDir)
@@ -386,6 +386,11 @@ func (r *runner) run() (err error) {
 	r.logf("DriveInfoOnly: %t", r.opts.driveInfoOnly)
 	r.logf("HeadObjectOnly: %t", r.opts.headObjectOnly)
 	r.logf("DiscInfoOnly: %t", r.opts.discInfoOnly)
+	r.logf("DbVersionsOnly: %t", r.opts.dbVersionsOnly)
+	r.logf("DbRestoreOnly: %t", r.opts.dbRestoreOnly)
+	r.logf("DbUseVersionOnly: %t", r.opts.dbUseVersionOnly)
+	r.logf("AnchorStatusOnly: %t", r.opts.anchorStatusOnly)
+	r.logf("EncryptOnly: %t", r.opts.encryptOnly)
 	r.logf("FinalizeOnly: %t", r.opts.finalizeOnly)
 	r.logf("CloseDiscOnly: %t", r.opts.closeDiscOnly)
 	r.logf("MediaRemovedOnly: %t", r.opts.mediaRemovedOnly)
@@ -415,6 +420,9 @@ func (r *runner) run() (err error) {
 	if strings.TrimSpace(r.opts.awsProfile) != "" {
 		r.logf("Profile: %s", r.opts.awsProfile)
 	}
+	if strings.TrimSpace(r.opts.controlArgument) != "" {
+		r.logf("ControlArgument: %s", r.opts.controlArgument)
+	}
 
 	if sampler, samplerErr := startMemorySampler(r.memoryCSVPath, defaultMemorySampleInterval); samplerErr == nil {
 		r.sampler = sampler
@@ -431,7 +439,7 @@ func (r *runner) run() (err error) {
 
 	dataBucket := r.opts.bucket
 	controlBucket := r.opts.bucket
-	if r.opts.driveInfoOnly || r.opts.discInfoOnly || r.opts.finalizeOnly || r.opts.closeDiscOnly || r.opts.mediaRemovedOnly || r.opts.mediaInsertedOnly || r.opts.trayOpenOnly || r.opts.trayCloseOnly {
+	if r.opts.driveInfoOnly || r.opts.discInfoOnly || r.opts.dbVersionsOnly || r.opts.dbRestoreOnly || r.opts.dbUseVersionOnly || r.opts.anchorStatusOnly || r.opts.encryptOnly || r.opts.finalizeOnly || r.opts.closeDiscOnly || r.opts.mediaRemovedOnly || r.opts.mediaInsertedOnly || r.opts.trayOpenOnly || r.opts.trayCloseOnly {
 		if resolvedControlBucket, resolveErr := r.resolveControlBucket(discovery, controlBucket); resolveErr == nil && strings.TrimSpace(resolvedControlBucket) != "" {
 			controlBucket = resolvedControlBucket
 		} else if resolveErr != nil {
@@ -476,6 +484,16 @@ func (r *runner) run() (err error) {
 		err = r.runDriveInfoOnly(controlBucket)
 	case r.opts.discInfoOnly:
 		err = r.runDiscInfoOnly(controlBucket)
+	case r.opts.dbVersionsOnly:
+		err = r.runDbVersionsOnly(controlBucket)
+	case r.opts.dbRestoreOnly:
+		err = r.runDbRestoreOnly(controlBucket)
+	case r.opts.dbUseVersionOnly:
+		err = r.runDbUseVersionOnly(controlBucket)
+	case r.opts.anchorStatusOnly:
+		err = r.runAnchorStatusOnly(controlBucket)
+	case r.opts.encryptOnly:
+		err = r.runEncryptOnly(controlBucket)
 	case r.opts.finalizeOnly:
 		err = r.runFinalizeOnly(controlBucket)
 	case r.opts.closeDiscOnly:
@@ -676,6 +694,81 @@ func (r *runner) runDiscInfoOnly(bucket string) error {
 	}
 	r.logf("DiscInfo control key: %s", controlKey)
 	r.logf("DiscInfo saved to: %s", discInfoPath)
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runDbVersionsOnly(bucket string) error {
+	r.logf("[3/3] Reading metadata DB versions...")
+	outputPath := filepath.Join(r.runRoot, "db-versions.json")
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "db-versions", outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("DbVersions control key: %s", controlKey)
+	r.logf("DbVersions saved to: %s", outputPath)
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runDbRestoreOnly(bucket string) error {
+	r.logf("[3/3] Restoring metadata DB version...")
+	outputPath := filepath.Join(r.runRoot, "db-restore-response.json")
+	action := "db-restore/" + strings.TrimSpace(r.opts.controlArgument)
+	controlKey, raw, err := r.downloadShortControlObject(bucket, action, outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("DbRestore control key: %s", controlKey)
+	r.logf("DbRestore response saved to: %s", outputPath)
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runDbUseVersionOnly(bucket string) error {
+	r.logf("[3/3] Verifying metadata DB version...")
+	outputPath := filepath.Join(r.runRoot, "db-use-version-response.json")
+	action := "db-use-version/" + strings.TrimSpace(r.opts.controlArgument)
+	controlKey, raw, err := r.downloadShortControlObject(bucket, action, outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("DbUseVersion control key: %s", controlKey)
+	r.logf("DbUseVersion response saved to: %s", outputPath)
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runAnchorStatusOnly(bucket string) error {
+	r.logf("[3/3] Reading BRS anchor status...")
+	outputPath := filepath.Join(r.runRoot, "anchor-status.json")
+	controlKey, raw, err := r.downloadShortControlObject(bucket, "anchor-status", outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("AnchorStatus control key: %s", controlKey)
+	r.logf("AnchorStatus saved to: %s", outputPath)
+	r.writeControlJSONLog(raw)
+	return nil
+}
+
+func (r *runner) runEncryptOnly(bucket string) error {
+	mode := strings.ToLower(strings.TrimSpace(r.opts.controlArgument))
+	if mode == "" {
+		mode = "status"
+	}
+	r.logf("[3/3] Configuring recorder encryption mode...")
+	outputPath := filepath.Join(r.runRoot, "encrypt-response.json")
+	action := "encrypt"
+	if mode != "status" {
+		action += "/" + mode
+	}
+	controlKey, raw, err := r.downloadShortControlObject(bucket, action, outputPath)
+	if err != nil {
+		return err
+	}
+	r.logf("Encrypt control key: %s", controlKey)
+	r.logf("Encrypt response saved to: %s", outputPath)
 	r.writeControlJSONLog(raw)
 	return nil
 }

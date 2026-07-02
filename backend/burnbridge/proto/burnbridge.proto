@@ -61,6 +61,21 @@ service BurnBridge {
   // Return the currently imported on-disc metadata snapshot maintained by the recorder.
   rpc GetImportedBucketState(GetImportedBucketStateRequest) returns (GetImportedBucketStateResponse);
 
+  // Mark one or more objects as logically deleted in recorder metadata.
+  rpc DeleteObjects(DeleteObjectsRequest) returns (DeleteObjectsResponse);
+
+  // List metadata database artifact versions known by the recorder.
+  rpc ListMetadataDbVersions(ListMetadataDbVersionsRequest) returns (ListMetadataDbVersionsResponse);
+
+  // Restore a metadata database artifact generation as the recorder's current working view.
+  rpc RestoreMetadataDbVersion(RestoreMetadataDbVersionRequest) returns (RestoreMetadataDbVersionResponse);
+
+  // Report BRS anchor state for the active disc/bucket.
+  rpc GetAnchorStatus(GetAnchorStatusRequest) returns (GetAnchorStatusResponse);
+
+  // Configure recorder runtime-only options without editing config files or restarting.
+  rpc ConfigureRuntimeOptions(ConfigureRuntimeOptionsRequest) returns (ConfigureRuntimeOptionsResponse);
+
   // Finalize accumulated UDF layout on disc using persisted layout metadata (closes stream write session).
   rpc FinalizeLayout(FinalizeLayoutRequest) returns (FinalizeLayoutResponse);
 
@@ -380,6 +395,89 @@ message FinalizeLayoutResponse {
   string bucket = 1;
   string status = 2;
   string message = 3;
+}
+
+message DeleteObjectsRequest {
+  string bucket = 1;
+  repeated string object_keys = 2;
+}
+
+message DeleteObjectResult {
+  string object_key = 1;
+  bool deleted = 2;
+  string message = 3;
+}
+
+message DeleteObjectsResponse {
+  string bucket = 1;
+  repeated DeleteObjectResult objects = 2;
+}
+
+message ListMetadataDbVersionsRequest {
+  string bucket = 1;
+}
+
+message MetadataDbVersion {
+  string bucket = 1;
+  int64 generation = 2;
+  string file_name = 3;
+  int32 start_disc_address = 4;
+  int32 end_disc_address = 5;
+  int64 size_bytes = 6;
+  string finalized_at_utc = 7;
+  int64 previous_generation = 8;
+  int32 previous_start_disc_address = 9;
+  int32 previous_end_disc_address = 10;
+  string sha256 = 11;
+  string state = 12;
+  bool anchor_pre_written = 13;
+  bool anchor_post_written = 14;
+}
+
+message ListMetadataDbVersionsResponse {
+  string bucket = 1;
+  repeated MetadataDbVersion versions = 2;
+}
+
+message RestoreMetadataDbVersionRequest {
+  string bucket = 1;
+  int64 generation = 2;
+  bool preview_only = 3;
+}
+
+message RestoreMetadataDbVersionResponse {
+  string bucket = 1;
+  int64 generation = 2;
+  string status = 3;
+  string message = 4;
+}
+
+message GetAnchorStatusRequest {
+  string bucket = 1;
+}
+
+message GetAnchorStatusResponse {
+  string bucket = 1;
+  bool enabled = 2;
+  int64 latest_generation = 3;
+  bool pre_anchor_written = 4;
+  bool post_anchor_written = 5;
+  int32 pre_anchor_start_disc_address = 6;
+  int32 post_anchor_start_disc_address = 7;
+  int32 copies = 8;
+  string message = 9;
+}
+
+message ConfigureRuntimeOptionsRequest {
+  bool set_hidden_udf_layout_enabled = 1;
+  bool hidden_udf_layout_enabled = 2;
+}
+
+message ConfigureRuntimeOptionsResponse {
+  bool hidden_udf_layout_enabled = 1;
+  bool hidden_udf_layout_overridden = 2;
+  string hidden_udf_layout_source = 3;
+  string message = 4;
 }
 
 message UpdateLicenseRequest {

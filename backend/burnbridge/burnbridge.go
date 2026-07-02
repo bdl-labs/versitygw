@@ -75,10 +75,16 @@ const (
 	burnbridgeControlActionMediaInserted  burnbridgeControlAction = "media-inserted"
 	burnbridgeControlActionTrayOpen       burnbridgeControlAction = "tray-open"
 	burnbridgeControlActionTrayClose      burnbridgeControlAction = "tray-close"
+	burnbridgeControlActionDBVersions     burnbridgeControlAction = "db-versions"
+	burnbridgeControlActionDBUseVersion   burnbridgeControlAction = "db-use-version"
+	burnbridgeControlActionDBRestore      burnbridgeControlAction = "db-restore"
+	burnbridgeControlActionAnchorStatus   burnbridgeControlAction = "anchor-status"
+	burnbridgeControlActionEncrypt        burnbridgeControlAction = "encrypt"
 )
 
 type burnbridgeControlRequest struct {
 	Action      burnbridgeControlAction
+	Argument    string
 	RequestTime int64
 	RequestID   string
 	Key         string
@@ -231,6 +237,16 @@ func burnbridgeControlActionFromString(value string) (burnbridgeControlAction, b
 		return burnbridgeControlActionTrayOpen, true
 	case string(burnbridgeControlActionTrayClose):
 		return burnbridgeControlActionTrayClose, true
+	case string(burnbridgeControlActionDBVersions):
+		return burnbridgeControlActionDBVersions, true
+	case string(burnbridgeControlActionDBUseVersion):
+		return burnbridgeControlActionDBUseVersion, true
+	case string(burnbridgeControlActionDBRestore):
+		return burnbridgeControlActionDBRestore, true
+	case string(burnbridgeControlActionAnchorStatus):
+		return burnbridgeControlActionAnchorStatus, true
+	case string(burnbridgeControlActionEncrypt):
+		return burnbridgeControlActionEncrypt, true
 	default:
 		return "", false
 	}
@@ -239,7 +255,7 @@ func burnbridgeControlActionFromString(value string) (burnbridgeControlAction, b
 func (b *BurnBridge) parseControlRequestForBucket(bucket, key string) (*burnbridgeControlRequest, bool, error) {
 	trimmed := strings.Trim(strings.TrimSpace(key), "/")
 	parts := strings.Split(trimmed, "/")
-	if len(parts) != 2 || parts[0] != burnbridgeControlAPIVersion {
+	if (len(parts) != 2 && len(parts) != 3) || parts[0] != burnbridgeControlAPIVersion {
 		return nil, false, nil
 	}
 	if !b.isDriveControlBucket(bucket) {
@@ -251,6 +267,7 @@ func (b *BurnBridge) parseControlRequestForBucket(bucket, key string) (*burnbrid
 	}
 	return &burnbridgeControlRequest{
 		Action:      action,
+		Argument:    strings.TrimSpace(strings.Join(parts[2:], "/")),
 		RequestTime: time.Now().UTC().UnixMilli(),
 		RequestID:   uuid.NewString(),
 		Key:         trimmed,
@@ -260,7 +277,7 @@ func (b *BurnBridge) parseControlRequestForBucket(bucket, key string) (*burnbrid
 func burnbridgeControlRequiresExistingBucket(action burnbridgeControlAction) bool {
 	switch action {
 	case burnbridgeControlActionDriveInfo, burnbridgeControlActionMediaRemoved, burnbridgeControlActionMediaInserted,
-		burnbridgeControlActionTrayOpen, burnbridgeControlActionTrayClose:
+		burnbridgeControlActionTrayOpen, burnbridgeControlActionTrayClose, burnbridgeControlActionEncrypt:
 		return false
 	default:
 		return true
@@ -1121,7 +1138,9 @@ func (b *BurnBridge) resolveControlPayloadBucket(ctx context.Context, requestBuc
 			return payloadBucket, payloadBucket, nil
 		}
 		return payloadBucket, targetBucket, nil
-	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc, burnbridgeControlActionCloseDiscForce:
+	case burnbridgeControlActionFinalizeLayout, burnbridgeControlActionCloseDisc, burnbridgeControlActionCloseDiscForce,
+		burnbridgeControlActionDBVersions, burnbridgeControlActionDBUseVersion, burnbridgeControlActionDBRestore,
+		burnbridgeControlActionAnchorStatus:
 		targetBucket, err = b.resolveActiveBucketForControl(ctx)
 		if err != nil {
 			return payloadBucket, "", err
@@ -4285,9 +4304,168 @@ func (b *BurnBridge) loadControlPayload(ctx context.Context, bucket string, req 
 		}
 		doc := parseTrayControlDocument(raw)
 		return buildTrayControlJSON(req, bucket, doc)
+	case burnbridgeControlActionDBVersions:
+		payloadBucket, targetBucket, err := b.resolveControlPayloadBucket(ctx, bucket, req)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		data, err := b.invokeListMetadataDbVersions(ctx, targetBucket)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		return buildBurnbridgeControlPayload(req, payloadBucket, true, data, nil, time.Now().UTC())
+	case burnbridgeControlActionDBUseVersion, burnbridgeControlActionDBRestore:
+		payloadBucket, targetBucket, err := b.resolveControlPayloadBucket(ctx, bucket, req)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		generation, err := parseMetadataGenerationArgument(req)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		data, err := b.invokeRestoreMetadataDbVersion(ctx, targetBucket, generation, req.Action == burnbridgeControlActionDBUseVersion)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		if req.Action == burnbridgeControlActionDBRestore {
+			b.resetImportedBucketSyncState()
+			if err := b.syncImportedBucketState(context.Background(), targetBucket); err != nil {
+				slog.Warn("burnbridge: failed to sync imported bucket state after metadata DB restore",
+					"bucket", targetBucket, "generation", generation, "err", err)
+			}
+		}
+		return buildBurnbridgeControlPayload(req, payloadBucket, true, data, nil, time.Now().UTC())
+	case burnbridgeControlActionAnchorStatus:
+		payloadBucket, targetBucket, err := b.resolveControlPayloadBucket(ctx, bucket, req)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		data, err := b.invokeGetAnchorStatus(ctx, targetBucket)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		return buildBurnbridgeControlPayload(req, payloadBucket, true, data, nil, time.Now().UTC())
+	case burnbridgeControlActionEncrypt:
+		data, err := b.invokeConfigureRuntimeEncryption(ctx, req.Argument)
+		if err != nil {
+			return burnbridgeControlPayload{}, err
+		}
+		return buildBurnbridgeControlPayload(req, bucket, true, data, nil, time.Now().UTC())
 	default:
 		return burnbridgeControlPayload{}, burnbridgeInvalidRequest(fmt.Sprintf("unsupported burnbridge control action %q", req.Action))
 	}
+}
+
+func parseMetadataGenerationArgument(req *burnbridgeControlRequest) (int64, error) {
+	if req == nil || strings.TrimSpace(req.Argument) == "" {
+		return 0, burnbridgeInvalidRequest("metadata DB generation argument is required")
+	}
+	generation, err := strconv.ParseInt(strings.TrimSpace(req.Argument), 10, 64)
+	if err != nil || generation <= 0 {
+		return 0, burnbridgeInvalidRequest(fmt.Sprintf("invalid metadata DB generation %q", req.Argument))
+	}
+	return generation, nil
+}
+
+func (b *BurnBridge) invokeListMetadataDbVersions(ctx context.Context, bucket string) (any, error) {
+	resp, err := b.grpc.ListMetadataDbVersions(ctx, &burnbridgev1.ListMetadataDbVersionsRequest{
+		Bucket: bucket,
+	})
+	if err != nil {
+		return nil, err
+	}
+	versions := make([]map[string]any, 0, len(resp.GetVersions()))
+	for _, version := range resp.GetVersions() {
+		if version == nil {
+			continue
+		}
+		versions = append(versions, map[string]any{
+			"bucket":                   version.GetBucket(),
+			"generation":               version.GetGeneration(),
+			"fileName":                 version.GetFileName(),
+			"startDiscAddress":         version.GetStartDiscAddress(),
+			"endDiscAddress":           version.GetEndDiscAddress(),
+			"sizeBytes":                version.GetSizeBytes(),
+			"finalizedAtUtc":           version.GetFinalizedAtUtc(),
+			"previousGeneration":       version.GetPreviousGeneration(),
+			"previousStartDiscAddress": version.GetPreviousStartDiscAddress(),
+			"previousEndDiscAddress":   version.GetPreviousEndDiscAddress(),
+			"sha256":                   version.GetSha256(),
+			"state":                    version.GetState(),
+			"anchorPreWritten":         version.GetAnchorPreWritten(),
+			"anchorPostWritten":        version.GetAnchorPostWritten(),
+		})
+	}
+	return map[string]any{
+		"bucket":   resp.GetBucket(),
+		"versions": versions,
+	}, nil
+}
+
+func (b *BurnBridge) invokeRestoreMetadataDbVersion(ctx context.Context, bucket string, generation int64, previewOnly bool) (any, error) {
+	resp, err := b.grpc.RestoreMetadataDbVersion(ctx, &burnbridgev1.RestoreMetadataDbVersionRequest{
+		Bucket:      bucket,
+		Generation:  generation,
+		PreviewOnly: previewOnly,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"bucket":      resp.GetBucket(),
+		"generation":  resp.GetGeneration(),
+		"status":      resp.GetStatus(),
+		"message":     resp.GetMessage(),
+		"previewOnly": previewOnly,
+	}, nil
+}
+
+func (b *BurnBridge) invokeGetAnchorStatus(ctx context.Context, bucket string) (any, error) {
+	resp, err := b.grpc.GetAnchorStatus(ctx, &burnbridgev1.GetAnchorStatusRequest{
+		Bucket: bucket,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"bucket":                     resp.GetBucket(),
+		"enabled":                    resp.GetEnabled(),
+		"latestGeneration":           resp.GetLatestGeneration(),
+		"preAnchorWritten":           resp.GetPreAnchorWritten(),
+		"postAnchorWritten":          resp.GetPostAnchorWritten(),
+		"preAnchorStartDiscAddress":  resp.GetPreAnchorStartDiscAddress(),
+		"postAnchorStartDiscAddress": resp.GetPostAnchorStartDiscAddress(),
+		"copies":                     resp.GetCopies(),
+		"message":                    resp.GetMessage(),
+	}, nil
+}
+
+func (b *BurnBridge) invokeConfigureRuntimeEncryption(ctx context.Context, argument string) (any, error) {
+	mode := strings.ToLower(strings.TrimSpace(argument))
+	req := &burnbridgev1.ConfigureRuntimeOptionsRequest{}
+	switch mode {
+	case "", "status", "get":
+	case "on", "true", "1", "enable", "enabled", "encrypt", "encrypted":
+		req.SetHiddenUdfLayoutEnabled = true
+		req.HiddenUdfLayoutEnabled = true
+	case "off", "false", "0", "disable", "disabled", "plain", "normal":
+		req.SetHiddenUdfLayoutEnabled = true
+		req.HiddenUdfLayoutEnabled = false
+	default:
+		return nil, burnbridgeInvalidRequest(fmt.Sprintf("invalid encrypt mode %q; expected on, off, or status", argument))
+	}
+
+	resp, err := b.grpc.ConfigureRuntimeOptions(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"hiddenUdfLayoutEnabled":    resp.GetHiddenUdfLayoutEnabled(),
+		"hiddenUdfLayoutOverridden": resp.GetHiddenUdfLayoutOverridden(),
+		"hiddenUdfLayoutSource":     resp.GetHiddenUdfLayoutSource(),
+		"message":                   resp.GetMessage(),
+		"mode":                      map[bool]string{true: "encrypted", false: "plain"}[resp.GetHiddenUdfLayoutEnabled()],
+	}, nil
 }
 
 func buildFinalizeLayoutResultJSON(
@@ -4851,6 +5029,9 @@ func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) 
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
+	if b.localObjectDeleted(bucket, key) {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
 
 	summary, err := b.meta.GetCommittedObjectSummary(bucket, key)
 	if err != nil {
@@ -5281,6 +5462,9 @@ func (b *BurnBridge) GetObject(ctx context.Context, input *s3.GetObjectInput) (*
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
+	if b.localObjectDeleted(bucket, key) {
+		return nil, s3err.GetAPIError(s3err.ErrNoSuchKey)
+	}
 
 	if input.PartNumber != nil && *input.PartNumber > 1 {
 		return nil, s3err.GetInvalidPartNumberRangeErr(1, *input.PartNumber)
@@ -5441,6 +5625,9 @@ func (b *BurnBridge) getMountedFallbackObject(
 	fail func(error) (*s3.GetObjectOutput, error),
 ) (*s3.GetObjectOutput, error) {
 	_ = b.ensureActiveBucketLoaded(ctx)
+	if b.localObjectDeleted(bucket, key) {
+		return fail(s3err.GetAPIError(s3err.ErrNoSuchKey))
+	}
 	obj, err := b.openMountedFallbackObject(bucket, key)
 	if err != nil {
 		return fail(mapOpenError(err))
@@ -5596,6 +5783,9 @@ func (b *BurnBridge) committedMapFSAndSummaries(bucket string) (fstest.MapFS, ma
 	fsys := fstest.MapFS{}
 	for _, sum := range summaries {
 		k := strings.TrimPrefix(strings.ReplaceAll(sum.ObjectKey, `\`, `/`), "/")
+		if b.localObjectDeleted(bucket, k) {
+			continue
+		}
 		byKey[k] = sum
 		addMapFSPath(fsys, k)
 	}
@@ -5637,6 +5827,9 @@ func (b *BurnBridge) mountedFallbackMapFSAndSummaries(ctx context.Context, bucke
 		key := filepath.ToSlash(rel)
 		key = strings.TrimPrefix(key, "/")
 		if key == "" || key == "." {
+			return nil
+		}
+		if !d.IsDir() && b.localObjectDeleted(bucket, key) {
 			return nil
 		}
 
@@ -6271,6 +6464,22 @@ func (b *BurnBridge) clearStaleLocalObjectState(bucket, key string) error {
 		return err
 	}
 	return nil
+}
+
+func (b *BurnBridge) markLocalObjectDeleted(bucket, key string) error {
+	doc := map[string]string{
+		"deletedAtUtc": time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		return err
+	}
+	return b.meta.StoreAttribute(nil, bucket, key, meta.BurnbridgeDeletedAttribute, raw)
+}
+
+func (b *BurnBridge) localObjectDeleted(bucket, key string) bool {
+	_, err := b.meta.RetrieveAttribute(nil, bucket, key, meta.BurnbridgeDeletedAttribute)
+	return err == nil
 }
 
 func (b *BurnBridge) localObjectStateNeedsRecorderProbe(bucket, key string) (bool, error) {
@@ -9311,8 +9520,7 @@ func (b *BurnBridge) uploadSmallObjectOnSharedStream(stream grpc.BidiStreamingCl
 	return offset, final, stats, streamAckIndex, nil
 }
 
-// DeleteObject is rejected: BurnBridge maps to write-once read-many optical storage.
-func (b *BurnBridge) DeleteObject(_ context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
+func (b *BurnBridge) DeleteObject(ctx context.Context, input *s3.DeleteObjectInput) (*s3.DeleteObjectOutput, error) {
 	if input == nil || input.Bucket == nil || input.Key == nil {
 		return nil, fmt.Errorf("bucket/key required")
 	}
@@ -9323,11 +9531,13 @@ func (b *BurnBridge) DeleteObject(_ context.Context, input *s3.DeleteObjectInput
 	if !b.burnbridgeBucketExists(bucket) {
 		return nil, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	return nil, burnbridgeWORMNoDelete
+	if err := b.deleteCommittedObjects(ctx, bucket, []string{*input.Key}); err != nil {
+		return nil, err
+	}
+	return &s3.DeleteObjectOutput{}, nil
 }
 
-// DeleteObjects reports MethodNotAllowed for every key (WORM).
-func (b *BurnBridge) DeleteObjects(_ context.Context, input *s3.DeleteObjectsInput) (s3response.DeleteResult, error) {
+func (b *BurnBridge) DeleteObjects(ctx context.Context, input *s3.DeleteObjectsInput) (s3response.DeleteResult, error) {
 	if input == nil || input.Bucket == nil || input.Delete == nil {
 		return s3response.DeleteResult{}, fmt.Errorf("bucket/delete payload required")
 	}
@@ -9338,20 +9548,68 @@ func (b *BurnBridge) DeleteObjects(_ context.Context, input *s3.DeleteObjectsInp
 	if !b.burnbridgeBucketExists(bucket) {
 		return s3response.DeleteResult{}, s3err.GetAPIError(s3err.ErrNoSuchBucket)
 	}
-	code := burnbridgeWORMNoDelete.Code
-	msg := burnbridgeWORMNoDelete.Description
-	errs := make([]types.Error, 0, len(input.Delete.Objects))
+	keys := make([]string, 0, len(input.Delete.Objects))
 	for _, obj := range input.Delete.Objects {
 		if obj.Key == nil {
 			continue
 		}
-		errs = append(errs, types.Error{
-			Key:     obj.Key,
-			Code:    &code,
-			Message: &msg,
-		})
+		keys = append(keys, *obj.Key)
 	}
-	return s3response.DeleteResult{Error: errs}, nil
+	if err := b.deleteCommittedObjects(ctx, bucket, keys); err != nil {
+		return s3response.DeleteResult{}, err
+	}
+	quiet := input.Delete.Quiet != nil && *input.Delete.Quiet
+	deleted := make([]types.DeletedObject, 0, len(keys))
+	if !quiet {
+		for _, key := range keys {
+			keyCopy := key
+			deleted = append(deleted, types.DeletedObject{Key: &keyCopy})
+		}
+	}
+	return s3response.DeleteResult{Deleted: deleted}, nil
+}
+
+func (b *BurnBridge) deleteCommittedObjects(ctx context.Context, bucket string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(keys))
+	seen := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		trimmed := strings.Trim(strings.ReplaceAll(strings.TrimSpace(key), `\`, `/`), "/")
+		if trimmed == "" {
+			continue
+		}
+		folded := strings.ToLower(trimmed)
+		if _, ok := seen[folded]; ok {
+			continue
+		}
+		seen[folded] = struct{}{}
+		normalized = append(normalized, trimmed)
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	if b.grpc != nil {
+		if _, err := b.grpc.DeleteObjects(ctx, &burnbridgev1.DeleteObjectsRequest{
+			Bucket:     bucket,
+			ObjectKeys: normalized,
+		}); err != nil {
+			return fmt.Errorf("burnbridge DeleteObjects recorder tombstone: %w", err)
+		}
+	}
+
+	for _, key := range normalized {
+		if err := b.clearStaleLocalObjectState(bucket, key); err != nil {
+			return fmt.Errorf("burnbridge clear deleted object state %q: %w", key, err)
+		}
+		if err := b.markLocalObjectDeleted(bucket, key); err != nil {
+			return fmt.Errorf("burnbridge mark deleted object %q: %w", key, err)
+		}
+	}
+	b.invalidateFinalizeLayoutTranscript(bucket)
+	return nil
 }
 
 func (b *BurnBridge) buildFinalizeManifest(bucket, key string, objectSize int64) (*burnbridgev1.FinalizeManifest, error) {
