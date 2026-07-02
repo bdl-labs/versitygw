@@ -3276,6 +3276,75 @@ func TestCloseDiscGetObjectInvokesFinalizeWithCloseDisc(t *testing.T) {
 	}
 }
 
+func TestCloseDiscGetObjectFailsWhenStagedSmallObjectCannotFlush(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "bucket1"
+	if err := store.StoreBurnbridgeCommitted(nil, bucket, "staged.txt", &meta.BurnbridgeCommittedRecord{
+		JobID:        "staged-small-object",
+		Status:       "staged",
+		Size:         5,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stage := &smallObjectStageRecord{
+		Bucket:      bucket,
+		Key:         "staged.txt",
+		PackPath:    filepath.Join(t.TempDir(), "missing-stage.pack"),
+		LogicalSize: 5,
+		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+	}
+	raw, err := json.Marshal(stage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreAttribute(nil, bucket, "staged.txt", burnbridgeSmallObjectStageAttr, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	var finalizeCalled bool
+	b := &BurnBridge{
+		meta:         store,
+		activeBucket: bucket,
+		udfLabel:     "BUCKET1",
+		smallBatch:   newSmallObjectBatcher(nil, 1024, 8, time.Minute),
+		grpc: testBurnBridgeClient{
+			getDiscInfoFn: func(context.Context, *burnbridgev1.GetDiscInfoRequest, ...grpc.CallOption) (*burnbridgev1.GetDiscInfoResponse, error) {
+				return testDriveInfo("DRIVE-SERIAL-CLOSEDISC-STAGED"), nil
+			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return &burnbridgev1.TestUnitReadyResponse{Ready: true, VolumeLabel: bucket, WritableState: "Appendable"}, nil
+			},
+			finalizeFn: func(context.Context, *burnbridgev1.FinalizeLayoutRequest, ...grpc.CallOption) (*burnbridgev1.FinalizeLayoutResponse, error) {
+				finalizeCalled = true
+				return nil, nil
+			},
+		},
+	}
+	controlBucket := testEnsureDriveControlBucket(t, b)
+
+	_, err = b.GetObject(context.Background(), &s3.GetObjectInput{
+		Bucket: ptr(controlBucket),
+		Key:    ptr(testControlKey("close-disc")),
+	})
+	if err == nil {
+		t.Fatal("expected close-disc to fail while staged small objects cannot flush")
+	}
+	if !strings.Contains(err.Error(), "staged small objects") {
+		t.Fatalf("expected staged small object error, got %v", err)
+	}
+	if finalizeCalled {
+		t.Fatal("FinalizeLayout should not be called when staged small objects cannot flush")
+	}
+}
+
 func TestMediaInsertedControlGetObjectBypassesMissingBucket(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -3995,7 +4064,7 @@ func TestCreateMultipartUploadCapacityErrorAutoClosesOnlyAtFinalizeReserve(t *te
 	}
 }
 
-func TestCapacityFinalizeContinuesWhenStagedSmallObjectFlushFails(t *testing.T) {
+func TestCapacityFinalizeStopsWhenStagedSmallObjectFlushFails(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
 	if err != nil {
@@ -4057,8 +4126,8 @@ func TestCapacityFinalizeContinuesWhenStagedSmallObjectFlushFails(t *testing.T) 
 
 	b.finalizeAndCloseDiscAfterCapacityExceeded(context.Background(), bucket)
 
-	if len(closeDiscValues) != 2 || closeDiscValues[0] || !closeDiscValues[1] {
-		t.Fatalf("expected automatic FinalizeLayout then CloseDisc despite staged flush failure, got %#v", closeDiscValues)
+	if len(closeDiscValues) != 0 {
+		t.Fatalf("expected automatic close-disc to stop when staged flush fails, got %#v", closeDiscValues)
 	}
 }
 
@@ -4700,6 +4769,59 @@ func TestSmallObjectStageCapacityIncludesExistingStagedBytes(t *testing.T) {
 	}
 	if _, stageErr := b.loadSmallObjectStage(bucket, "new-small.bin"); !errors.Is(stageErr, meta.ErrNoSuchKey) {
 		t.Fatalf("new object should not be staged after capacity failure, got %v", stageErr)
+	}
+}
+
+func TestSmallObjectStageCapacityIncludesStripePadding(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const bucket = "DISC-A"
+	if err := store.StoreBurnbridgeDiscInfo(&meta.BurnbridgeDiscInfoDocument{
+		Bucket:                bucket,
+		WritableCapacityBytes: 2048,
+		FreeCapacityBytes:     2048,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for key, value := range map[string]string{
+		"redundancy_enabled":            "true",
+		"redundancy_data_block_count":   "2",
+		"redundancy_parity_block_count": "1",
+		"redundancy_block_size_bytes":   "2048",
+	} {
+		if err := store.StoreAttribute(nil, bucket, "", key, []byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	b := &BurnBridge{
+		meta:           store,
+		activeBucket:   bucket,
+		volumeLabelRaw: bucket,
+		metaDBPath:     dbPath,
+		putQueueSem:    make(chan struct{}, 1),
+	}
+	b.smallBatch = newSmallObjectBatcher(b, 1024, 8, time.Minute)
+
+	_, err = b.PutObject(context.Background(), s3response.PutObjectInput{
+		Bucket:        ptr(bucket),
+		Key:           ptr("new-small.bin"),
+		Body:          bytes.NewReader([]byte("x")),
+		ContentLength: ptr(int64(1)),
+	})
+	if err == nil {
+		t.Fatal("expected capacity error because stripe padding exceeds writable capacity")
+	}
+	if _, stageErr := b.loadSmallObjectStage(bucket, "new-small.bin"); !errors.Is(stageErr, meta.ErrNoSuchKey) {
+		t.Fatalf("new object should not be staged after padding capacity failure, got %v", stageErr)
+	}
+	if _, committedErr := store.GetBurnbridgeCommittedRecord(bucket, "new-small.bin"); !errors.Is(committedErr, meta.ErrNoSuchKey) {
+		t.Fatalf("new object should not be visible after padding capacity failure, got %v", committedErr)
 	}
 }
 

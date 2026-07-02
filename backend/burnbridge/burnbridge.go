@@ -1368,6 +1368,17 @@ func (b *BurnBridge) refreshAndEnsureWritableCapacityWithCleanup(ctx context.Con
 	return nil
 }
 
+func (b *BurnBridge) startCapacityFinalize(bucket string) {
+	if b == nil {
+		return
+	}
+	bucket = strings.TrimSpace(bucket)
+	if bucket == "" {
+		return
+	}
+	go b.finalizeAndCloseDiscAfterCapacityExceeded(context.Background(), bucket)
+}
+
 func (b *BurnBridge) hasCommittedObjects(bucket string) bool {
 	if b == nil || strings.TrimSpace(bucket) == "" {
 		return false
@@ -3374,7 +3385,7 @@ func (b *BurnBridge) UploadPart(ctx context.Context, input *s3.UploadPartInput) 
 				slog.Warn("burnbridge: failed to cleanup multipart state after recorder capacity exhaustion",
 					"bucket", bucket, "key", key, "uploadId", uploadID, "error", cleanupErr)
 			}
-			b.finalizeAndCloseDiscAfterCapacityExceeded(context.Background(), bucket)
+			b.startCapacityFinalize(bucket)
 		}
 		return nil, mappedErr
 	}
@@ -3659,7 +3670,11 @@ func (b *BurnBridge) CompleteMultipartUpload(ctx context.Context, input *s3.Comp
 		CommittedContentLength: totalSize,
 	})
 	if err != nil {
-		return s3response.CompleteMultipartUploadResult{}, "", mapRecorderWriteRPCError(err)
+		mappedErr := mapRecorderWriteRPCError(err)
+		if isRecorderCapacityExhaustedError(mappedErr) || isRecorderCapacityExhaustedError(err) {
+			b.startCapacityFinalize(bucket)
+		}
+		return s3response.CompleteMultipartUploadResult{}, "", mappedErr
 	}
 
 	shadowSegments, err := b.meta.ListBurnObjectSegments(bucket, shadowKey)
@@ -4295,8 +4310,9 @@ func (b *BurnBridge) finalizeAndCloseDiscAfterCapacityExceeded(ctx context.Conte
 		return
 	}
 	if err := b.flushStagedSmallObjects(ctx, bucket); err != nil {
-		slog.Warn("burnbridge: staged small-object flush failed during capacity finalize; continuing to finalize/close current disc",
+		slog.Warn("burnbridge: staged small-object flush failed during capacity finalize; aborting automatic close-disc to avoid stranding acknowledged objects",
 			"bucket", bucket, "error", err)
+		return
 	}
 	for _, closeDisc := range []bool{false, true} {
 		action := burnbridgeControlActionFinalizeLayout
@@ -4393,6 +4409,10 @@ func (b *BurnBridge) invokeFinalizeLayoutAgainstRecorder(ctx context.Context, bu
 	}
 
 	if err := b.flushStagedSmallObjects(ctx, bucket); err != nil {
+		if closeDisc {
+			return nil, burnbridgeInvalidRequest(fmt.Sprintf(
+				"close-disc blocked because staged small objects could not be flushed to optical media: %v", err))
+		}
 		return nil, err
 	}
 
@@ -7465,7 +7485,7 @@ func (b *BurnBridge) putObjectImmediate(ctx context.Context, input s3response.Pu
 	if err != nil {
 		mappedErr := mapRecorderWriteRPCError(err)
 		if isRecorderCapacityExhaustedError(mappedErr) || isRecorderCapacityExhaustedError(err) {
-			b.finalizeAndCloseDiscAfterCapacityExceeded(context.Background(), bucket)
+			b.startCapacityFinalize(bucket)
 		}
 		return s3response.PutObjectOutput{}, mappedErr
 	}
@@ -8244,7 +8264,8 @@ func (b *BurnBridge) stageSmallObjectPut(ctx context.Context, req *smallObjectBa
 			stagedBytes = 0
 		}
 	}
-	projectedFlushBytes := stagedBytes + requestPhysicalBytes
+	projectedPhysicalBytes := stagedBytes + requestPhysicalBytes
+	projectedFlushBytes := projectedPhysicalBytes + b.smallObjectPackStripePadding(req.bucket, projectedPhysicalBytes)
 	if err := b.ensureCachedWritableCapacity(req.bucket, projectedFlushBytes); err != nil {
 		return s3response.PutObjectOutput{}, err
 	}
