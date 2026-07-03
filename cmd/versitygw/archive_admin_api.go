@@ -49,7 +49,8 @@ func archiveVersionHandler() fiber.Handler {
 
 		response := archiveVersionResponse{
 			Gateway: map[string]any{
-				"serviceName":    "VersityGW",
+				"companyName":    "苏州腾益科技有限公司",
+				"serviceName":    "Optical Archive Gateway",
 				"serviceVersion": Version,
 				"build":          Build,
 				"buildTime":      BuildTime,
