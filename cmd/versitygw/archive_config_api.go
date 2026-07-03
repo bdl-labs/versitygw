@@ -323,6 +323,21 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	if strings.TrimSpace(next.OpticalArchive.LinuxServices.MountRefreshServiceType) == "" {
 		next.OpticalArchive.LinuxServices.MountRefreshServiceType = current.OpticalArchive.LinuxServices.MountRefreshServiceType
 	}
+	if strings.TrimSpace(next.OpticalArchive.GpioMediaMonitor.PinNumberingScheme) == "" {
+		next.OpticalArchive.GpioMediaMonitor.PinNumberingScheme = current.OpticalArchive.GpioMediaMonitor.PinNumberingScheme
+	}
+	if strings.TrimSpace(next.OpticalArchive.GpioMediaMonitor.DiscInsertedLevel) == "" {
+		next.OpticalArchive.GpioMediaMonitor.DiscInsertedLevel = current.OpticalArchive.GpioMediaMonitor.DiscInsertedLevel
+	}
+	if strings.TrimSpace(next.OpticalArchive.GpioMediaMonitor.TrayOpenLevel) == "" {
+		next.OpticalArchive.GpioMediaMonitor.TrayOpenLevel = current.OpticalArchive.GpioMediaMonitor.TrayOpenLevel
+	}
+	if next.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds <= 0 {
+		next.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds = current.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds
+	}
+	if next.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds <= 0 {
+		next.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds = current.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds
+	}
 }
 
 func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
@@ -430,6 +445,19 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"MountRefreshMountPath":        cfg.OpticalArchive.LinuxServices.MountRefreshMountPath,
 			"MountRefreshDevice":           cfg.OpticalArchive.LinuxServices.MountRefreshDevice,
 			"MountRefreshCommand":          cfg.OpticalArchive.LinuxServices.MountRefreshCommand,
+		},
+		"GpioMediaMonitor": map[string]any{
+			"Enabled":                    cfg.OpticalArchive.GpioMediaMonitor.Enabled,
+			"ChipNumber":                 cfg.OpticalArchive.GpioMediaMonitor.ChipNumber,
+			"PinNumberingScheme":         cfg.OpticalArchive.GpioMediaMonitor.PinNumberingScheme,
+			"DiscInPin":                  cfg.OpticalArchive.GpioMediaMonitor.DiscInPin,
+			"TrayInPin":                  cfg.OpticalArchive.GpioMediaMonitor.TrayInPin,
+			"DiscInsertedLevel":          cfg.OpticalArchive.GpioMediaMonitor.DiscInsertedLevel,
+			"TrayOpenLevel":              cfg.OpticalArchive.GpioMediaMonitor.TrayOpenLevel,
+			"DebounceMilliseconds":       cfg.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds,
+			"InsertSettleMilliseconds":   cfg.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds,
+			"RequireTrayClosedForInsert": cfg.OpticalArchive.GpioMediaMonitor.RequireTrayClosedForInsert,
+			"ProcessInitialState":        cfg.OpticalArchive.GpioMediaMonitor.ProcessInitialState,
 		},
 	}
 }

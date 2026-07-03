@@ -250,6 +250,24 @@
           </section>
 
           <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+            <h2 class="text-lg font-semibold text-charcoal mb-4">GPIO Media Monitor</h2>
+            <div class="mb-4 text-sm text-charcoal-300">Linux only. Uses libgpiod character-device events to simulate recorder media inserted/removed notifications.</div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div class="flex items-center gap-3 pt-8"><input id="gpio-enabled" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Enable GPIO media monitor</label></div>
+              <div class="flex items-center gap-3 pt-8"><input id="gpio-require-tray-closed" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Require tray closed for inserted state</label></div>
+              <div class="flex items-center gap-3 pt-8"><input id="gpio-process-initial" type="checkbox" class="h-4 w-4" /><label class="text-sm font-medium text-charcoal">Process initial GPIO state on startup</label></div>
+              <div><label class="block text-sm font-medium mb-2">GPIO Chip Number</label><input id="gpio-chip-number" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Pin Numbering Scheme</label><input id="gpio-pin-numbering" class="w-full rounded-lg border border-gray-200 px-3 py-2" placeholder="Logical" /></div>
+              <div><label class="block text-sm font-medium mb-2">DISC IN Pin</label><input id="gpio-disc-pin" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Tray in Pin</label><input id="gpio-tray-pin" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">DISC IN Inserted Level</label><input id="gpio-disc-level" class="w-full rounded-lg border border-gray-200 px-3 py-2" placeholder="High" /></div>
+              <div><label class="block text-sm font-medium mb-2">Tray Open Level</label><input id="gpio-tray-open-level" class="w-full rounded-lg border border-gray-200 px-3 py-2" placeholder="Low" /></div>
+              <div><label class="block text-sm font-medium mb-2">Debounce Milliseconds</label><input id="gpio-debounce-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Insert Settle Milliseconds</label><input id="gpio-insert-settle-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+            </div>
+          </section>
+
+          <section class="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
             <h2 class="text-lg font-semibold text-charcoal mb-4">Admin Actions</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div class="space-y-3">
@@ -437,6 +455,7 @@
       const loggingRecorder = archiveGroup(payload, 'LoggingRecorder');
       const upgrade = archiveGroup(payload, 'Upgrade');
       const linuxServices = archiveGroup(payload, 'LinuxServices');
+      const gpioMediaMonitor = archiveGroup(payload, 'GpioMediaMonitor');
 
       document.getElementById('gw-config-path').value = gateway.ConfigFilePath || '';
       document.getElementById('gw-api-user').value = gateway.ConfigApiUsername || '';
@@ -522,6 +541,17 @@
       document.getElementById('linux-mount-refresh-path').value = linuxServices.MountRefreshMountPath || '';
       document.getElementById('linux-mount-refresh-device').value = linuxServices.MountRefreshDevice || '';
       document.getElementById('linux-mount-refresh-command').value = linuxServices.MountRefreshCommand || '';
+      document.getElementById('gpio-enabled').checked = !!gpioMediaMonitor.Enabled;
+      document.getElementById('gpio-chip-number').value = gpioMediaMonitor.ChipNumber ?? 0;
+      document.getElementById('gpio-pin-numbering').value = gpioMediaMonitor.PinNumberingScheme || 'Logical';
+      document.getElementById('gpio-disc-pin').value = gpioMediaMonitor.DiscInPin ?? -1;
+      document.getElementById('gpio-tray-pin').value = gpioMediaMonitor.TrayInPin ?? -1;
+      document.getElementById('gpio-disc-level').value = gpioMediaMonitor.DiscInsertedLevel || 'High';
+      document.getElementById('gpio-tray-open-level').value = gpioMediaMonitor.TrayOpenLevel || 'Low';
+      document.getElementById('gpio-debounce-ms').value = gpioMediaMonitor.DebounceMilliseconds ?? 300;
+      document.getElementById('gpio-insert-settle-ms').value = gpioMediaMonitor.InsertSettleMilliseconds ?? 3000;
+      document.getElementById('gpio-require-tray-closed').checked = gpioMediaMonitor.RequireTrayClosedForInsert !== false;
+      document.getElementById('gpio-process-initial').checked = gpioMediaMonitor.ProcessInitialState !== false;
     }
 
     function collectArchiveConfig() {
@@ -610,6 +640,18 @@
       cfg.OpticalArchive.LinuxServices.MountRefreshMountPath = document.getElementById('linux-mount-refresh-path').value.trim();
       cfg.OpticalArchive.LinuxServices.MountRefreshDevice = document.getElementById('linux-mount-refresh-device').value.trim();
       cfg.OpticalArchive.LinuxServices.MountRefreshCommand = document.getElementById('linux-mount-refresh-command').value.trim();
+      cfg.OpticalArchive.GpioMediaMonitor = cfg.OpticalArchive.GpioMediaMonitor || {};
+      cfg.OpticalArchive.GpioMediaMonitor.Enabled = document.getElementById('gpio-enabled').checked;
+      cfg.OpticalArchive.GpioMediaMonitor.ChipNumber = Number(document.getElementById('gpio-chip-number').value || 0);
+      cfg.OpticalArchive.GpioMediaMonitor.PinNumberingScheme = document.getElementById('gpio-pin-numbering').value.trim() || 'Logical';
+      cfg.OpticalArchive.GpioMediaMonitor.DiscInPin = Number(document.getElementById('gpio-disc-pin').value || -1);
+      cfg.OpticalArchive.GpioMediaMonitor.TrayInPin = Number(document.getElementById('gpio-tray-pin').value || -1);
+      cfg.OpticalArchive.GpioMediaMonitor.DiscInsertedLevel = document.getElementById('gpio-disc-level').value.trim() || 'High';
+      cfg.OpticalArchive.GpioMediaMonitor.TrayOpenLevel = document.getElementById('gpio-tray-open-level').value.trim() || 'Low';
+      cfg.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds = Number(document.getElementById('gpio-debounce-ms').value || 300);
+      cfg.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds = Number(document.getElementById('gpio-insert-settle-ms').value || 3000);
+      cfg.OpticalArchive.GpioMediaMonitor.RequireTrayClosedForInsert = document.getElementById('gpio-require-tray-closed').checked;
+      cfg.OpticalArchive.GpioMediaMonitor.ProcessInitialState = document.getElementById('gpio-process-initial').checked;
       return cfg;
     }
 

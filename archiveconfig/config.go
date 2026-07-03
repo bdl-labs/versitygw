@@ -24,15 +24,16 @@ type File struct {
 }
 
 type OpticalArchive struct {
-	Gateway        Gateway        `json:"Gateway"`
-	ReadMountPath  string         `json:"ReadMountPath"`
-	Recorder       Recorder       `json:"Recorder"`
-	Runtime        Runtime        `json:"Runtime"`
-	Redundancy     Redundancy     `json:"Redundancy"`
-	GatewayInterop GatewayInterop `json:"GatewayInterop"`
-	Logging        Logging        `json:"Logging"`
-	Upgrade        Upgrade        `json:"Upgrade"`
-	LinuxServices  LinuxServices  `json:"LinuxServices"`
+	Gateway          Gateway          `json:"Gateway"`
+	ReadMountPath    string           `json:"ReadMountPath"`
+	Recorder         Recorder         `json:"Recorder"`
+	Runtime          Runtime          `json:"Runtime"`
+	Redundancy       Redundancy       `json:"Redundancy"`
+	GatewayInterop   GatewayInterop   `json:"GatewayInterop"`
+	Logging          Logging          `json:"Logging"`
+	Upgrade          Upgrade          `json:"Upgrade"`
+	LinuxServices    LinuxServices    `json:"LinuxServices"`
+	GpioMediaMonitor GpioMediaMonitor `json:"GpioMediaMonitor"`
 }
 
 type Gateway struct {
@@ -126,6 +127,20 @@ type LinuxServices struct {
 	MountRefreshMountPath        string `json:"MountRefreshMountPath"`
 	MountRefreshDevice           string `json:"MountRefreshDevice"`
 	MountRefreshCommand          string `json:"MountRefreshCommand"`
+}
+
+type GpioMediaMonitor struct {
+	Enabled                    bool   `json:"Enabled"`
+	ChipNumber                 int    `json:"ChipNumber"`
+	PinNumberingScheme         string `json:"PinNumberingScheme"`
+	DiscInPin                  int    `json:"DiscInPin"`
+	TrayInPin                  int    `json:"TrayInPin"`
+	DiscInsertedLevel          string `json:"DiscInsertedLevel"`
+	TrayOpenLevel              string `json:"TrayOpenLevel"`
+	DebounceMilliseconds       int    `json:"DebounceMilliseconds"`
+	InsertSettleMilliseconds   int    `json:"InsertSettleMilliseconds"`
+	RequireTrayClosedForInsert bool   `json:"RequireTrayClosedForInsert"`
+	ProcessInitialState        bool   `json:"ProcessInitialState"`
 }
 
 type Logging struct {
@@ -261,6 +276,19 @@ func DefaultFile(path string) File {
 				MountRefreshMountPath:        "",
 				MountRefreshDevice:           "",
 				MountRefreshCommand:          "",
+			},
+			GpioMediaMonitor: GpioMediaMonitor{
+				Enabled:                    false,
+				ChipNumber:                 0,
+				PinNumberingScheme:         "Logical",
+				DiscInPin:                  -1,
+				TrayInPin:                  -1,
+				DiscInsertedLevel:          "High",
+				TrayOpenLevel:              "Low",
+				DebounceMilliseconds:       300,
+				InsertSettleMilliseconds:   3000,
+				RequireTrayClosedForInsert: true,
+				ProcessInitialState:        true,
 			},
 		},
 	}
