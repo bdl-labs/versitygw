@@ -135,11 +135,17 @@ type GpioMediaMonitor struct {
 	PinNumberingScheme         string `json:"PinNumberingScheme"`
 	DiscInPin                  int    `json:"DiscInPin"`
 	TrayInPin                  int    `json:"TrayInPin"`
+	EjectPin                   int    `json:"EjectPin"`
+	EjectControlEnabled        bool   `json:"EjectControlEnabled"`
+	EjectActiveLevel           string `json:"EjectActiveLevel"`
+	EjectPulseMilliseconds     int    `json:"EjectPulseMilliseconds"`
+	TraySettleMilliseconds     int    `json:"TraySettleMilliseconds"`
 	DiscInsertedLevel          string `json:"DiscInsertedLevel"`
 	TrayOpenLevel              string `json:"TrayOpenLevel"`
 	DebounceMilliseconds       int    `json:"DebounceMilliseconds"`
 	InsertSettleMilliseconds   int    `json:"InsertSettleMilliseconds"`
 	RequireTrayClosedForInsert bool   `json:"RequireTrayClosedForInsert"`
+	UseDiscInForPresence       bool   `json:"UseDiscInForPresence"`
 	ProcessInitialState        bool   `json:"ProcessInitialState"`
 }
 
@@ -283,11 +289,17 @@ func DefaultFile(path string) File {
 				PinNumberingScheme:         "Logical",
 				DiscInPin:                  -1,
 				TrayInPin:                  -1,
+				EjectPin:                   22,
+				EjectControlEnabled:        false,
+				EjectActiveLevel:           "Low",
+				EjectPulseMilliseconds:     500,
+				TraySettleMilliseconds:     10000,
 				DiscInsertedLevel:          "High",
 				TrayOpenLevel:              "Low",
 				DebounceMilliseconds:       300,
 				InsertSettleMilliseconds:   3000,
 				RequireTrayClosedForInsert: true,
+				UseDiscInForPresence:       false,
 				ProcessInitialState:        true,
 			},
 		},

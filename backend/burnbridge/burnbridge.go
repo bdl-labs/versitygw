@@ -61,6 +61,8 @@ const (
 	burnbridgeBucketTypeControl   = "control"
 	burnbridgeBucketTypeData      = "data"
 	burnbridgeControlBucketTagKey = "burnbridge:control-bucket"
+	startupRecorderProbeTimeout   = 5 * time.Second
+	backgroundDriveInfoTimeout    = 120 * time.Second
 )
 
 type burnbridgeControlAction string
@@ -838,6 +840,18 @@ func (b *BurnBridge) clearStaleBlankDiscBinding(binding *meta.BurnbridgeDiscBuck
 	if len(committed) == 0 {
 		return false, nil
 	}
+	sessions, err := b.meta.ListBurnUploadSessionsByBucket(bucket)
+	if err != nil {
+		return false, fmt.Errorf("burnbridge inspect blank-disc upload sessions bucket %s: %w", bucket, err)
+	}
+	if len(sessions) > 0 {
+		slog.Info("burnbridge: preserving blank-disc binding because bucket has local upload session metadata",
+			"bucket", bucket,
+			"probe_volume_label", strings.TrimSpace(binding.ProbeVolumeLabel),
+			"committed_count", len(committed),
+			"upload_session_count", len(sessions))
+		return false, nil
+	}
 
 	if err := b.meta.DeleteBurnbridgeBucket(bucket); err != nil {
 		return false, fmt.Errorf("burnbridge delete stale blank-disc bucket metadata %s: %w", bucket, err)
@@ -1483,12 +1497,21 @@ func New(opts Options) (*BurnBridge, error) {
 
 	client := burnbridgev1.NewBurnBridgeClient(conn)
 
-	readyCtx, readyCancel := context.WithTimeout(dialCtx, opts.PingTimeout)
+	startupProbeTimeout := boundedStartupProbeTimeout(opts.PingTimeout)
+	readyCtx, readyCancel := context.WithTimeout(dialCtx, startupProbeTimeout)
 	activeBucket, rawVol, turResp, err := probeRecorderDiscAtStartup(readyCtx, client)
 	readyCancel()
 	if err != nil {
-		_ = conn.Close()
-		return nil, err
+		if !isStartupRecorderProbeSoftError(err) {
+			_ = conn.Close()
+			return nil, err
+		}
+		slog.Warn("burnbridge: startup recorder probe timed out or is temporarily unavailable; starting in degraded mode with empty bucket list",
+			"error", err,
+			"timeout", startupProbeTimeout)
+		activeBucket = ""
+		rawVol = ""
+		turResp = nil
 	}
 	if binding, ok := loadDiscBucketBinding(metaStore, rawVol); ok {
 		if strings.TrimSpace(binding.Bucket) != "" {
@@ -1579,10 +1602,13 @@ func New(opts Options) (*BurnBridge, error) {
 			"maxCount", opts.SmallObjectBatchMaxCount,
 			"maxDelay", opts.SmallObjectBatchMaxDelay)
 	}
-	if _, _, err := bridge.refreshDriveInfoDocument(context.Background()); err != nil {
+	driveCtx, driveCancel := context.WithTimeout(context.Background(), startupProbeTimeout)
+	if _, _, err := bridge.refreshDriveInfoDocument(driveCtx); err != nil {
 		slog.Warn("burnbridge: startup drive identity probe failed; virtual control bucket will appear after drive-info succeeds",
 			"error", err)
+		bridge.startDriveInfoRefreshRetry()
 	}
+	driveCancel()
 	if strings.TrimSpace(activeBucket) != "" {
 		if err := bridge.syncImportedBucketState(context.Background(), activeBucket); err != nil {
 			slog.Warn("burnbridge: startup sync imported bucket state failed; continuing with current runtime state",
@@ -1592,6 +1618,56 @@ func New(opts Options) (*BurnBridge, error) {
 	}
 	bridge.startRecorderStatusWatcher()
 	return bridge, nil
+}
+
+func boundedStartupProbeTimeout(configured time.Duration) time.Duration {
+	if configured <= 0 || configured > startupRecorderProbeTimeout {
+		return startupRecorderProbeTimeout
+	}
+	return configured
+}
+
+func (b *BurnBridge) startDriveInfoRefreshRetry() {
+	go func() {
+		const maxAttempts = 6
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			time.Sleep(10 * time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), backgroundDriveInfoTimeout)
+			_, doc, err := b.refreshDriveInfoDocument(ctx)
+			cancel()
+			if err == nil && doc != nil {
+				slog.Info("burnbridge: drive identity probe recovered; virtual control bucket is available",
+					"controlBucket", strings.TrimSpace(doc.ControlBucket),
+					"attempt", attempt)
+				return
+			}
+			if err != nil {
+				slog.Warn("burnbridge: retry drive identity probe failed",
+					"attempt", attempt,
+					"timeout", backgroundDriveInfoTimeout,
+					"error", err)
+			}
+		}
+	}()
+}
+
+func isStartupRecorderProbeSoftError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	if st, ok := status.FromError(err); ok {
+		switch st.Code() {
+		case codes.Canceled, codes.DeadlineExceeded, codes.Unavailable, codes.FailedPrecondition:
+			return true
+		}
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "context deadline exceeded") ||
+		strings.Contains(msg, "deadlineexceeded") ||
+		strings.Contains(msg, "temporarily unavailable")
 }
 
 func sharedReadMountPath() string {
@@ -1952,7 +2028,9 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 	}
 	if resp == nil || !resp.GetLoaded() {
 		if requestedBucket != "" {
-			b.markImportedBucketSynced(requestedBucket)
+			if !b.activeBucketIsKnownBlankDisc() {
+				b.markImportedBucketConvergencePending(requestedBucket)
+			}
 		}
 		return nil
 	}
@@ -1964,7 +2042,7 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 	if resolvedBucket == "" {
 		return nil
 	}
-	if requestedBucket != "" && !strings.EqualFold(resolvedBucket, requestedBucket) && !b.importedBucketMatchesCurrentDisc(resolvedBucket, resp.GetUdfVolumeLabel()) {
+	if requestedBucket != "" && !strings.EqualFold(resolvedBucket, requestedBucket) && !b.importedBucketMatchesCurrentDisc(resolvedBucket, resp.GetUdfVolumeLabel(), resp.GetBucketMetadata()) {
 		slog.Warn("burnbridge: ignoring imported bucket state because imported bucket does not match current disc identity",
 			"imported_bucket", resolvedBucket,
 			"active_bucket", requestedBucket,
@@ -2055,12 +2133,15 @@ func (b *BurnBridge) syncImportedBucketState(ctx context.Context, bucket string)
 	return nil
 }
 
-func (b *BurnBridge) importedBucketMatchesCurrentDisc(importedBucket, importedVolumeLabel string) bool {
+func (b *BurnBridge) importedBucketMatchesCurrentDisc(importedBucket, importedVolumeLabel string, importedMetadata []*burnbridgev1.ObjectMetadata) bool {
 	currentVolume := strings.TrimSpace(b.volumeLabelRaw)
 	if currentVolume == "" {
 		return true
 	}
 	if strings.EqualFold(strings.TrimSpace(importedVolumeLabel), currentVolume) {
+		return true
+	}
+	if importedBucketMetadataMatchesCurrentDisc(importedMetadata, currentVolume) {
 		return true
 	}
 	if binding, ok := loadDiscBucketBinding(b.meta, currentVolume); ok && binding != nil {
@@ -2071,6 +2152,30 @@ func (b *BurnBridge) importedBucketMatchesCurrentDisc(importedBucket, importedVo
 		return strings.EqualFold(boundBucket, strings.TrimSpace(importedBucket))
 	}
 	return true
+}
+
+func importedBucketMetadataMatchesCurrentDisc(importedMetadata []*burnbridgev1.ObjectMetadata, currentVolume string) bool {
+	currentVolume = strings.TrimSpace(currentVolume)
+	if currentVolume == "" {
+		return false
+	}
+	for _, item := range importedMetadata {
+		if item == nil {
+			continue
+		}
+		key := strings.ToLower(strings.TrimSpace(item.GetKey()))
+		value := strings.TrimSpace(item.GetValue())
+		if value == "" {
+			continue
+		}
+		switch key {
+		case "disc_serial_number_hex", "volume_label":
+			if strings.EqualFold(value, currentVolume) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (b *BurnBridge) syncImportedBucketMetadata(bucket string, items []*burnbridgev1.ObjectMetadata) error {
@@ -2199,6 +2304,9 @@ func (b *BurnBridge) ensureImportedBucketStateWithMode(ctx context.Context, buck
 	if strings.TrimSpace(bucket) == "" {
 		return nil
 	}
+	if b.grpc == nil {
+		return nil
+	}
 
 	var err error
 	if !forceConvergence {
@@ -2246,6 +2354,9 @@ func (b *BurnBridge) ensureActiveBucketLoaded(ctx context.Context) error {
 	if strings.TrimSpace(b.activeBucket) != "" {
 		if !b.activeBucketIsKnownBlankDisc() && b.restoreBucketStateFromMetadata(b.activeBucket) {
 			b.markImportedBucketConvergencePending(b.activeBucket)
+		}
+		if b.importedBucketConvergencePending(b.activeBucket) {
+			return b.ensureImportedBucketStateForConvergence(ctx, b.activeBucket)
 		}
 		if strings.TrimSpace(b.activeBucket) != "" {
 			return nil
@@ -5297,7 +5408,7 @@ func isS3BucketNameLike(name string) bool {
 		return false
 	}
 	for i, r := range trimmed {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '.' {
 			if i > 0 {
 				prev := trimmed[i-1]
 				if (prev == '.' && (r == '.' || r == '-')) || (prev == '-' && r == '.') {
@@ -5312,7 +5423,7 @@ func isS3BucketNameLike(name string) bool {
 }
 
 func isS3BucketNameRune(r rune) bool {
-	return (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')
 }
 
 func mountedRootHasArchiveMetadata(root string) bool {

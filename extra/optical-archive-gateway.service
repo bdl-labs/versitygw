@@ -1,5 +1,5 @@
 [Unit]
-Description=Optical Archive Gateway
+Description=BurnBridge Gateway
 Wants=network-online.target optical-archive-recorder.service
 After=network-online.target optical-archive-recorder.service
 
@@ -7,7 +7,7 @@ After=network-online.target optical-archive-recorder.service
 Type=simple
 User=root
 EnvironmentFile=-/etc/optical-archive/optical-archive.env
-WorkingDirectory=/opt/burnbridge/versitygw
+WorkingDirectory=/opt/burnbridge/gateway
 ExecStart=/opt/burnbridge/scripts/optical-archive-start.sh gateway
 Restart=always
 RestartSec=5

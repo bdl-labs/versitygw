@@ -931,7 +931,7 @@ func (r *runner) runSingleObjectDownload(bucket string) error {
 
 	r.logf("[4/5] Downloading single object...")
 	start := time.Now()
-	if err := r.downloadObjectToFile(bucket, r.opts.singleObjectKey, targetPath, defaultReadTimeout); err != nil {
+	if err := r.downloadObjectToFileWithExpectedBytes(bucket, r.opts.singleObjectKey, targetPath, defaultReadTimeout, derefInt64(head.ContentLength)); err != nil {
 		return err
 	}
 	seconds := roundSeconds(time.Since(start))
@@ -1043,7 +1043,7 @@ func (r *runner) runInterruptRetry(bucket, controlBucket string) error {
 		return err
 	}
 	downloadStart := time.Now()
-	if err := r.downloadObjectToFile(bucket, objectKey, downloadPath, defaultReadTimeout); err != nil {
+	if err := r.downloadObjectToFileWithExpectedBytes(bucket, objectKey, downloadPath, defaultReadTimeout, source.Size); err != nil {
 		return err
 	}
 	downloadSeconds := roundSeconds(time.Since(downloadStart))
@@ -1256,7 +1256,7 @@ func (r *runner) runMultipartInterruptRetry(bucket, controlBucket string) error 
 		return err
 	}
 	downloadStart := time.Now()
-	if err := r.downloadObjectToFile(bucket, objectKey, downloadPath, defaultReadTimeout); err != nil {
+	if err := r.downloadObjectToFileWithExpectedBytes(bucket, objectKey, downloadPath, defaultReadTimeout, source.Size); err != nil {
 		return err
 	}
 	downloadSeconds := roundSeconds(time.Since(downloadStart))
@@ -1402,7 +1402,7 @@ func (r *runner) runMultipartFlow(bucket, controlBucket string) error {
 		return err
 	}
 	downloadStart := time.Now()
-	if err := r.downloadObjectToFile(bucket, objectKey, downloadPath, defaultReadTimeout); err != nil {
+	if err := r.downloadObjectToFileWithExpectedBytes(bucket, objectKey, downloadPath, defaultReadTimeout, source.Size); err != nil {
 		return err
 	}
 	downloadSeconds := roundSeconds(time.Since(downloadStart))
@@ -1672,7 +1672,7 @@ func (r *runner) runPutObjectFlow(bucket, controlBucket string) error {
 		return err
 	}
 	downloadStart := time.Now()
-	if err := r.downloadObjectToFile(bucket, objectKey, downloadPath, defaultReadTimeout); err != nil {
+	if err := r.downloadObjectToFileWithExpectedBytes(bucket, objectKey, downloadPath, defaultReadTimeout, source.Size); err != nil {
 		return err
 	}
 	downloadSeconds := roundSeconds(time.Since(downloadStart))
@@ -1861,7 +1861,7 @@ func (r *runner) runSmallBatchFlow(bucket, controlBucket string, metrics map[str
 			return err
 		}
 		start := time.Now()
-		if err := r.downloadObjectToFile(bucket, item.RelativePath, targetPath, defaultReadTimeout); err != nil {
+		if err := r.downloadObjectToFileWithExpectedBytes(bucket, item.RelativePath, targetPath, defaultReadTimeout, item.Size); err != nil {
 			return err
 		}
 		seconds := roundSeconds(time.Since(start))
@@ -2028,7 +2028,7 @@ func (r *runner) runSmallPackFlow(bucket, controlBucket string, metrics map[stri
 			return err
 		}
 		start := time.Now()
-		if err := r.downloadObjectToFile(bucket, item.RelativePath, targetPath, defaultReadTimeout); err != nil {
+		if err := r.downloadObjectToFileWithExpectedBytes(bucket, item.RelativePath, targetPath, defaultReadTimeout, item.Size); err != nil {
 			return err
 		}
 		seconds := roundSeconds(time.Since(start))
@@ -2718,7 +2718,7 @@ func (r *runner) runFullFlow(bucket, controlBucket string, metrics map[string]*f
 			return nil, 0, "", err
 		}
 		start := time.Now()
-		if err := r.downloadObjectToFile(bucket, key, targetPath, defaultReadTimeout); err != nil {
+		if err := r.downloadObjectToFileWithExpectedBytes(bucket, key, targetPath, defaultReadTimeout, expected.Size); err != nil {
 			return nil, 0, "", err
 		}
 		seconds := roundSeconds(time.Since(start))
@@ -3710,7 +3710,12 @@ func (r *runner) objectExists(bucket, key string) (bool, error) {
 }
 
 func (r *runner) downloadObjectToFile(bucket, key, outputPath string, timeoutSeconds int) error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSeconds)*time.Second)
+	return r.downloadObjectToFileWithExpectedBytes(bucket, key, outputPath, timeoutSeconds, 0)
+}
+
+func (r *runner) downloadObjectToFileWithExpectedBytes(bucket, key, outputPath string, timeoutSeconds int, expectedBytes int64) error {
+	timeout := downloadTimeoutForBytes(time.Duration(timeoutSeconds)*time.Second, expectedBytes)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	resp, err := r.client.GetObject(ctx, &s3.GetObjectInput{
@@ -3732,6 +3737,27 @@ func (r *runner) downloadObjectToFile(bucket, key, outputPath string, timeoutSec
 		return err
 	}
 	return nil
+}
+
+func downloadTimeoutForBytes(base time.Duration, expectedBytes int64) time.Duration {
+	if expectedBytes <= 0 {
+		return base
+	}
+
+	// Optical reads can be much slower than network/disk reads, especially on
+	// USB-attached drives. Estimate conservatively so large verification
+	// downloads are not canceled by the test tool before the recorder finishes.
+	const minimumThroughputBytesPerSecond int64 = 4 * 1024 * 1024
+	estimated := time.Duration(expectedBytes/minimumThroughputBytesPerSecond) * time.Second
+	if expectedBytes%minimumThroughputBytesPerSecond != 0 {
+		estimated += time.Second
+	}
+	estimated += 10 * time.Minute
+
+	if estimated > base {
+		return estimated
+	}
+	return base
 }
 
 func (r *runner) downloadControlObject(bucket, action, outputPath string) (string, []byte, error) {

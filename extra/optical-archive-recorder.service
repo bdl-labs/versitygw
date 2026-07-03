@@ -1,5 +1,5 @@
 [Unit]
-Description=Optical Archive optical-recorder
+Description=BurnBridge optical-recorder
 Wants=network-online.target
 After=network-online.target
 
@@ -7,7 +7,7 @@ After=network-online.target
 Type=simple
 User=root
 EnvironmentFile=-/etc/optical-archive/optical-archive.env
-WorkingDirectory=/opt/burnbridge/optical-recorder
+WorkingDirectory=/opt/burnbridge/recorder
 ExecStart=/opt/burnbridge/scripts/optical-archive-start.sh recorder
 Restart=always
 RestartSec=5

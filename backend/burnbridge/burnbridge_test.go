@@ -1451,6 +1451,133 @@ func TestSyncImportedBucketStateDeletesOtherBucketMetadata(t *testing.T) {
 	}
 }
 
+func TestSyncImportedBucketStateAllowsAnchorBucketForCurrentPhysicalDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const physicalSerial = "OADDB1FC9464C094CB4E2FDE"
+	const anchorBucket = "OA06E4B2130AB7ADD3D1F27F"
+	now := time.Date(2026, 7, 3, 15, 0, 0, 0, time.UTC)
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: physicalSerial,
+		Bucket:           physicalSerial,
+		UdfVolumeLabel:   physicalSerial,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{
+		meta:           store,
+		activeBucket:   physicalSerial,
+		volumeLabelRaw: physicalSerial,
+		udfLabel:       physicalSerial,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded:         true,
+					Bucket:         anchorBucket,
+					UdfVolumeLabel: anchorBucket,
+					BucketMetadata: []*burnbridgev1.ObjectMetadata{
+						{Key: "disc_serial_number_hex", Value: physicalSerial},
+						{Key: "volume_label", Value: anchorBucket},
+					},
+					Objects: []*burnbridgev1.ImportedObjectState{
+						{
+							ObjectKey:       "testdata.zip",
+							Size:            23546264892,
+							Etag:            "\"etag\"",
+							LastModifiedUtc: now.Format(time.RFC3339Nano),
+						},
+					},
+				}, nil
+			},
+		},
+		importedBucketState: map[string]bool{},
+	}
+
+	if err := b.syncImportedBucketState(context.Background(), physicalSerial); err != nil {
+		t.Fatal(err)
+	}
+	if b.activeBucket != anchorBucket {
+		t.Fatalf("expected active bucket to switch to anchor bucket, got %q", b.activeBucket)
+	}
+	if b.udfLabel != anchorBucket {
+		t.Fatalf("expected udf label to switch to anchor bucket, got %q", b.udfLabel)
+	}
+	if _, err := store.GetCommittedObjectSummary(anchorBucket, "testdata.zip"); err != nil {
+		t.Fatalf("expected imported anchor object metadata, got %v", err)
+	}
+	binding, err := store.GetBurnbridgeDiscBucketBinding(physicalSerial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Bucket != anchorBucket || binding.UdfVolumeLabel != anchorBucket {
+		t.Fatalf("expected physical serial binding to point at anchor bucket, got %#v", binding)
+	}
+}
+
+func TestEnsureActiveBucketLoadedRetriesPendingImportedConvergence(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	const physicalSerial = "OADDB1FC9464C094CB4E2FDE"
+	const anchorBucket = "OA06E4B2130AB7ADD3D1F27F"
+	importedCalls := 0
+	b := &BurnBridge{
+		meta:           store,
+		activeBucket:   physicalSerial,
+		volumeLabelRaw: physicalSerial,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				importedCalls++
+				if importedCalls == 1 {
+					return &burnbridgev1.GetImportedBucketStateResponse{Loaded: false}, nil
+				}
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Loaded:         true,
+					Bucket:         anchorBucket,
+					UdfVolumeLabel: anchorBucket,
+					BucketMetadata: []*burnbridgev1.ObjectMetadata{
+						{Key: "disc_serial_number_hex", Value: physicalSerial},
+					},
+					Objects: []*burnbridgev1.ImportedObjectState{
+						{ObjectKey: "ready.txt", Size: 1},
+					},
+				}, nil
+			},
+		},
+		importedBucketState:        map[string]bool{},
+		pendingImportedConvergence: map[string]bool{},
+	}
+
+	if err := b.syncImportedBucketState(context.Background(), physicalSerial); err != nil {
+		t.Fatal(err)
+	}
+	if importedCalls != 1 {
+		t.Fatalf("expected first imported state call, got %d", importedCalls)
+	}
+	if !b.importedBucketConvergencePending(physicalSerial) {
+		t.Fatal("expected loaded=false to leave imported convergence pending")
+	}
+	if err := b.ensureActiveBucketLoaded(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if importedCalls != 2 {
+		t.Fatalf("expected ensureActiveBucketLoaded to retry imported state, got %d calls", importedCalls)
+	}
+	if b.activeBucket != anchorBucket {
+		t.Fatalf("expected active bucket to switch to anchor bucket, got %q", b.activeBucket)
+	}
+}
+
 func TestSyncImportedBucketStateKeepsDriveControlBucketMetadata(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -1496,6 +1623,22 @@ func TestSyncImportedBucketStateKeepsDriveControlBucketMetadata(t *testing.T) {
 	}
 	if _, err := store.GetCommittedObjectSummary("drive-control-001", "v1/state/drive-info"); err != nil {
 		t.Fatalf("expected drive control bucket metadata to remain, got %v", err)
+	}
+}
+
+func TestMountedFallbackBucketHintAcceptsUppercaseMetadataFile(t *testing.T) {
+	readMount := t.TempDir()
+	if err := os.WriteFile(filepath.Join(readMount, "OAOA06E4B2130AB7ADD3D1F27F.sqlite3"), []byte("metadata"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	b := &BurnBridge{readMount: readMount}
+	bucket, ok := b.mountedFallbackBucketHint()
+	if !ok {
+		t.Fatal("expected uppercase mounted metadata file to produce a bucket hint")
+	}
+	if bucket != "OA06E4B2130AB7ADD3D1F27F" {
+		t.Fatalf("unexpected bucket hint %q", bucket)
 	}
 }
 
@@ -2529,6 +2672,73 @@ func TestSyncActiveDiscStateClearsStaleCommittedBlankDiscBinding(t *testing.T) {
 	}
 	if got := strings.TrimSpace(binding.Bucket); got != "DISC-BLANK" {
 		t.Fatalf("expected replacement blank-disc binding bucket DISC-BLANK, got %q", got)
+	}
+}
+
+func TestSyncActiveDiscStatePreservesCurrentBlankDiscBindingWithUploadSession(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	if err := store.StoreBurnbridgeDiscBucketBinding(&meta.BurnbridgeDiscBucketBindingDocument{
+		ProbeVolumeLabel: "DISC-BLANK",
+		Bucket:           "ARCHIVE-TEST",
+		UdfVolumeLabel:   "ARCHIVE-TEST",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StoreBurnbridgeCommitted(nil, "ARCHIVE-TEST", "file.txt", &meta.BurnbridgeCommittedRecord{
+		Size:         7,
+		ETag:         "\"etag\"",
+		LastModified: time.Now().UTC().Format(time.RFC3339Nano),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertBurnUploadSession(meta.BurnUploadSessionRecord{
+		Bucket:        "ARCHIVE-TEST",
+		ObjectName:    "file.txt",
+		UploadID:      burnbridgeImplicitSingleUploadID,
+		Kind:          meta.BurnUploadKindSingle,
+		State:         meta.BurnUploadStateCompleted,
+		RecorderJobID: "job-current",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var importedCalls int32
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				atomic.AddInt32(&importedCalls, 1)
+				return &burnbridgev1.GetImportedBucketStateResponse{Loaded: false}, nil
+			},
+		},
+		activeBucket:               "ARCHIVE-TEST",
+		volumeLabelRaw:             "ARCHIVE-TEST",
+		udfLabel:                   "ARCHIVE-TEST",
+		importedBucketState:        map[string]bool{},
+		pendingImportedConvergence: map[string]bool{},
+	}
+
+	if err := b.syncActiveDiscState(&burnbridgev1.TestUnitReadyResponse{
+		Ready:         true,
+		VolumeLabel:   "DISC-BLANK",
+		WritableState: "Blank",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(b.activeBucket); got != "ARCHIVE-TEST" {
+		t.Fatalf("expected current upload bucket to remain active, got %q", got)
+	}
+	if _, err := store.GetCommittedObjectSummary("ARCHIVE-TEST", "file.txt"); err != nil {
+		t.Fatalf("expected committed metadata to be preserved, got %v", err)
+	}
+	if got := atomic.LoadInt32(&importedCalls); got != 0 {
+		t.Fatalf("expected preserved blank-disc upload bucket to skip imported-state probe, got %d", got)
 	}
 }
 

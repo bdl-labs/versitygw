@@ -29,6 +29,11 @@ Install resources live in `extra/`:
 - `optical-archive-mount-refresh.service`: optional oneshot mount refresh unit.
 - `optical-archive.env.example`: environment file template.
 
+Runtime configuration lives in `config/`:
+
+- `optical-archive.config.json`: shared gateway/recorder configuration.
+- `users.json`: IAM account configuration.
+
 ## Manual Start
 
 Copy scripts to the deployed node:
@@ -36,7 +41,7 @@ Copy scripts to the deployed node:
 ```bash
 sudo mkdir -p /opt/burnbridge/scripts /etc/optical-archive
 sudo cp ../scripts/optical-archive-start.sh ../scripts/optical-archive-mount-refresh.sh ../scripts/stop-all.sh /opt/burnbridge/scripts/
-sudo cp optical-archive.env.example /etc/optical-archive/optical-archive.env
+sudo cp ../extra/optical-archive.env.example /etc/optical-archive/optical-archive.env
 sudo chmod +x /opt/burnbridge/scripts/optical-archive-start.sh /opt/burnbridge/scripts/optical-archive-mount-refresh.sh /opt/burnbridge/scripts/stop-all.sh
 ```
 
