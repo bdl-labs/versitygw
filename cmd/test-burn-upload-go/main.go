@@ -13,7 +13,7 @@ const (
 	defaultConfigFileName         = "optical-archive.config.json"
 	defaultConfigPath             = `D:\BRS\publisher\config\optical-archive.config.json`
 	defaultDataDir                = `D:\testdata`
-	defaultBucket                 = "archive-test"
+	defaultBucket                 = ""
 	defaultEndpoint               = "http://127.0.0.1:7070"
 	defaultRegion                 = "us-east-1"
 	defaultAccessKey              = "drive"
@@ -25,6 +25,11 @@ const (
 	defaultBucketReadyPollSeconds = 2
 	defaultMemorySampleInterval   = 2
 	defaultFinalizeFreeThreshold  = int64(1024 * 1024 * 1024)
+)
+
+const (
+	bucketModeDisc = "disc"
+	bucketModeTime = "time"
 )
 
 type mode string
@@ -57,6 +62,7 @@ const (
 	modeTrayClose       mode = "tray-close"
 	modeHeadObject      mode = "headobject"
 	modeGetObject       mode = "getobject"
+	modeDeleteObject    mode = "deleteobject"
 	modeInterruptRetry  mode = "interrupt-retry"
 	modeMultipartRetry  mode = "multipart-interrupt-retry"
 	modeMultipartResume mode = "multipart-resume"
@@ -66,6 +72,7 @@ type cliOptions struct {
 	mode               mode
 	dataDir            string
 	bucket             string
+	bucketMode         string
 	awsProfile         string
 	configPath         string
 	skipUpload         bool
@@ -88,6 +95,7 @@ type cliOptions struct {
 	mediaInsertedOnly  bool
 	trayOpenOnly       bool
 	trayCloseOnly      bool
+	deleteObjectOnly   bool
 	singleObjectKey    string
 	singleObjectOutput string
 	resumeUploadID     string
@@ -130,7 +138,18 @@ func main() {
 	}
 }
 
-func parseInvocation(args []string) (cliOptions, error) {
+func parseInvocation(args []string) (opts cliOptions, err error) {
+	bucketMode := bucketModeDisc
+	args, bucketMode, err = extractBucketModeArgs(args)
+	if err != nil {
+		return cliOptions{}, err
+	}
+	defer func() {
+		if err == nil && opts.bucketMode == "" {
+			opts.bucketMode = bucketMode
+		}
+	}()
+
 	if len(args) == 0 {
 		return parseFullFlow(nil), nil
 	}
@@ -196,7 +215,7 @@ func parseInvocation(args []string) (cliOptions, error) {
 		return parseBucketOnly(args[1:], modeFinalize), nil
 	case "closedisc", "close-disc":
 		return parseBucketOnly(args[1:], modeCloseDisc), nil
-	case "closedisc-force", "close-disc-force", "force-close", "force-closedisc":
+	case "closedisc-force", "close-disc-force", "close-force", "force-close", "force-closedisc":
 		return parseBucketOnly(args[1:], modeCloseDiscForce), nil
 	case "media-removed", "mediaremoved", "unmount", "removed":
 		return parseBucketOnly(args[1:], modeMediaRemoved), nil
@@ -211,16 +230,16 @@ func parseInvocation(args []string) (cliOptions, error) {
 	case "head":
 		return parseShortHeadObject(args[1:])
 	case "getobject":
-		return parseGetObject(args[1:], false)
+		return parseFlexibleGetObject(args[1:], false)
 	case "get":
 		return parseShortGetObject(args[1:], false)
-	case "getobject-nomd5":
-		return parseGetObject(args[1:], true)
-	case "get-nomd5":
+	case "getobject-nomd5", "get-nomd5", "getnomd5":
 		return parseShortGetObject(args[1:], true)
+	case "deleteobject", "delete-object", "delete", "del", "rm":
+		return parseDeleteObject(args[1:])
 	case "interrupt-retry":
 		return parseInterruptRetry(args[1:])
-	case "multipart-interrupt-retry":
+	case "multipart-interrupt-retry", "mp-retry", "multipart-retry":
 		return parseMultipartInterruptRetry(args[1:])
 	case "multipart-resume", "mp-resume":
 		return parseMultipartResume(args[1:])
@@ -229,14 +248,38 @@ func parseInvocation(args []string) (cliOptions, error) {
 	}
 }
 
+func extractBucketModeArgs(args []string) ([]string, string, error) {
+	if len(args) == 0 {
+		return args, bucketModeDisc, nil
+	}
+
+	mode := bucketModeDisc
+	cleaned := make([]string, 0, len(args))
+	for _, raw := range args {
+		arg := strings.TrimSpace(raw)
+		normalized := strings.ToLower(arg)
+		switch {
+		case normalized == "--bucket-disc" || normalized == "--bucket-mode=disc" || normalized == "--bucket=disc":
+			mode = bucketModeDisc
+		case normalized == "--bucket-time" || normalized == "--time-bucket" || normalized == "--bucket-mode=time" || normalized == "--bucket=time":
+			mode = bucketModeTime
+		case strings.HasPrefix(normalized, "--bucket-mode=") || strings.HasPrefix(normalized, "--bucket="):
+			return nil, "", fmt.Errorf("unsupported bucket mode argument: %s", raw)
+		default:
+			cleaned = append(cleaned, raw)
+		}
+	}
+
+	return cleaned, mode, nil
+}
+
 func parseFullFlow(args []string) cliOptions {
 	dataDir := positionalOrDefault(args, 0, defaultDataDir)
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	profile, configPath := parseProfileConfig(args, 2, 3)
+	profile, configPath := parseProfileConfig(args, 1, 2)
 	return cliOptions{
 		mode:             modeFullFlow,
 		dataDir:          dataDir,
-		bucket:           bucket,
+		bucket:           defaultBucket,
 		awsProfile:       profile,
 		configPath:       resolveConfigPath(configPath),
 		skipBucketCreate: false,
@@ -246,13 +289,12 @@ func parseFullFlow(args []string) cliOptions {
 
 func parseDownload(args []string) cliOptions {
 	dataDir := positionalOrDefault(args, 0, defaultDataDir)
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	profile, configPath := parseProfileConfig(args, 2, 3)
-	skipMD5 := len(args) > 4 && strings.EqualFold(strings.TrimSpace(args[4]), "nomd5")
+	profile, configPath := parseProfileConfig(args, 1, 2)
+	skipMD5 := len(args) > 3 && strings.EqualFold(strings.TrimSpace(args[3]), "nomd5")
 	return cliOptions{
 		mode:             modeDownload,
 		dataDir:          dataDir,
-		bucket:           bucket,
+		bucket:           defaultBucket,
 		awsProfile:       profile,
 		configPath:       resolveConfigPath(configPath),
 		skipUpload:       true,
@@ -263,12 +305,11 @@ func parseDownload(args []string) cliOptions {
 }
 
 func parseRemoteDownload(args []string, skipMD5 bool) cliOptions {
-	bucket := positionalOrDefault(args, 0, defaultBucket)
-	profile, configPath := parseProfileConfig(args, 1, 2)
+	profile, configPath := parseProfileConfig(args, 0, 1)
 	return cliOptions{
 		mode:             modeRemoteDownload,
 		dataDir:          ".",
-		bucket:           bucket,
+		bucket:           defaultBucket,
 		awsProfile:       profile,
 		configPath:       resolveConfigPath(configPath),
 		skipUpload:       true,
@@ -285,18 +326,17 @@ func parseMultipartFlow(args []string, skipMD5 bool) (cliOptions, error) {
 		return cliOptions{}, errors.New("data file is required")
 	}
 
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	partSizeMiBRaw := positionalOrDefault(args, 2, "32")
+	partSizeMiBRaw := positionalOrDefault(args, 1, "32")
 	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
 	if err != nil || partSizeMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
 	}
 
-	profile, configPath := parseProfileConfig(args, 3, 4)
+	profile, configPath := parseProfileConfig(args, 2, 3)
 	return cliOptions{
 		mode:               modeMultipartFlow,
 		dataDir:            dataFile,
-		bucket:             bucket,
+		bucket:             defaultBucket,
 		awsProfile:         profile,
 		configPath:         resolveConfigPath(configPath),
 		multipartPartBytes: partSizeMiB * 1024 * 1024,
@@ -310,12 +350,11 @@ func parsePutObjectFlow(args []string, skipMD5 bool) (cliOptions, error) {
 		return cliOptions{}, errors.New("data file is required")
 	}
 
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	profile, configPath := parseProfileConfig(args, 2, 3)
+	profile, configPath := parseProfileConfig(args, 1, 2)
 	return cliOptions{
 		mode:          modePutObjectFlow,
 		dataDir:       dataFile,
-		bucket:        bucket,
+		bucket:        defaultBucket,
 		awsProfile:    profile,
 		configPath:    resolveConfigPath(configPath),
 		skipMD5Verify: skipMD5,
@@ -328,33 +367,32 @@ func parseMultipartResume(args []string) (cliOptions, error) {
 		return cliOptions{}, errors.New("data file is required")
 	}
 
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	objectKey := positionalOrDefault(args, 2, "")
+	objectKey := positionalOrDefault(args, 1, "")
 	if strings.TrimSpace(objectKey) == "" {
 		return cliOptions{}, errors.New("object key is required")
 	}
-	uploadID := positionalOrDefault(args, 3, "")
+	uploadID := positionalOrDefault(args, 2, "")
 	if strings.TrimSpace(uploadID) == "" {
 		return cliOptions{}, errors.New("upload id is required")
 	}
 
-	startPartRaw := positionalOrDefault(args, 4, "0")
+	startPartRaw := positionalOrDefault(args, 3, "0")
 	startPart, err := strconv.ParseInt(strings.TrimSpace(startPartRaw), 10, 32)
 	if err != nil || startPart < 0 {
 		return cliOptions{}, fmt.Errorf("invalid startPartNumber: %s", startPartRaw)
 	}
 
-	partSizeMiBRaw := positionalOrDefault(args, 5, "32")
+	partSizeMiBRaw := positionalOrDefault(args, 4, "32")
 	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
 	if err != nil || partSizeMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
 	}
 
-	profile, configPath := parseProfileConfig(args, 6, 7)
+	profile, configPath := parseProfileConfig(args, 5, 6)
 	return cliOptions{
 		mode:               modeMultipartResume,
 		dataDir:            dataFile,
-		bucket:             bucket,
+		bucket:             defaultBucket,
 		awsProfile:         profile,
 		configPath:         resolveConfigPath(configPath),
 		skipBucketCreate:   true,
@@ -369,27 +407,26 @@ func parseMultipartResume(args []string) (cliOptions, error) {
 
 func parseSmallBatchFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	dataDir := positionalOrDefault(args, 0, filepath.Join(defaultDataDir, "small-batch"))
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	countRaw := positionalOrDefault(args, 2, "256")
+	countRaw := positionalOrDefault(args, 1, "256")
 	count, err := strconv.Atoi(strings.TrimSpace(countRaw))
 	if err != nil || count <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid fileCount: %s", countRaw)
 	}
-	sizeRaw := positionalOrDefault(args, 3, "2048")
+	sizeRaw := positionalOrDefault(args, 2, "2048")
 	size, err := strconv.ParseInt(strings.TrimSpace(sizeRaw), 10, 64)
 	if err != nil || size <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid fileSizeBytes: %s", sizeRaw)
 	}
-	concurrencyRaw := positionalOrDefault(args, 4, "32")
+	concurrencyRaw := positionalOrDefault(args, 3, "32")
 	concurrency, err := strconv.Atoi(strings.TrimSpace(concurrencyRaw))
 	if err != nil || concurrency <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid concurrency: %s", concurrencyRaw)
 	}
-	profile, configPath := parseProfileConfig(args, 5, 6)
+	profile, configPath := parseProfileConfig(args, 4, 5)
 	return cliOptions{
 		mode:             modeSmallBatchFlow,
 		dataDir:          dataDir,
-		bucket:           bucket,
+		bucket:           defaultBucket,
 		awsProfile:       profile,
 		configPath:       resolveConfigPath(configPath),
 		skipBucketCreate: false,
@@ -402,7 +439,7 @@ func parseSmallBatchFlow(args []string, skipMD5 bool) (cliOptions, error) {
 
 func parseVarSmallBatchFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	if len(args) == 0 {
-		args = []string{filepath.Join(defaultDataDir, "var-small-batch"), defaultBucket, "10000", "2048", "32"}
+		args = []string{filepath.Join(defaultDataDir, "var-small-batch"), "10000", "2048", "32"}
 	}
 	if len(args) < 3 {
 		args = append(args, "10000")
@@ -439,25 +476,24 @@ func parseSmallPackFlow(args []string, skipMD5 bool) (cliOptions, error) {
 
 func parseMixedFlow(args []string, skipMD5 bool) (cliOptions, error) {
 	dataDir := positionalOrDefault(args, 0, defaultDataDir)
-	bucket := positionalOrDefault(args, 1, defaultBucket)
 
-	thresholdMiBRaw := positionalOrDefault(args, 2, "32")
+	thresholdMiBRaw := positionalOrDefault(args, 1, "32")
 	thresholdMiB, err := strconv.ParseInt(strings.TrimSpace(thresholdMiBRaw), 10, 64)
 	if err != nil || thresholdMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid multipartThresholdMiB: %s", thresholdMiBRaw)
 	}
 
-	partSizeMiBRaw := positionalOrDefault(args, 3, "32")
+	partSizeMiBRaw := positionalOrDefault(args, 2, "32")
 	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
 	if err != nil || partSizeMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
 	}
 
-	profile, configPath := parseProfileConfig(args, 4, 5)
+	profile, configPath := parseProfileConfig(args, 3, 4)
 	return cliOptions{
 		mode:               modeMixedFlow,
 		dataDir:            dataDir,
-		bucket:             bucket,
+		bucket:             defaultBucket,
 		awsProfile:         profile,
 		configPath:         resolveConfigPath(configPath),
 		skipBucketCreate:   false,
@@ -468,15 +504,11 @@ func parseMixedFlow(args []string, skipMD5 bool) (cliOptions, error) {
 }
 
 func parseBucketOnly(args []string, m mode) cliOptions {
-	bucket := positionalOrDefault(args, 0, defaultBucket)
-	profile, configPath := parseProfileConfig(args, 1, 2)
-
 	opts := cliOptions{
 		mode:             m,
 		dataDir:          ".",
-		bucket:           bucket,
-		awsProfile:       profile,
-		configPath:       resolveConfigPath(configPath),
+		bucket:           defaultBucket,
+		configPath:       resolveConfigPath(""),
 		skipUpload:       true,
 		skipBucketCreate: true,
 	}
@@ -541,61 +573,21 @@ func parseControlArgumentOptional(args []string, m mode) cliOptions {
 }
 
 func parseHeadObject(args []string) (cliOptions, error) {
-	bucket := positionalOrDefault(args, 0, defaultBucket)
-	key := positionalOrDefault(args, 1, "")
-	if strings.TrimSpace(key) == "" {
-		return cliOptions{}, errors.New("object key is required")
-	}
-
-	profile, configPath := parseProfileConfig(args, 2, 3)
-	return cliOptions{
-		mode:             modeHeadObject,
-		dataDir:          ".",
-		bucket:           bucket,
-		awsProfile:       profile,
-		configPath:       resolveConfigPath(configPath),
-		skipUpload:       true,
-		skipFinalize:     true,
-		skipBucketCreate: true,
-		headObjectOnly:   true,
-		singleObjectKey:  key,
-	}, nil
+	return parseShortHeadObject(args)
 }
 
-func parseShortHeadObject(args []string) (cliOptions, error) {
+func parseFlexibleGetObject(args []string, skipMD5 bool) (cliOptions, error) {
 	key := positionalOrDefault(args, 0, "")
 	if strings.TrimSpace(key) == "" {
 		return cliOptions{}, errors.New("object key is required")
 	}
 
-	profile, configPath := parseProfileConfig(args, 1, 2)
-	return cliOptions{
-		mode:             modeHeadObject,
-		dataDir:          ".",
-		bucket:           defaultBucket,
-		awsProfile:       profile,
-		configPath:       resolveConfigPath(configPath),
-		skipUpload:       true,
-		skipFinalize:     true,
-		skipBucketCreate: true,
-		headObjectOnly:   true,
-		singleObjectKey:  key,
-	}, nil
-}
-
-func parseGetObject(args []string, skipMD5 bool) (cliOptions, error) {
-	bucket := positionalOrDefault(args, 0, defaultBucket)
-	key := positionalOrDefault(args, 1, "")
-	if strings.TrimSpace(key) == "" {
-		return cliOptions{}, errors.New("object key is required")
-	}
-
-	output := positionalOrDefault(args, 2, "")
-	profile, configPath := parseProfileConfig(args, 3, 4)
+	output := positionalOrDefault(args, 1, "")
+	profile, configPath := parseProfileConfig(args, 2, 3)
 	return cliOptions{
 		mode:               modeGetObject,
 		dataDir:            ".",
-		bucket:             bucket,
+		bucket:             defaultBucket,
 		awsProfile:         profile,
 		configPath:         resolveConfigPath(configPath),
 		skipUpload:         true,
@@ -630,24 +622,65 @@ func parseShortGetObject(args []string, skipMD5 bool) (cliOptions, error) {
 	}, nil
 }
 
+func parseShortHeadObject(args []string) (cliOptions, error) {
+	key := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(key) == "" {
+		return cliOptions{}, errors.New("object key is required")
+	}
+
+	profile, configPath := parseProfileConfig(args, 1, 2)
+	return cliOptions{
+		mode:             modeHeadObject,
+		dataDir:          ".",
+		bucket:           defaultBucket,
+		awsProfile:       profile,
+		configPath:       resolveConfigPath(configPath),
+		skipUpload:       true,
+		skipFinalize:     true,
+		skipBucketCreate: true,
+		headObjectOnly:   true,
+		singleObjectKey:  key,
+	}, nil
+}
+
+func parseDeleteObject(args []string) (cliOptions, error) {
+	key := positionalOrDefault(args, 0, "")
+	if strings.TrimSpace(key) == "" {
+		return cliOptions{}, errors.New("object key is required")
+	}
+
+	profile, configPath := parseProfileConfig(args, 1, 2)
+	return cliOptions{
+		mode:             modeDeleteObject,
+		dataDir:          ".",
+		bucket:           defaultBucket,
+		awsProfile:       profile,
+		configPath:       resolveConfigPath(configPath),
+		skipUpload:       true,
+		skipFinalize:     true,
+		skipBucketCreate: true,
+		deleteObjectOnly: true,
+		singleObjectKey:  key,
+	}, nil
+}
+
 func parseInterruptRetry(args []string) (cliOptions, error) {
 	dataFile := positionalOrDefault(args, 0, "")
 	if strings.TrimSpace(dataFile) == "" {
 		return cliOptions{}, errors.New("data file is required")
 	}
 
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	failAfterMiBRaw := positionalOrDefault(args, 2, "16")
+	failAfterMiBRaw := positionalOrDefault(args, 1, "16")
 	failAfterMiB, err := strconv.ParseInt(strings.TrimSpace(failAfterMiBRaw), 10, 64)
 	if err != nil || failAfterMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid failAfterMiB: %s", failAfterMiBRaw)
 	}
 
-	profile, configPath := parseProfileConfig(args, 3, 4)
+	profile, configPath := parseProfileConfig(args, 2, 3)
 	return cliOptions{
 		mode:               modeInterruptRetry,
 		dataDir:            dataFile,
-		bucket:             bucket,
+		bucket:             defaultBucket,
 		awsProfile:         profile,
 		configPath:         resolveConfigPath(configPath),
 		interruptRetryOnly: true,
@@ -661,24 +694,23 @@ func parseMultipartInterruptRetry(args []string) (cliOptions, error) {
 		return cliOptions{}, errors.New("data file is required")
 	}
 
-	bucket := positionalOrDefault(args, 1, defaultBucket)
-	partSizeMiBRaw := positionalOrDefault(args, 2, "32")
+	partSizeMiBRaw := positionalOrDefault(args, 1, "32")
 	partSizeMiB, err := strconv.ParseInt(strings.TrimSpace(partSizeMiBRaw), 10, 64)
 	if err != nil || partSizeMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid partSizeMiB: %s", partSizeMiBRaw)
 	}
 
-	failAfterMiBRaw := positionalOrDefault(args, 3, "16")
+	failAfterMiBRaw := positionalOrDefault(args, 2, "16")
 	failAfterMiB, err := strconv.ParseInt(strings.TrimSpace(failAfterMiBRaw), 10, 64)
 	if err != nil || failAfterMiB <= 0 {
 		return cliOptions{}, fmt.Errorf("invalid failAfterMiB: %s", failAfterMiBRaw)
 	}
 
-	profile, configPath := parseProfileConfig(args, 4, 5)
+	profile, configPath := parseProfileConfig(args, 3, 4)
 	return cliOptions{
 		mode:               modeMultipartRetry,
 		dataDir:            dataFile,
-		bucket:             bucket,
+		bucket:             defaultBucket,
 		awsProfile:         profile,
 		configPath:         resolveConfigPath(configPath),
 		multipartRetryOnly: true,
@@ -746,175 +778,80 @@ func normalizeArg(value string) string {
 func printUsage(stream *os.File) {
 	lines := []string{
 		"Usage:",
-		"  test-burn-upload-go.exe ls",
-		"  test-burn-upload-go.exe drive",
-		"  test-burn-upload-go.exe disc",
-		"  test-burn-upload-go.exe open",
-		"  test-burn-upload-go.exe close",
-		"  test-burn-upload-go.exe mount",
-		"  test-burn-upload-go.exe unmount",
-		"  test-burn-upload-go.exe db",
-		"  test-burn-upload-go.exe restore [Generation]",
-		"  test-burn-upload-go.exe use-db [Generation]",
-		"  test-burn-upload-go.exe anchor",
-		"  test-burn-upload-go.exe encrypt [on|off|status]",
-		"  test-burn-upload-go.exe get [ObjectKey] [OutputPath]",
+		"  test-burn-upload-go.exe <command> [args]",
 		"",
-		"Compatibility usage:",
-		"  test-burn-upload-go.exe [DataDir] [Bucket]",
-		"  test-burn-upload-go.exe mixed [DataDir] [Bucket] [MultipartThresholdMiB] [PartSizeMiB]",
-		"  test-burn-upload-go.exe putobject [DataFile] [Bucket]",
-		"  test-burn-upload-go.exe small-batch [DataDir] [Bucket] [FileCount] [FileSizeBytes] [Concurrency]",
-		"  test-burn-upload-go.exe var-small-batch [DataDir] [Bucket] [FileCount] [MaxFileSizeBytes] [Concurrency]",
-		"  test-burn-upload-go.exe multipart [DataFile] [Bucket] [PartSizeMiB]",
-		"  test-burn-upload-go.exe download [DataDir] [Bucket]",
-		"  test-burn-upload-go.exe remote-download [Bucket]",
-		"  test-burn-upload-go.exe listobjects [Bucket]",
-		"  test-burn-upload-go.exe driveinfo [ControlBucket]",
-		"  test-burn-upload-go.exe discinfo [Bucket]",
-		"  test-burn-upload-go.exe db-versions [Bucket]",
-		"  test-burn-upload-go.exe db-restore [Generation]",
-		"  test-burn-upload-go.exe db-use-version [Generation]",
-		"  test-burn-upload-go.exe anchor-status [Bucket]",
-		"  test-burn-upload-go.exe finalize [Bucket]",
-		"  test-burn-upload-go.exe closedisc [Bucket]",
-		"  test-burn-upload-go.exe close-disc-force [Bucket]",
-		"  test-burn-upload-go.exe media-removed [Bucket]",
-		"  test-burn-upload-go.exe media-inserted [Bucket]",
-		"  test-burn-upload-go.exe tray-open [Bucket]",
-		"  test-burn-upload-go.exe tray-close [Bucket]",
-		"  test-burn-upload-go.exe headobject [Bucket] [ObjectKey]",
-		"  test-burn-upload-go.exe getobject [Bucket] [ObjectKey] [OutputPath]",
-		"  test-burn-upload-go.exe getobject-nomd5 [Bucket] [ObjectKey] [OutputPath]",
-		"  test-burn-upload-go.exe interrupt-retry [DataFile] [Bucket] [FailAfterMiB]",
-		"  test-burn-upload-go.exe multipart-interrupt-retry [DataFile] [Bucket] [PartSizeMiB] [FailAfterMiB]",
+		"Buckets:",
+		"  Data commands automatically use the active data bucket when one exists.",
+		"  Blank-disc uploads default to --bucket-disc: use disc-info.data.discSerialNumberHex as the data bucket.",
+		"  Use --bucket-time to create a timestamp data bucket for a new blank-disc test run.",
+		"  Control commands automatically use the drive-serial control bucket.",
+		"  Bucket arguments are intentionally not supported.",
 		"",
-		"Short aliases:",
-		"  ls=listobjects, drive=driveinfo, disc=discinfo, db=db-versions, anchor=anchor-status, open=tray-open, close=tray-close",
-		"  mount=media-inserted, unmount=media-removed, dl=download, rdl=remote-download, put=putobject, po=putobject, sb=small-batch, vsb=var-small-batch, mp=multipart, mix=mixed",
+		"Data commands:",
+		"  ls                                  List objects in the active data bucket.",
+		"  head <ObjectKey>                    Show one object's metadata.",
+		"  get <ObjectKey> [OutputPath]         Download one object and print MD5.",
+		"  get-nomd5 <ObjectKey> [OutputPath]   Download one object without MD5.",
+		"  delete <ObjectKey>                   Delete one object metadata entry.",
+		"  del <ObjectKey>                      Alias of delete.",
+		"  rm <ObjectKey>                       Alias of delete.",
+		"  dl [DataDir]                         Download and verify objects from local file list.",
+		"  dl-nomd5 [DataDir]                   Download from local file list without MD5.",
+		"  rdl                                 Download all remote objects.",
+		"  rdl-nomd5                           Download all remote objects without MD5.",
+		"",
+		"Control commands:",
+		"  drive                               Read drive info.",
+		"  disc                                Read disc info.",
+		"  anchor                              Read BRS Anchor status.",
+		"  db                                  List metadata DB versions.",
+		"  restore <Generation>                Restore metadata DB generation.",
+		"  use-db <Generation>                 Verify/use metadata DB generation view.",
+		"  encrypt [on|off|status]             Set or read hidden-UDF runtime mode.",
+		"  finalize                            Run FinalizeLayout.",
+		"  closedisc                           Close disc after safe staged flush.",
+		"  close-force                         Force close disc after best-effort staged flush.",
+		"  mount                               Notify recorder media inserted.",
+		"  unmount                             Notify recorder media removed.",
+		"  open                                Open recorder tray.",
+		"  close                               Close recorder tray.",
+		"",
+		"Write and regression commands:",
+		"  put <DataFile>                       PutObject upload, finalize, then download size-check.",
+		"  put-md5 <DataFile>                   PutObject upload with MD5 verification.",
+		"  mp <DataFile> [PartSizeMiB]          Multipart upload, finalize, then download size-check.",
+		"  mp-md5 <DataFile> [PartSizeMiB]      Multipart upload with MD5 verification.",
+		"  mix <DataDir> [ThresholdMiB] [PartSizeMiB]",
+		"                                      Mixed upload: small files use PutObject, large files use multipart.",
+		"  sb <DataDir> [FileCount] [FileSizeBytes] [Concurrency]",
+		"                                      Generate fixed-size small files and test upload/download.",
+		"  vsb <DataDir> [FileCount] [MaxFileSizeBytes] [Concurrency]",
+		"                                      Generate variable-size small files and test upload/download.",
+		"  sp <DataDir> [FileCount] [FileSizeBytes] [Concurrency]",
+		"                                      Generate small files and test pack upload/download.",
+		"  interrupt-retry <DataFile> [FailAfterMiB]",
+		"                                      Simulate interrupted PutObject and retry.",
+		"  mp-retry <DataFile> [PartSizeMiB] [FailAfterMiB]",
+		"                                      Simulate interrupted UploadPart and retry.",
+		"  mp-resume <DataFile> <ObjectKey> <UploadId> [StartPart] [PartSizeMiB]",
+		"                                      Resume an existing multipart upload.",
 		"",
 		"Config resolution:",
-		"  1. optical-archive.config.json next to this exe",
-		"  2. OPTICAL_ARCHIVE_CONFIG_PATH",
-		"  3. D:\\BRS\\publisher\\config\\optical-archive.config.json",
-		"",
-		"Modes:",
-		"  full-flow",
-		"    Upload local files, validate ListObjects and HeadObject, call FinalizeLayout, then download. MD5 is skipped by default.",
-		"",
-		"  mixed",
-		"    Upload one directory serially with size-based strategy: large files use multipart, small files use PutObject. MD5 is skipped by default.",
-		"",
-		"  mixed-md5",
-		"    Same as mixed, but verify downloaded files with MD5.",
-		"",
-		"  mixed-nomd5",
-		"    Same as mixed, but skip downloaded file MD5 verification.",
-		"",
-		"  putobject",
-		"    Upload one local file through a single S3 PutObject request, finalize, then download size-check.",
-		"",
-		"  putobject-md5",
-		"    Same as putobject, but verify the downloaded file with MD5.",
-		"",
-		"  small-batch",
-		"    Generate many small files, upload them concurrently with PutObject, finalize, then download verify. MD5 is skipped by default.",
-		"",
-		"  small-batch-md5",
-		"    Same as small-batch, but verify downloaded files with MD5.",
-		"",
-		"  multipart",
-		"    Upload one local file through standard S3 multipart APIs, complete it, finalize, then download size-check. MD5 is skipped by default.",
-		"",
-		"  multipart-md5",
-		"    Same as multipart, but verify the downloaded file with MD5.",
-		"",
-		"  multipart-nomd5",
-		"    Same as multipart, but skip downloaded file MD5 verification.",
-		"",
-		"  download",
-		"    Skip upload, skip finalize, skip bucket creation, use local directory as expected file list.",
-		"",
-		"  download-nomd5",
-		"    Same as download, but skip downloaded file MD5 verification.",
-		"",
-		"  remote-download",
-		"    Build expected object list from remote ListObjects only. No local data directory required.",
-		"",
-		"  remote-download-nomd5",
-		"    Same as remote-download, but skip MD5 verification.",
-		"",
-		"  listobjects",
-		"    List all objects in the bucket and print key and size.",
-		"",
-		"  driveinfo",
-		"    Generate a burnbridge control key for drive-info and print the virtual control bucket.",
-		"",
-		"  discinfo",
-		"    Generate a burnbridge control key for disc-info and print the returned JSON fields.",
-		"",
-		"  db-versions",
-		"    Generate a burnbridge control key for db-versions and print metadata database versions.",
-		"",
-		"  db-restore",
-		"    Restore one metadata database generation as the recorder's current working view.",
-		"",
-		"  db-use-version",
-		"    Verify one metadata database generation without changing the current recorder view.",
-		"",
-		"  anchor-status",
-		"    Read BRS Anchor status for the active disc.",
-		"",
-		"  encrypt",
-		"    Set or read runtime hidden-UDF mode: encrypt on, encrypt off, or encrypt status.",
-		"",
-		"  finalize",
-		"    Generate a burnbridge control key for finalize-layout and print the returned JSON fields.",
-		"",
-		"  closedisc",
-		"    Generate a burnbridge control key for close-disc and request disc close/finalize on recorder.",
-		"",
-		"  close-disc-force",
-		"    Generate a burnbridge control key for close-disc-force, discard volatile upload metadata, and request disc close/finalize.",
-		"",
-		"  media-removed",
-		"    Generate a burnbridge control key for media-removed and notify recorder that media was removed.",
-		"",
-		"  media-inserted",
-		"    Generate a burnbridge control key for media-inserted and notify recorder that media was inserted.",
-		"",
-		"  tray-open",
-		"    Generate a burnbridge control key for tray-open and request the recorder tray to open.",
-		"",
-		"  tray-close",
-		"    Generate a burnbridge control key for tray-close and request the recorder tray to close.",
-		"",
-		"  headobject",
-		"    Print one object's metadata without downloading the object body.",
-		"",
-		"  getobject",
-		"    Download one object, validate size, and optionally print MD5.",
-		"",
-		"  getobject-nomd5",
-		"    Download one object and validate size only.",
-		"",
-		"  interrupt-retry",
-		"    Simulate mid-stream disconnect, retry the same key, finalize, and download verify.",
-		"",
-		"  multipart-interrupt-retry",
-		"    Upload part 1 normally, fail part 2 mid-stream, retry the same part, then complete and verify.",
+		"  1. optical-archive.config.json next to this executable.",
+		"  2. OPTICAL_ARCHIVE_CONFIG_PATH.",
+		"  3. D:\\BRS\\publisher\\config\\optical-archive.config.json.",
 		"",
 		"Examples:",
 		`  .\test-burn-upload-go.exe ls`,
-		`  .\test-burn-upload-go.exe drive`,
+		`  .\test-burn-upload-go.exe disc`,
+		`  .\test-burn-upload-go.exe get docs/readme.txt D:\verify\readme.txt`,
+		`  .\test-burn-upload-go.exe get-nomd5 10.zip D:\verify\10.zip`,
+		`  .\test-burn-upload-go.exe delete tmp/old-object.bin`,
+		`  .\test-burn-upload-go.exe put D:\testdata\large.bin`,
+		`  .\test-burn-upload-go.exe mp D:\testdata\10.zip 32`,
+		`  .\test-burn-upload-go.exe mix D:\testdata 32 32`,
 		`  .\test-burn-upload-go.exe open`,
 		`  .\test-burn-upload-go.exe close`,
-		`  .\test-burn-upload-go.exe put D:\testdata\large.bin archive-test`,
-		`  .\test-burn-upload-go.exe sb D:\testdata\small-batch archive-test 256 2048 32`,
-		`  .\test-burn-upload-go.exe mix D:\BRS\publisher\temp\mixed-batch archive-test 32 32`,
-		`  .\test-burn-upload-go.exe mp D:\testdata\10.zip archive-test 32`,
-		`  .\test-burn-upload-go.exe rdl`,
-		`  .\test-burn-upload-go.exe get docs/chat-export.md`,
 	}
 
 	for _, line := range lines {

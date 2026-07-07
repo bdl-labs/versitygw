@@ -300,13 +300,17 @@ func isSmallBatchMode(m mode) bool {
 
 func newRunner(opts cliOptions) (*runner, error) {
 	opts.bucket = strings.TrimSpace(strings.ToUpper(opts.bucket))
+	opts.bucketMode = strings.ToLower(strings.TrimSpace(opts.bucketMode))
+	if opts.bucketMode == "" {
+		opts.bucketMode = bucketModeDisc
+	}
 	if opts.interruptRetryOnly || opts.multipartRetryOnly || opts.mode == modeMultipartFlow || opts.mode == modeMultipartResume || opts.mode == modePutObjectFlow {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || info.IsDir() {
 			return nil, fmt.Errorf("data file not found: %s", opts.dataDir)
 		}
 	}
-	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modeMultipartResume && opts.mode != modePutObjectFlow && !isSmallBatchMode(opts.mode) && opts.mode != modeSmallPackFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.dbVersionsOnly && !opts.dbRestoreOnly && !opts.dbUseVersionOnly && !opts.anchorStatusOnly && !opts.encryptOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
+	if !opts.interruptRetryOnly && !opts.multipartRetryOnly && opts.mode != modeMultipartFlow && opts.mode != modeMultipartResume && opts.mode != modePutObjectFlow && !isSmallBatchMode(opts.mode) && opts.mode != modeSmallPackFlow && !opts.remoteOnly && !opts.listObjectsOnly && !opts.driveInfoOnly && !opts.discInfoOnly && !opts.dbVersionsOnly && !opts.dbRestoreOnly && !opts.dbUseVersionOnly && !opts.anchorStatusOnly && !opts.encryptOnly && !opts.finalizeOnly && !opts.closeDiscOnly && !opts.mediaRemovedOnly && !opts.mediaInsertedOnly && !opts.trayOpenOnly && !opts.trayCloseOnly && !opts.headObjectOnly && !opts.deleteObjectOnly && strings.TrimSpace(opts.singleObjectKey) == "" {
 		info, err := os.Stat(opts.dataDir)
 		if err != nil || !info.IsDir() {
 			return nil, fmt.Errorf("data directory not found: %s", opts.dataDir)
@@ -318,7 +322,11 @@ func newRunner(opts cliOptions) (*runner, error) {
 		return nil, err
 	}
 
-	runRoot, err := buildRunRoot(cfg.testRunRoot, opts.bucket)
+	runBucket := opts.bucket
+	if runBucket == "" {
+		runBucket = "AUTO-" + strings.ToUpper(opts.bucketMode)
+	}
+	runRoot, err := buildRunRoot(cfg.testRunRoot, runBucket)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +362,7 @@ func (r *runner) run() (err error) {
 	testStart := time.Now()
 	finalizeDuration := 0.0
 	finalizeOutputPath := filepath.Join(r.runRoot, "finalize-layout-response.json")
-	verifyDir := filepath.Join(r.cfg.verifyDownloadRoot, r.opts.bucket)
+	verifyDir := filepath.Join(r.cfg.verifyDownloadRoot, sanitizeBucketForPath(firstNonEmpty(r.opts.bucket, "AUTO-"+strings.ToUpper(r.opts.bucketMode))))
 
 	defer func() {
 		_ = exportFileMetrics(r.metricsCSVPath, metrics)
@@ -374,7 +382,11 @@ func (r *runner) run() (err error) {
 	r.logf("Using config path: %s", r.opts.configPath)
 	r.logf("Endpoint: %s", r.cfg.endpoint)
 	r.logf("Region: %s", r.cfg.region)
-	r.logf("Bucket: %s", r.opts.bucket)
+	if strings.TrimSpace(r.opts.bucket) == "" {
+		r.logf("Bucket: <auto-%s>", r.opts.bucketMode)
+	} else {
+		r.logf("Bucket: %s", r.opts.bucket)
+	}
 	r.logf("DataDir: %s", r.opts.dataDir)
 	r.logf("RunRoot: %s", r.runRoot)
 	r.logf("SkipUpload: %t", r.opts.skipUpload)
@@ -395,6 +407,9 @@ func (r *runner) run() (err error) {
 	r.logf("CloseDiscOnly: %t", r.opts.closeDiscOnly)
 	r.logf("MediaRemovedOnly: %t", r.opts.mediaRemovedOnly)
 	r.logf("MediaInsertedOnly: %t", r.opts.mediaInsertedOnly)
+	r.logf("TrayOpenOnly: %t", r.opts.trayOpenOnly)
+	r.logf("TrayCloseOnly: %t", r.opts.trayCloseOnly)
+	r.logf("DeleteObjectOnly: %t", r.opts.deleteObjectOnly)
 	r.logf("InterruptRetryOnly: %t", r.opts.interruptRetryOnly)
 	r.logf("MultipartRetryOnly: %t", r.opts.multipartRetryOnly)
 	if isSmallBatchMode(r.opts.mode) || r.opts.mode == modeSmallPackFlow {
@@ -447,12 +462,17 @@ func (r *runner) run() (err error) {
 		}
 		r.logf("Control bucket: %s", controlBucket)
 	} else {
-		if len(discovery.DataBuckets) == 0 && len(discovery.ControlBuckets) > 0 {
+		if resolvedControlBucket, resolveErr := r.resolveControlBucket(discovery, controlBucket); resolveErr == nil && strings.TrimSpace(resolvedControlBucket) != "" {
+			controlBucket = resolvedControlBucket
+		} else if resolveErr != nil {
+			r.logf("Drive control bucket auto-resolution skipped: %v", resolveErr)
+		}
+		if len(discovery.DataBuckets) == 0 && len(discovery.ControlBuckets) > 0 && (r.opts.skipUpload || r.opts.skipBucketCreate) {
 			return fmt.Errorf(
 				"no data bucket is visible; only control bucket(s) are available: %s. The recorder is likely reporting no usable disc/media",
 				strings.Join(discovery.ControlBuckets, ", "))
 		}
-		dataBucket, err = r.ensureActiveBucket()
+		dataBucket, err = r.ensureActiveBucket(controlBucket)
 		if err != nil {
 			return err
 		}
@@ -508,6 +528,8 @@ func (r *runner) run() (err error) {
 		err = r.runTrayCloseOnly(controlBucket)
 	case r.opts.headObjectOnly:
 		err = r.runHeadObjectOnly(dataBucket)
+	case r.opts.deleteObjectOnly:
+		err = r.runDeleteObjectOnly(dataBucket)
 	case r.opts.interruptRetryOnly:
 		err = r.runInterruptRetry(dataBucket, controlBucket)
 	case r.opts.multipartRetryOnly:
@@ -594,9 +616,25 @@ func (r *runner) run() (err error) {
 	return nil
 }
 
-func (r *runner) ensureActiveBucket() (string, error) {
-	r.logf("[2/8] Ensuring bucket s3://%s exists...", r.opts.bucket)
-	activeBucket := r.opts.bucket
+func (r *runner) ensureActiveBucket(controlBucket string) (string, error) {
+	activeBucket := strings.TrimSpace(r.opts.bucket)
+	if activeBucket == "" {
+		if resolvedBucket, resolution, _, resolveErr := r.resolveActiveBucket("", 1); resolveErr == nil && resolvedBucket != "" {
+			r.logf("[2/8] Using visible active data bucket: %s (%s)", resolvedBucket, resolution)
+			return resolvedBucket, nil
+		}
+		if r.opts.skipBucketCreate || r.opts.skipUpload {
+			return "", fmt.Errorf("no active data bucket is visible and this command cannot create one")
+		}
+		resolved, err := r.resolveAutoDataBucket(controlBucket)
+		if err != nil {
+			return "", err
+		}
+		activeBucket = resolved
+		r.logf("[2/8] Ensuring auto %s bucket s3://%s exists...", r.opts.bucketMode, activeBucket)
+	} else {
+		r.logf("[2/8] Ensuring bucket s3://%s exists...", activeBucket)
+	}
 
 	exists, err := r.bucketExists(activeBucket)
 	if err != nil {
@@ -648,15 +686,53 @@ func (r *runner) ensureActiveBucket() (string, error) {
 		if len(visibleBuckets) > 0 {
 			r.logf("Visible buckets after wait: %s", strings.Join(visibleBuckets, ", "))
 		}
-		return "", fmt.Errorf("bucket '%s' is unavailable and no active disc bucket could be resolved", r.opts.bucket)
+		return "", fmt.Errorf("bucket '%s' is unavailable and no active disc bucket could be resolved", firstNonEmpty(r.opts.bucket, activeBucket))
 	}
 
-	if resolvedBucket != r.opts.bucket {
+	if strings.TrimSpace(r.opts.bucket) != "" && resolvedBucket != r.opts.bucket {
 		r.logf("Requested bucket '%s' is unavailable; falling back to mounted disc bucket '%s'.", r.opts.bucket, resolvedBucket)
 	} else if resolution == "requested" {
 		r.logf("Requested bucket became ready: %s", resolvedBucket)
 	}
 	return resolvedBucket, nil
+}
+
+func (r *runner) resolveAutoDataBucket(controlBucket string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(r.opts.bucketMode)) {
+	case bucketModeTime:
+		return strings.ToUpper(time.Now().Format("20060102150405")), nil
+	case "", bucketModeDisc:
+		controlBucket = strings.TrimSpace(controlBucket)
+		if controlBucket == "" {
+			discovery, err := r.discoverBucketsByTags(defaultReadTimeout)
+			if err != nil {
+				return "", err
+			}
+			resolvedControlBucket, err := r.resolveControlBucket(discovery, "")
+			if err != nil {
+				return "", fmt.Errorf("resolve control bucket for disc-serial data bucket: %w", err)
+			}
+			controlBucket = resolvedControlBucket
+		}
+		doc, err := r.fetchDiscInfo(controlBucket, filepath.Join(r.runRoot, "discinfo-auto-bucket.json"))
+		if err != nil {
+			return "", fmt.Errorf("read disc-info for disc-serial data bucket: %w", err)
+		}
+		candidates := []string{
+			doc.Data.DiscSerialNumberHex,
+			doc.Data.Bucket,
+			doc.Data.VolumeLabel,
+		}
+		for _, candidate := range candidates {
+			value := strings.TrimSpace(strings.ToUpper(candidate))
+			if value != "" {
+				return value, nil
+			}
+		}
+		return "", fmt.Errorf("disc-info does not contain a usable disc serial number")
+	default:
+		return "", fmt.Errorf("unsupported bucket mode: %s", r.opts.bucketMode)
+	}
 }
 
 func (r *runner) runListObjectsOnly(bucket string) error {
@@ -913,6 +989,40 @@ func (r *runner) runHeadObjectOnly(bucket string) error {
 	if head.ChecksumSHA256 != nil {
 		r.logf("  checksumSha256 : %s", *head.ChecksumSHA256)
 	}
+	return nil
+}
+
+func (r *runner) runDeleteObjectOnly(bucket string) error {
+	r.logf("[3/3] Deleting object metadata...")
+	key := strings.TrimSpace(r.opts.singleObjectKey)
+	if key == "" {
+		return errors.New("object key is required")
+	}
+
+	existedBefore, err := r.objectExists(bucket, key)
+	if err != nil {
+		return err
+	}
+
+	start := time.Now()
+	if err := r.deleteObject(bucket, key); err != nil {
+		return err
+	}
+	seconds := roundSeconds(time.Since(start))
+
+	visibleAfter, err := r.objectExists(bucket, key)
+	if err != nil {
+		return err
+	}
+	if visibleAfter {
+		return fmt.Errorf("delete object request completed but object is still visible: %s", key)
+	}
+
+	r.logf("  bucket        : %s", bucket)
+	r.logf("  object        : %s", key)
+	r.logf("  existedBefore : %t", existedBefore)
+	r.logf("  visibleAfter  : %t", visibleAfter)
+	r.logf("  elapsed       : %.3fs", seconds)
 	return nil
 }
 
@@ -3214,17 +3324,19 @@ func (r *runner) resolveActiveBucket(requestedBucket string, timeoutSeconds int)
 	deadline := time.Now().Add(time.Duration(timeoutSeconds) * time.Second)
 	var lastBuckets []string
 	for time.Now().Before(deadline) {
-		exists, err := r.bucketExists(requestedBucket)
-		if err != nil {
-			return "", "", nil, err
-		}
-		if exists {
-			isData, tagErr := r.isDataBucket(requestedBucket)
-			if tagErr != nil {
-				return "", "", nil, tagErr
+		if strings.TrimSpace(requestedBucket) != "" {
+			exists, err := r.bucketExists(requestedBucket)
+			if err != nil {
+				return "", "", nil, err
 			}
-			if isData {
-				return requestedBucket, "requested", lastBuckets, nil
+			if exists {
+				isData, tagErr := r.isDataBucket(requestedBucket)
+				if tagErr != nil {
+					return "", "", nil, tagErr
+				}
+				if isData {
+					return requestedBucket, "requested", lastBuckets, nil
+				}
 			}
 		}
 
@@ -3707,6 +3819,16 @@ func (r *runner) objectExists(bucket, key string) (bool, error) {
 		return false, nil
 	}
 	return false, nil
+}
+
+func (r *runner) deleteObject(bucket, key string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(defaultReadTimeout)*time.Second)
+	defer cancel()
+	_, err := r.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: &bucket,
+		Key:    &key,
+	})
+	return err
 }
 
 func (r *runner) downloadObjectToFile(bucket, key, outputPath string, timeoutSeconds int) error {

@@ -63,6 +63,10 @@ const (
 	burnbridgeControlBucketTagKey = "burnbridge:control-bucket"
 	startupRecorderProbeTimeout   = 5 * time.Second
 	backgroundDriveInfoTimeout    = 120 * time.Second
+	controlActionPollInterval     = 500 * time.Millisecond
+	controlActionProbeTimeout     = 3 * time.Second
+	controlActionOpenTimeout      = 12 * time.Second
+	controlActionCloseTimeout     = 30 * time.Second
 )
 
 type burnbridgeControlAction string
@@ -329,10 +333,14 @@ type BurnBridge struct {
 	putQueueSem chan struct{}
 	// finalizeGroup deduplicates concurrent FinalizeLayout requests for the same bucket/closeDisc tuple.
 	finalizeGroup singleflight.Group
+	// controlActionGroup deduplicates concurrent tray/media control requests for the same bucket/action path.
+	controlActionGroup singleflight.Group
 	// recorderStateGroup deduplicates concurrent TestUnitReady probes.
 	recorderStateGroup singleflight.Group
 	// importedStateGroup deduplicates concurrent imported-state refreshes for the same bucket.
 	importedStateGroup singleflight.Group
+	// controlSerialMu keeps tray/media control operations in a single execution lane until recorder recovery settles.
+	controlSerialMu sync.Mutex
 
 	recorderS3Endpoint        string
 	recorderS3Region          string
@@ -4865,6 +4873,210 @@ func shouldReuseMediaChangeTranscript(bucket string, req *burnbridgeControlReque
 	return strings.EqualFold(strings.TrimSpace(doc.RequestID), strings.TrimSpace(req.RequestID))
 }
 
+func controlActionRecoveryTimeout(action burnbridgeControlAction) time.Duration {
+	switch action {
+	case burnbridgeControlActionTrayClose, burnbridgeControlActionMediaInserted:
+		return controlActionCloseTimeout
+	case burnbridgeControlActionTrayOpen, burnbridgeControlActionMediaRemoved:
+		return controlActionOpenTimeout
+	default:
+		return 0
+	}
+}
+
+func controlActionExpectsNoDisc(action burnbridgeControlAction) bool {
+	switch action {
+	case burnbridgeControlActionTrayOpen, burnbridgeControlActionMediaRemoved:
+		return true
+	default:
+		return false
+	}
+}
+
+func controlActionGroupKey(bucket string, req *burnbridgeControlRequest) string {
+	if req == nil {
+		return normalizeRuntimeBucket(bucket)
+	}
+	return normalizeRuntimeBucket(bucket) + "|" + strings.TrimSpace(req.Key)
+}
+
+func (b *BurnBridge) runSerializedControlAction(
+	ctx context.Context,
+	bucket string,
+	req *burnbridgeControlRequest,
+	loadCached func() ([]byte, bool),
+	invoke func() ([]byte, error),
+) ([]byte, error) {
+	if req == nil {
+		return nil, fmt.Errorf("burnbridge: control request is required")
+	}
+
+	groupKey := controlActionGroupKey(bucket, req)
+	value, err, _ := b.controlActionGroup.Do(groupKey, func() (interface{}, error) {
+		b.controlSerialMu.Lock()
+		defer b.controlSerialMu.Unlock()
+
+		if cached, ok := loadCached(); ok {
+			return cached, nil
+		}
+
+		payload, err := invoke()
+		if err != nil {
+			return nil, err
+		}
+
+		b.waitForControlActionRecovery(ctx, bucket, req.Action)
+		return payload, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	payload, ok := value.([]byte)
+	if !ok {
+		return nil, fmt.Errorf("burnbridge: unexpected control transcript type %T", value)
+	}
+	return payload, nil
+}
+
+func (b *BurnBridge) waitForControlActionRecovery(ctx context.Context, bucket string, action burnbridgeControlAction) {
+	timeout := controlActionRecoveryTimeout(action)
+	if timeout <= 0 || b.grpc == nil {
+		return
+	}
+
+	settleCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	ticker := time.NewTicker(controlActionPollInterval)
+	defer ticker.Stop()
+
+	attempt := 0
+	lastDetail := ""
+	for {
+		attempt++
+		settled, detail, err := b.probeControlActionRecovery(settleCtx, action)
+		if detail != "" {
+			lastDetail = detail
+		}
+		if err != nil {
+			slog.Warn("burnbridge: control action recovery probe failed",
+				"bucket", bucket,
+				"action", action,
+				"attempt", attempt,
+				"error", err)
+		}
+		if settled {
+			slog.Info("burnbridge: control action recovery settled",
+				"bucket", bucket,
+				"action", action,
+				"attempts", attempt,
+				"state", lastDetail)
+			return
+		}
+
+		select {
+		case <-settleCtx.Done():
+			if lastDetail == "" {
+				lastDetail = "timed out before recorder reached a terminal tray/media state"
+			}
+			slog.Warn("burnbridge: control action recovery timed out; releasing serialized control lane",
+				"bucket", bucket,
+				"action", action,
+				"attempts", attempt,
+				"last_state", lastDetail,
+				"error", settleCtx.Err())
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (b *BurnBridge) probeControlActionRecovery(parent context.Context, action burnbridgeControlAction) (bool, string, error) {
+	probeTimeout := controlActionProbeTimeout
+	if deadline, ok := parent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false, "", context.DeadlineExceeded
+		}
+		if remaining < probeTimeout {
+			probeTimeout = remaining
+		}
+	}
+
+	probeCtx, cancel := context.WithTimeout(parent, probeTimeout)
+	defer cancel()
+
+	resp, err := b.grpc.TestUnitReady(probeCtx, &burnbridgev1.TestUnitReadyRequest{})
+	if err != nil {
+		if isGRPCUnimplemented(err) {
+			return true, "TestUnitReady unavailable; recorder did not expose a settle probe", nil
+		}
+		if errors.Is(probeCtx.Err(), context.DeadlineExceeded) || errors.Is(probeCtx.Err(), context.Canceled) {
+			return false, "probe timeout", nil
+		}
+		return false, "", err
+	}
+
+	if !resp.GetReady() {
+		if readyResponseIndicatesNoDisc(resp) {
+			if err := b.handleNoDiscState(); err != nil {
+				return false, "", err
+			}
+			if controlActionExpectsNoDisc(action) {
+				return true, "no-disc", nil
+			}
+			return false, "no-disc", nil
+		}
+
+		reasonCode, reasonDetail := parseReadyReason(resp.GetMessage())
+		return false, fmt.Sprintf("%s: %s", reasonCode, reasonDetail), nil
+	}
+
+	if err := b.syncActiveDiscState(resp, syncActiveDiscStateOptions{SkipImportedConvergence: true}); err != nil {
+		return false, "", err
+	}
+	b.recordRecorderReadyState(resp)
+
+	if doc := discInfoDocFromProto(
+		b.activeBucket,
+		resp,
+		nil,
+		readFinalizeLayoutTranscript(b.meta, b.activeBucket, meta.BurnbridgeFinalizeLayoutObjectKey),
+	); doc != nil {
+		if err := b.meta.StoreBurnbridgeDiscInfo(doc); err != nil {
+			return false, "", fmt.Errorf("burnbridge: persist settled disc info: %w", err)
+		}
+	}
+
+	if controlActionExpectsNoDisc(action) {
+		volumeLabel := strings.TrimSpace(resp.GetVolumeLabel())
+		if volumeLabel == "" {
+			volumeLabel = strings.TrimSpace(resp.GetDiscSerialNumberHex())
+		}
+		if volumeLabel == "" {
+			volumeLabel = "ready"
+		}
+		return false, "ready:" + volumeLabel, nil
+	}
+
+	activeBucket := strings.TrimSpace(b.activeBucket)
+	if activeBucket != "" {
+		if err := b.ensureImportedBucketStateForConvergence(context.Background(), activeBucket); err != nil {
+			return false, "", err
+		}
+	}
+
+	volumeLabel := strings.TrimSpace(resp.GetVolumeLabel())
+	if volumeLabel == "" {
+		volumeLabel = strings.TrimSpace(resp.GetDiscSerialNumberHex())
+	}
+	if volumeLabel == "" {
+		volumeLabel = "ready"
+	}
+	return true, "ready:" + volumeLabel, nil
+}
+
 func (b *BurnBridge) invokeMediaChangeAgainstRecorder(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
 	b.putSerialMu.Lock()
 
@@ -5064,22 +5276,20 @@ func (b *BurnBridge) loadOrHandleMediaChangeTranscript(ctx context.Context, buck
 		return prev, nil
 	}
 
-	groupKey := bucket + "|" + req.Key
-
-	value, err, _ := b.finalizeGroup.Do(groupKey, func() (interface{}, error) {
-		if prev, err := b.meta.GetBurnbridgeMediaChangeJSON(bucket, objectKey); err == nil && shouldReuseMediaChangeTranscript(bucket, req, prev) {
-			return prev, nil
-		}
-		return b.invokeMediaChangeAgainstRecorder(ctx, bucket, req)
-	})
-	if err != nil {
-		return nil, err
-	}
-	payload, ok := value.([]byte)
-	if !ok {
-		return nil, fmt.Errorf("burnbridge: unexpected media change transcript type %T", value)
-	}
-	return payload, nil
+	return b.runSerializedControlAction(
+		ctx,
+		bucket,
+		req,
+		func() ([]byte, bool) {
+			if prev, err := b.meta.GetBurnbridgeMediaChangeJSON(bucket, objectKey); err == nil && shouldReuseMediaChangeTranscript(bucket, req, prev) {
+				return prev, true
+			}
+			return nil, false
+		},
+		func() ([]byte, error) {
+			return b.invokeMediaChangeAgainstRecorder(ctx, bucket, req)
+		},
+	)
 }
 
 func (b *BurnBridge) loadOrHandleTrayTranscript(ctx context.Context, bucket string, req *burnbridgeControlRequest) ([]byte, error) {
@@ -5091,22 +5301,20 @@ func (b *BurnBridge) loadOrHandleTrayTranscript(ctx context.Context, bucket stri
 		return prev, nil
 	}
 
-	groupKey := bucket + "|" + req.Key
-
-	value, err, _ := b.finalizeGroup.Do(groupKey, func() (interface{}, error) {
-		if prev, err := b.meta.GetBurnbridgeTrayJSON(bucket, objectKey); err == nil && shouldReuseTrayTranscript(bucket, req, prev) {
-			return prev, nil
-		}
-		return b.invokeTrayAgainstRecorder(ctx, bucket, req)
-	})
-	if err != nil {
-		return nil, err
-	}
-	payload, ok := value.([]byte)
-	if !ok {
-		return nil, fmt.Errorf("burnbridge: unexpected tray transcript type %T", value)
-	}
-	return payload, nil
+	return b.runSerializedControlAction(
+		ctx,
+		bucket,
+		req,
+		func() ([]byte, bool) {
+			if prev, err := b.meta.GetBurnbridgeTrayJSON(bucket, objectKey); err == nil && shouldReuseTrayTranscript(bucket, req, prev) {
+				return prev, true
+			}
+			return nil, false
+		},
+		func() ([]byte, error) {
+			return b.invokeTrayAgainstRecorder(ctx, bucket, req)
+		},
+	)
 }
 
 func (b *BurnBridge) HeadObject(ctx context.Context, input *s3.HeadObjectInput) (*s3.HeadObjectOutput, error) {

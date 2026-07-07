@@ -270,6 +270,9 @@
               <div><label class="block text-sm font-medium mb-2">Insert Settle Milliseconds</label><input id="gpio-insert-settle-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Eject Pulse Milliseconds</label><input id="gpio-eject-pulse-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
               <div><label class="block text-sm font-medium mb-2">Tray Settle Milliseconds</label><input id="gpio-tray-settle-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Close Tray Fallback Wait Milliseconds</label><input id="gpio-close-fallback-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Disc Info Ready Timeout Milliseconds</label><input id="gpio-discinfo-timeout-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
+              <div><label class="block text-sm font-medium mb-2">Disc Info Retry Delay Milliseconds</label><input id="gpio-discinfo-retry-ms" type="number" class="w-full rounded-lg border border-gray-200 px-3 py-2" /></div>
             </div>
           </section>
 
@@ -498,7 +501,7 @@
       document.getElementById('rec-hidden-udf').checked = !!recorder.HiddenUdfLayoutEnabled;
       document.getElementById('rec-anchor-copies').value = recorder.AnchorCopies ?? 2;
       document.getElementById('rec-anchor-scan-blocks').value = recorder.AnchorScanBlocks ?? 1048576;
-      document.getElementById('rec-anchor-scan-batch').value = recorder.AnchorScanReadBatchBlocks ?? 256;
+      document.getElementById('rec-anchor-scan-batch').value = recorder.AnchorScanReadBatchBlocks ?? 64;
       document.getElementById('rec-anchor-scan-unreadable').value = recorder.AnchorScanMaxConsecutiveUnreadableBlocks ?? 128;
       document.getElementById('rt-sector-size').value = runtime.SectorSizeBytes ?? 2048;
       document.getElementById('rt-blocks-per-transfer').value = runtime.BlocksPerTransfer ?? 16;
@@ -561,6 +564,9 @@
       document.getElementById('gpio-insert-settle-ms').value = gpioMediaMonitor.InsertSettleMilliseconds ?? 3000;
       document.getElementById('gpio-eject-pulse-ms').value = gpioMediaMonitor.EjectPulseMilliseconds ?? 500;
       document.getElementById('gpio-tray-settle-ms').value = gpioMediaMonitor.TraySettleMilliseconds ?? 10000;
+      document.getElementById('gpio-close-fallback-ms').value = gpioMediaMonitor.CloseTrayFallbackWaitMilliseconds ?? 5000;
+      document.getElementById('gpio-discinfo-timeout-ms').value = gpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds ?? 10000;
+      document.getElementById('gpio-discinfo-retry-ms').value = gpioMediaMonitor.DiscInfoRetryDelayMilliseconds ?? 500;
       document.getElementById('gpio-require-tray-closed').checked = gpioMediaMonitor.RequireTrayClosedForInsert !== false;
       document.getElementById('gpio-use-disc-presence').checked = !!gpioMediaMonitor.UseDiscInForPresence;
       document.getElementById('gpio-process-initial').checked = gpioMediaMonitor.ProcessInitialState !== false;
@@ -667,6 +673,9 @@
       cfg.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds = Number(document.getElementById('gpio-insert-settle-ms').value || 3000);
       cfg.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds = Number(document.getElementById('gpio-eject-pulse-ms').value || 500);
       cfg.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds = Number(document.getElementById('gpio-tray-settle-ms').value || 10000);
+      cfg.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds = Number(document.getElementById('gpio-close-fallback-ms').value || 5000);
+      cfg.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds = Number(document.getElementById('gpio-discinfo-timeout-ms').value || 10000);
+      cfg.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds = Number(document.getElementById('gpio-discinfo-retry-ms').value || 500);
       cfg.OpticalArchive.GpioMediaMonitor.RequireTrayClosedForInsert = document.getElementById('gpio-require-tray-closed').checked;
       cfg.OpticalArchive.GpioMediaMonitor.UseDiscInForPresence = document.getElementById('gpio-use-disc-presence').checked;
       cfg.OpticalArchive.GpioMediaMonitor.ProcessInitialState = document.getElementById('gpio-process-initial').checked;

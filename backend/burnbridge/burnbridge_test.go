@@ -3053,6 +3053,21 @@ func testControlRequest(t *testing.T, action string, requestTime int64, requestI
 	}
 }
 
+func testUnitReadyNoDisc() *burnbridgev1.TestUnitReadyResponse {
+	return &burnbridgev1.TestUnitReadyResponse{
+		Ready:   false,
+		Message: "NoDisc: medium not present",
+	}
+}
+
+func testUnitReadyReady(volumeLabel string) *burnbridgev1.TestUnitReadyResponse {
+	return &burnbridgev1.TestUnitReadyResponse{
+		Ready:         true,
+		VolumeLabel:   volumeLabel,
+		WritableState: "Appendable",
+	}
+}
+
 func TestDiscInfoGetObjectRefreshesRuntimeAndCarriesFinalizeState(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "meta.db")
 	store, err := meta.NewSqlMeta(dbPath)
@@ -3878,6 +3893,9 @@ func TestMediaInsertedControlGetObjectBypassesMissingBucket(t *testing.T) {
 					},
 				}, nil
 			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return testUnitReadyReady("INSERTED-BUCKET"), nil
+			},
 		},
 	}
 	controlBucket := testEnsureDriveControlBucket(t, b)
@@ -4049,6 +4067,9 @@ func TestTrayOpenControlGetObjectBypassesMissingBucket(t *testing.T) {
 					Message: "manual tray open handled",
 				}, nil
 			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return testUnitReadyNoDisc(), nil
+			},
 		},
 	}
 	controlBucket := testEnsureDriveControlBucket(t, b)
@@ -4119,6 +4140,9 @@ func TestTrayOpenControlGetObjectUsesDriveControlBucket(t *testing.T) {
 					Message: "manual tray open handled",
 				}, nil
 			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return testUnitReadyNoDisc(), nil
+			},
 		},
 	}
 
@@ -4163,6 +4187,9 @@ func TestShortControlPathOnlyWorksOnDriveControlBucket(t *testing.T) {
 			handleTrayFn: func(context.Context, *burnbridgev1.HandleTrayRequest, ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
 				atomic.AddInt32(&trayCalls, 1)
 				return &burnbridgev1.HandleTrayResponse{Status: "opened"}, nil
+			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return testUnitReadyNoDisc(), nil
 			},
 		},
 	}
@@ -4217,6 +4244,9 @@ func TestTrayCloseControlGetObjectInvokesHandleTray(t *testing.T) {
 					Message: "manual tray close handled",
 				}, nil
 			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return testUnitReadyReady("TRAY-CLOSE-BUCKET"), nil
+			},
 		},
 	}
 	controlBucket := testEnsureDriveControlBucket(t, b)
@@ -4246,6 +4276,231 @@ func TestTrayCloseControlGetObjectInvokesHandleTray(t *testing.T) {
 	}
 	if envelope.Action != "tray-close" {
 		t.Fatalf("expected action tray-close, got %q", envelope.Action)
+	}
+}
+
+func TestTrayControlRequestsDeduplicateWhileInFlight(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls int32
+
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			handleTrayFn: func(context.Context, *burnbridgev1.HandleTrayRequest, ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+				if atomic.AddInt32(&calls, 1) == 1 {
+					close(started)
+				}
+				<-release
+				return &burnbridgev1.HandleTrayResponse{Status: "opened"}, nil
+			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				return testUnitReadyNoDisc(), nil
+			},
+		},
+	}
+
+	req1 := testControlRequest(t, "tray-open", 1, "req-1")
+	req2 := testControlRequest(t, "tray-open", 2, "req-2")
+
+	type result struct {
+		payload []byte
+		err     error
+	}
+
+	results := make(chan result, 2)
+	go func() {
+		payload, err := b.loadOrHandleTrayTranscript(context.Background(), "CONTROL", req1)
+		results <- result{payload: payload, err: err}
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first tray-open call to start")
+	}
+
+	go func() {
+		payload, err := b.loadOrHandleTrayTranscript(context.Background(), "CONTROL", req2)
+		results <- result{payload: payload, err: err}
+	}()
+
+	time.Sleep(150 * time.Millisecond)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("expected a single in-flight tray-open call, got %d", got)
+	}
+
+	close(release)
+
+	first := <-results
+	second := <-results
+	if first.err != nil {
+		t.Fatalf("first tray-open returned error: %v", first.err)
+	}
+	if second.err != nil {
+		t.Fatalf("second tray-open returned error: %v", second.err)
+	}
+	if atomic.LoadInt32(&calls) != 1 {
+		t.Fatalf("expected one tray-open recorder call after completion, got %d", atomic.LoadInt32(&calls))
+	}
+	if !bytes.Equal(first.payload, second.payload) {
+		t.Fatal("expected concurrent tray-open requests to share the same transcript payload")
+	}
+}
+
+func TestTrayControlRequestsSerializeAcrossActions(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	openStarted := make(chan struct{})
+	closeStarted := make(chan struct{})
+	releaseOpen := make(chan struct{})
+	releaseClose := make(chan struct{})
+	var activeCalls int32
+	var concurrentCalls int32
+	var lastAction atomic.Int32
+
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			handleTrayFn: func(_ context.Context, req *burnbridgev1.HandleTrayRequest, _ ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+				if atomic.AddInt32(&activeCalls, 1) != 1 {
+					atomic.StoreInt32(&concurrentCalls, 1)
+				}
+				defer atomic.AddInt32(&activeCalls, -1)
+
+				switch req.GetAction() {
+				case burnbridgev1.TrayAction_TRAY_ACTION_OPEN:
+					lastAction.Store(int32(req.GetAction()))
+					close(openStarted)
+					<-releaseOpen
+					return &burnbridgev1.HandleTrayResponse{Status: "opened"}, nil
+				case burnbridgev1.TrayAction_TRAY_ACTION_CLOSE:
+					lastAction.Store(int32(req.GetAction()))
+					close(closeStarted)
+					<-releaseClose
+					return &burnbridgev1.HandleTrayResponse{Status: "closed"}, nil
+				default:
+					return nil, fmt.Errorf("unexpected tray action %v", req.GetAction())
+				}
+			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				if lastAction.Load() == int32(burnbridgev1.TrayAction_TRAY_ACTION_OPEN) {
+					return testUnitReadyNoDisc(), nil
+				}
+				return testUnitReadyReady("SERIALIZED-BUCKET"), nil
+			},
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Bucket: "SERIALIZED-BUCKET",
+					Loaded: true,
+				}, nil
+			},
+		},
+	}
+
+	errs := make(chan error, 2)
+	go func() {
+		_, err := b.loadOrHandleTrayTranscript(context.Background(), "CONTROL", testControlRequest(t, "tray-open", 1, "open-1"))
+		errs <- err
+	}()
+
+	select {
+	case <-openStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tray-open to start")
+	}
+
+	go func() {
+		_, err := b.loadOrHandleTrayTranscript(context.Background(), "CONTROL", testControlRequest(t, "tray-close", 2, "close-1"))
+		errs <- err
+	}()
+
+	select {
+	case <-closeStarted:
+		t.Fatal("tray-close should not reach recorder while tray-open is still active")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(releaseOpen)
+
+	select {
+	case <-closeStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for serialized tray-close to start")
+	}
+
+	close(releaseClose)
+
+	if err := <-errs; err != nil {
+		t.Fatalf("tray-open returned error: %v", err)
+	}
+	if err := <-errs; err != nil {
+		t.Fatalf("tray-close returned error: %v", err)
+	}
+	if atomic.LoadInt32(&concurrentCalls) != 0 {
+		t.Fatal("expected tray-open and tray-close recorder calls to stay serialized")
+	}
+}
+
+func TestTrayCloseWaitsForReadyAfterTransientNoDisc(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "meta.db")
+	store, err := meta.NewSqlMeta(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+
+	var probeCalls int32
+	var handleCalls int32
+
+	b := &BurnBridge{
+		meta: store,
+		grpc: testBurnBridgeClient{
+			handleTrayFn: func(context.Context, *burnbridgev1.HandleTrayRequest, ...grpc.CallOption) (*burnbridgev1.HandleTrayResponse, error) {
+				atomic.AddInt32(&handleCalls, 1)
+				return &burnbridgev1.HandleTrayResponse{Status: "closed"}, nil
+			},
+			testUnitReadyFn: func(context.Context, *burnbridgev1.TestUnitReadyRequest, ...grpc.CallOption) (*burnbridgev1.TestUnitReadyResponse, error) {
+				switch atomic.AddInt32(&probeCalls, 1) {
+				case 1:
+					return testUnitReadyNoDisc(), nil
+				default:
+					return testUnitReadyReady("READY-AFTER-CLOSE"), nil
+				}
+			},
+			importedBucketStateFn: func(context.Context, *burnbridgev1.GetImportedBucketStateRequest, ...grpc.CallOption) (*burnbridgev1.GetImportedBucketStateResponse, error) {
+				return &burnbridgev1.GetImportedBucketStateResponse{
+					Bucket: "READY-AFTER-CLOSE",
+					Loaded: true,
+				}, nil
+			},
+		},
+	}
+
+	payload, err := b.loadOrHandleTrayTranscript(context.Background(), "CONTROL", testControlRequest(t, "tray-close", 1, "close-transient-no-disc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) == 0 {
+		t.Fatal("expected tray-close transcript payload")
+	}
+	if atomic.LoadInt32(&handleCalls) != 1 {
+		t.Fatalf("expected one HandleTray call, got %d", atomic.LoadInt32(&handleCalls))
+	}
+	if atomic.LoadInt32(&probeCalls) < 2 {
+		t.Fatalf("expected tray-close to keep probing until ready after transient no-disc, got %d probe(s)", atomic.LoadInt32(&probeCalls))
 	}
 }
 

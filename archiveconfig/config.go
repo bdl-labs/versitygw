@@ -130,23 +130,26 @@ type LinuxServices struct {
 }
 
 type GpioMediaMonitor struct {
-	Enabled                    bool   `json:"Enabled"`
-	ChipNumber                 int    `json:"ChipNumber"`
-	PinNumberingScheme         string `json:"PinNumberingScheme"`
-	DiscInPin                  int    `json:"DiscInPin"`
-	TrayInPin                  int    `json:"TrayInPin"`
-	EjectPin                   int    `json:"EjectPin"`
-	EjectControlEnabled        bool   `json:"EjectControlEnabled"`
-	EjectActiveLevel           string `json:"EjectActiveLevel"`
-	EjectPulseMilliseconds     int    `json:"EjectPulseMilliseconds"`
-	TraySettleMilliseconds     int    `json:"TraySettleMilliseconds"`
-	DiscInsertedLevel          string `json:"DiscInsertedLevel"`
-	TrayOpenLevel              string `json:"TrayOpenLevel"`
-	DebounceMilliseconds       int    `json:"DebounceMilliseconds"`
-	InsertSettleMilliseconds   int    `json:"InsertSettleMilliseconds"`
-	RequireTrayClosedForInsert bool   `json:"RequireTrayClosedForInsert"`
-	UseDiscInForPresence       bool   `json:"UseDiscInForPresence"`
-	ProcessInitialState        bool   `json:"ProcessInitialState"`
+	Enabled                           bool   `json:"Enabled"`
+	ChipNumber                        int    `json:"ChipNumber"`
+	PinNumberingScheme                string `json:"PinNumberingScheme"`
+	DiscInPin                         int    `json:"DiscInPin"`
+	TrayInPin                         int    `json:"TrayInPin"`
+	EjectPin                          int    `json:"EjectPin"`
+	EjectControlEnabled               bool   `json:"EjectControlEnabled"`
+	EjectActiveLevel                  string `json:"EjectActiveLevel"`
+	EjectPulseMilliseconds            int    `json:"EjectPulseMilliseconds"`
+	TraySettleMilliseconds            int    `json:"TraySettleMilliseconds"`
+	CloseTrayFallbackWaitMilliseconds int    `json:"CloseTrayFallbackWaitMilliseconds"`
+	DiscInsertedLevel                 string `json:"DiscInsertedLevel"`
+	TrayOpenLevel                     string `json:"TrayOpenLevel"`
+	DebounceMilliseconds              int    `json:"DebounceMilliseconds"`
+	InsertSettleMilliseconds          int    `json:"InsertSettleMilliseconds"`
+	DiscInfoReadyTimeoutMilliseconds  int    `json:"DiscInfoReadyTimeoutMilliseconds"`
+	DiscInfoRetryDelayMilliseconds    int    `json:"DiscInfoRetryDelayMilliseconds"`
+	RequireTrayClosedForInsert        bool   `json:"RequireTrayClosedForInsert"`
+	UseDiscInForPresence              bool   `json:"UseDiscInForPresence"`
+	ProcessInitialState               bool   `json:"ProcessInitialState"`
 }
 
 type Logging struct {
@@ -216,7 +219,7 @@ func DefaultFile(path string) File {
 				AnchorRecoveryEnabled:                    true,
 				AnchorCopies:                             2,
 				AnchorScanBlocks:                         1048576,
-				AnchorScanReadBatchBlocks:                256,
+				AnchorScanReadBatchBlocks:                64,
 				AnchorScanMaxConsecutiveUnreadableBlocks: 128,
 				HiddenUdfLayoutEnabled:                   false,
 				LicenseFilePath:                          "D:\\BRS\\primoburner-net\\samples\\optical-recorder\\license.xml",
@@ -284,23 +287,26 @@ func DefaultFile(path string) File {
 				MountRefreshCommand:          "",
 			},
 			GpioMediaMonitor: GpioMediaMonitor{
-				Enabled:                    false,
-				ChipNumber:                 0,
-				PinNumberingScheme:         "Logical",
-				DiscInPin:                  -1,
-				TrayInPin:                  -1,
-				EjectPin:                   22,
-				EjectControlEnabled:        false,
-				EjectActiveLevel:           "Low",
-				EjectPulseMilliseconds:     500,
-				TraySettleMilliseconds:     10000,
-				DiscInsertedLevel:          "High",
-				TrayOpenLevel:              "Low",
-				DebounceMilliseconds:       300,
-				InsertSettleMilliseconds:   3000,
-				RequireTrayClosedForInsert: true,
-				UseDiscInForPresence:       false,
-				ProcessInitialState:        true,
+				Enabled:                           false,
+				ChipNumber:                        0,
+				PinNumberingScheme:                "Logical",
+				DiscInPin:                         -1,
+				TrayInPin:                         -1,
+				EjectPin:                          22,
+				EjectControlEnabled:               false,
+				EjectActiveLevel:                  "Low",
+				EjectPulseMilliseconds:            500,
+				TraySettleMilliseconds:            10000,
+				CloseTrayFallbackWaitMilliseconds: 5000,
+				DiscInsertedLevel:                 "High",
+				TrayOpenLevel:                     "Low",
+				DebounceMilliseconds:              300,
+				InsertSettleMilliseconds:          3000,
+				DiscInfoReadyTimeoutMilliseconds:  10000,
+				DiscInfoRetryDelayMilliseconds:    500,
+				RequireTrayClosedForInsert:        true,
+				UseDiscInForPresence:              false,
+				ProcessInitialState:               true,
 			},
 		},
 	}
@@ -481,6 +487,27 @@ func Load(configPath string) (File, string, error) {
 	}
 	if strings.TrimSpace(cfg.OpticalArchive.LinuxServices.MountRefreshServiceType) == "" {
 		cfg.OpticalArchive.LinuxServices.MountRefreshServiceType = defaults.OpticalArchive.LinuxServices.MountRefreshServiceType
+	}
+	if cfg.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds <= 0 {
+		cfg.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds
+	}
+	if cfg.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds <= 0 {
+		cfg.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds
+	}
+	if cfg.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds <= 0 {
+		cfg.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds
+	}
+	if cfg.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds <= 0 {
+		cfg.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds
+	}
+	if cfg.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds <= 0 {
+		cfg.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds
+	}
+	if cfg.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds <= 0 {
+		cfg.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds
+	}
+	if cfg.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds <= 0 {
+		cfg.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds
 	}
 	applyEnvOverrides(&cfg)
 

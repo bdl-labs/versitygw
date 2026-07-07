@@ -337,15 +337,45 @@ func mergeArchiveConfigDefaults(next *archiveconfig.File, current archiveconfig.
 	}
 	if next.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds <= 0 {
 		next.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds = current.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds
+		if next.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds <= 0 {
+			next.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds
+		}
 	}
 	if next.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds <= 0 {
 		next.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds = current.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds
+		if next.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds <= 0 {
+			next.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds
+		}
+	}
+	if next.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds <= 0 {
+		next.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds = current.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds
+		if next.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds <= 0 {
+			next.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds
+		}
 	}
 	if next.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds <= 0 {
 		next.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds = current.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds
+		if next.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds <= 0 {
+			next.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds
+		}
 	}
 	if next.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds <= 0 {
 		next.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds = current.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds
+		if next.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds <= 0 {
+			next.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds
+		}
+	}
+	if next.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds <= 0 {
+		next.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds = current.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds
+		if next.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds <= 0 {
+			next.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds
+		}
+	}
+	if next.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds <= 0 {
+		next.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds = current.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds
+		if next.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds <= 0 {
+			next.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds = defaults.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds
+		}
 	}
 }
 
@@ -456,23 +486,26 @@ func archiveConfigGroups(cfg archiveconfig.File) map[string]any {
 			"MountRefreshCommand":          cfg.OpticalArchive.LinuxServices.MountRefreshCommand,
 		},
 		"GpioMediaMonitor": map[string]any{
-			"Enabled":                    cfg.OpticalArchive.GpioMediaMonitor.Enabled,
-			"ChipNumber":                 cfg.OpticalArchive.GpioMediaMonitor.ChipNumber,
-			"PinNumberingScheme":         cfg.OpticalArchive.GpioMediaMonitor.PinNumberingScheme,
-			"DiscInPin":                  cfg.OpticalArchive.GpioMediaMonitor.DiscInPin,
-			"TrayInPin":                  cfg.OpticalArchive.GpioMediaMonitor.TrayInPin,
-			"EjectPin":                   cfg.OpticalArchive.GpioMediaMonitor.EjectPin,
-			"EjectControlEnabled":        cfg.OpticalArchive.GpioMediaMonitor.EjectControlEnabled,
-			"EjectActiveLevel":           cfg.OpticalArchive.GpioMediaMonitor.EjectActiveLevel,
-			"EjectPulseMilliseconds":     cfg.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds,
-			"TraySettleMilliseconds":     cfg.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds,
-			"DiscInsertedLevel":          cfg.OpticalArchive.GpioMediaMonitor.DiscInsertedLevel,
-			"TrayOpenLevel":              cfg.OpticalArchive.GpioMediaMonitor.TrayOpenLevel,
-			"DebounceMilliseconds":       cfg.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds,
-			"InsertSettleMilliseconds":   cfg.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds,
-			"RequireTrayClosedForInsert": cfg.OpticalArchive.GpioMediaMonitor.RequireTrayClosedForInsert,
-			"UseDiscInForPresence":       cfg.OpticalArchive.GpioMediaMonitor.UseDiscInForPresence,
-			"ProcessInitialState":        cfg.OpticalArchive.GpioMediaMonitor.ProcessInitialState,
+			"Enabled":                           cfg.OpticalArchive.GpioMediaMonitor.Enabled,
+			"ChipNumber":                        cfg.OpticalArchive.GpioMediaMonitor.ChipNumber,
+			"PinNumberingScheme":                cfg.OpticalArchive.GpioMediaMonitor.PinNumberingScheme,
+			"DiscInPin":                         cfg.OpticalArchive.GpioMediaMonitor.DiscInPin,
+			"TrayInPin":                         cfg.OpticalArchive.GpioMediaMonitor.TrayInPin,
+			"EjectPin":                          cfg.OpticalArchive.GpioMediaMonitor.EjectPin,
+			"EjectControlEnabled":               cfg.OpticalArchive.GpioMediaMonitor.EjectControlEnabled,
+			"EjectActiveLevel":                  cfg.OpticalArchive.GpioMediaMonitor.EjectActiveLevel,
+			"EjectPulseMilliseconds":            cfg.OpticalArchive.GpioMediaMonitor.EjectPulseMilliseconds,
+			"TraySettleMilliseconds":            cfg.OpticalArchive.GpioMediaMonitor.TraySettleMilliseconds,
+			"CloseTrayFallbackWaitMilliseconds": cfg.OpticalArchive.GpioMediaMonitor.CloseTrayFallbackWaitMilliseconds,
+			"DiscInsertedLevel":                 cfg.OpticalArchive.GpioMediaMonitor.DiscInsertedLevel,
+			"TrayOpenLevel":                     cfg.OpticalArchive.GpioMediaMonitor.TrayOpenLevel,
+			"DebounceMilliseconds":              cfg.OpticalArchive.GpioMediaMonitor.DebounceMilliseconds,
+			"InsertSettleMilliseconds":          cfg.OpticalArchive.GpioMediaMonitor.InsertSettleMilliseconds,
+			"DiscInfoReadyTimeoutMilliseconds":  cfg.OpticalArchive.GpioMediaMonitor.DiscInfoReadyTimeoutMilliseconds,
+			"DiscInfoRetryDelayMilliseconds":    cfg.OpticalArchive.GpioMediaMonitor.DiscInfoRetryDelayMilliseconds,
+			"RequireTrayClosedForInsert":        cfg.OpticalArchive.GpioMediaMonitor.RequireTrayClosedForInsert,
+			"UseDiscInForPresence":              cfg.OpticalArchive.GpioMediaMonitor.UseDiscInForPresence,
+			"ProcessInitialState":               cfg.OpticalArchive.GpioMediaMonitor.ProcessInitialState,
 		},
 	}
 }
